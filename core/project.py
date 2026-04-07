@@ -30,6 +30,7 @@ class ProjectState:
     photos: list[PhotoMetadata]
     elevation_grid: ElevationGrid | None = None
     satellite_texture: SatelliteTexture | None = None
+    render_settings: dict | None = None   # camera + imagery settings at fetch time
 
 
 # ------------------------------------------------------------------
@@ -55,11 +56,16 @@ def save_project(state: ProjectState, path: str) -> None:
             "max_lon": g.max_lon,
         }
 
+    if state.render_settings is not None:
+        project_payload["render_settings"] = state.render_settings
+
     if state.satellite_texture is not None:
         t = state.satellite_texture
         project_payload["satellite"] = {
             "min_lat": t.min_lat, "max_lat": t.max_lat,
             "min_lon": t.min_lon, "max_lon": t.max_lon,
+            "provider_id": t.provider_id,
+            "quality": t.quality,
         }
 
     manifest = {
@@ -110,6 +116,8 @@ def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
             max_lat=sat_meta["max_lat"],
             min_lon=sat_meta["min_lon"],
             max_lon=sat_meta["max_lon"],
+            provider_id=sat_meta.get("provider_id", ""),
+            quality=sat_meta.get("quality", "standard"),
         )
 
     return ProjectState(
@@ -119,6 +127,7 @@ def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
         photos=_deserialise_photos(payload.get("photos", [])),
         elevation_grid=elevation_grid,
         satellite_texture=satellite_texture,
+        render_settings=payload.get("render_settings"),
     )
 
 

@@ -1,20 +1,26 @@
 import shutil
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from core.satellite.providers import PROVIDERS
 
 from core.encoder_registry import (
     EncoderConfig,
@@ -42,6 +48,14 @@ KEY_QUALITY               = "render/quality"                 # "low" | "medium" 
 KEY_PHOTO_TRANSITION      = "render/photo_transition"        # "fade" | "cut"
 KEY_PHOTO_FILL            = "render/photo_fill"              # "blurred" | "black"
 KEY_PHOTO_FADE_DURATION   = "render/photo_fade_duration"     # seconds (float)
+KEY_TANGENT_LOOKAHEAD_S   = "render/tangent_lookahead_s"     # seconds (float)
+KEY_TANGENT_WEIGHT        = "render/tangent_weight"          # "uniform" | "linear" | "exponential"
+KEY_PIN_COLOR             = "pins/color"                     # named color id or "custom"
+KEY_PIN_CUSTOM_COLOR      = "pins/custom_color"              # "#rrggbb" when color=="custom"
+KEY_IMAGERY_PROVIDER      = "imagery/provider"               # provider id
+KEY_IMAGERY_QUALITY       = "imagery/quality"                # "standard" | "high" | "very_high"
+KEY_IMAGERY_API_KEY       = "imagery/api_key"                # per-provider key (provider-prefixed)
+KEY_IMAGERY_CUSTOM_URL    = "imagery/custom_url"
 KEY_CONTAINER             = "output/container"               # "mkv" | "mp4"
 KEY_CODEC                 = "output/codec"                   # "h264" | "h265" | "av1"
 KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder name
@@ -51,9 +65,9 @@ KEY_OUTPUT_PRESET         = "output/preset"                  # string
 DEFAULTS = {
     KEY_PATH_SMOOTHING:       "spline",
     KEY_HEIGHT_MODE:          "dem_fixed",
-    KEY_HEIGHT_OFFSET:        80.0,
+    KEY_HEIGHT_OFFSET:        200,
     KEY_ORIENTATION:          "tangent",
-    KEY_TILT_DEG:             15,
+    KEY_TILT_DEG:             45,
     KEY_PHOTO_PAUSE_MODE:     "hold",
     KEY_PHOTO_PAUSE_DURATION: 3.0,
     KEY_FPS:                  30,
@@ -69,7 +83,26 @@ DEFAULTS = {
     KEY_ENCODER:              "libx265",
     KEY_OUTPUT_CQ:            28,
     KEY_OUTPUT_PRESET:        "medium",
+    KEY_TANGENT_LOOKAHEAD_S:  60.0,
+    KEY_TANGENT_WEIGHT:       "linear",
+    KEY_IMAGERY_PROVIDER:     "esri_world",
+    KEY_IMAGERY_QUALITY:      "standard",
+    KEY_IMAGERY_API_KEY:      "",
+    KEY_IMAGERY_CUSTOM_URL:   "",
+    KEY_PIN_COLOR:            "mustard_yellow",
+    KEY_PIN_CUSTOM_COLOR:     "#ff9900",
 }
+
+# Named pin color palette: id → (display label, #rrggbb)
+PIN_COLORS: tuple[tuple[str, str, str], ...] = (
+    ("mustard_yellow", "Mustard Yellow", "#ffbf1a"),
+    ("white",          "White",          "#ffffff"),
+    ("red",            "Red",            "#e62617"),
+    ("blue",           "Blue",           "#2673ff"),
+    ("green",          "Green",          "#1abf40"),
+    ("black",          "Black",          "#0d0d0d"),
+    ("custom",         "Custom…",        "#ff9900"),
+)
 
 
 def get_render_settings(settings: QSettings) -> dict:
@@ -101,6 +134,8 @@ class RenderSettingsDialog(QDialog):
         tabs.addTab(self._build_camera_tab(),    "Camera")
         tabs.addTab(self._build_rendering_tab(), "Rendering")
         tabs.addTab(self._build_photos_tab(),    "Photos")
+        tabs.addTab(self._build_map_tab(),       "Map")
+        tabs.addTab(self._build_pins_tab(),      "Pins")
         tabs.addTab(self._build_output_tab(),    "Output")
         root.addWidget(tabs)
 
@@ -161,12 +196,12 @@ class RenderSettingsDialog(QDialog):
         _set_combo(self._height_combo,
                    self._settings.value(KEY_HEIGHT_MODE, DEFAULTS[KEY_HEIGHT_MODE]))
         height_form.addRow("Mode:", self._height_combo)
-        self._height_spin = QDoubleSpinBox()
-        self._height_spin.setRange(5.0, 5000.0)
-        self._height_spin.setSingleStep(10.0)
+        self._height_spin = QSpinBox()
+        self._height_spin.setRange(5, 5000)
+        self._height_spin.setSingleStep(10)
         self._height_spin.setSuffix(" m")
         self._height_spin.setValue(
-            float(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET]))
+            int(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET]))
         )
         height_form.addRow("Offset above terrain:", self._height_spin)
 
@@ -186,6 +221,25 @@ class RenderSettingsDialog(QDialog):
             int(self._settings.value(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG]))
         )
         orient_form.addRow("Downward tilt:", self._tilt_spin)
+
+        self._lookahead_spin = QDoubleSpinBox()
+        self._lookahead_spin.setRange(1.0, 300.0)
+        self._lookahead_spin.setSingleStep(5.0)
+        self._lookahead_spin.setDecimals(0)
+        self._lookahead_spin.setSuffix(" s")
+        self._lookahead_spin.setValue(
+            float(self._settings.value(KEY_TANGENT_LOOKAHEAD_S,
+                                       DEFAULTS[KEY_TANGENT_LOOKAHEAD_S]))
+        )
+        orient_form.addRow("Look-ahead:", self._lookahead_spin)
+
+        self._tangent_weight_combo = QComboBox()
+        self._tangent_weight_combo.addItem("Linear falloff (recommended)", "linear")
+        self._tangent_weight_combo.addItem("Uniform (equal weight)",        "uniform")
+        self._tangent_weight_combo.addItem("Exponential (near-biased)",     "exponential")
+        _set_combo(self._tangent_weight_combo,
+                   self._settings.value(KEY_TANGENT_WEIGHT, DEFAULTS[KEY_TANGENT_WEIGHT]))
+        orient_form.addRow("Weight distribution:", self._tangent_weight_combo)
 
         # Photo pause (camera movement)
         pause_group = QGroupBox("Photo pause")
@@ -282,6 +336,122 @@ class RenderSettingsDialog(QDialog):
         layout.addWidget(group)
         layout.addStretch()
         return tab
+
+    def _build_map_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        group = QGroupBox("Satellite imagery")
+        form = QFormLayout(group)
+
+        self._provider_combo = QComboBox()
+        for p in PROVIDERS:
+            self._provider_combo.addItem(p.label, p.id)
+        _set_combo(self._provider_combo,
+                   self._settings.value(KEY_IMAGERY_PROVIDER, DEFAULTS[KEY_IMAGERY_PROVIDER]))
+        form.addRow("Provider:", self._provider_combo)
+
+        self._imagery_quality_combo = QComboBox()
+        self._imagery_quality_combo.addItem("Standard  (fastest, ~200 tiles)", "standard")
+        self._imagery_quality_combo.addItem("High      (~500 tiles)",           "high")
+        self._imagery_quality_combo.addItem("Very High (~1200 tiles, slower)",  "very_high")
+        _set_combo(self._imagery_quality_combo,
+                   self._settings.value(KEY_IMAGERY_QUALITY, DEFAULTS[KEY_IMAGERY_QUALITY]))
+        form.addRow("Detail level:", self._imagery_quality_combo)
+
+        self._api_key_label = QLabel("API key:")
+        self._api_key_edit = QLineEdit()
+        self._api_key_edit.setPlaceholderText("Paste your API key here…")
+        self._api_key_edit.setEchoMode(QLineEdit.Password)
+        saved_key = self._settings.value(KEY_IMAGERY_API_KEY, "")
+        self._api_key_edit.setText(saved_key)
+        form.addRow(self._api_key_label, self._api_key_edit)
+
+        self._custom_url_label = QLabel("XYZ URL template:")
+        self._custom_url_edit = QLineEdit()
+        self._custom_url_edit.setPlaceholderText("https://…/{z}/{x}/{y}.png")
+        self._custom_url_edit.setText(
+            self._settings.value(KEY_IMAGERY_CUSTOM_URL, "")
+        )
+        form.addRow(self._custom_url_label, self._custom_url_edit)
+
+        layout.addWidget(group)
+        layout.addStretch()
+
+        self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        self._on_provider_changed()   # set initial visibility
+
+        return tab
+
+    def _build_pins_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        group = QGroupBox("Photo waypoint pins")
+        form = QFormLayout(group)
+
+        self._pin_color_combo = QComboBox()
+        for cid, clabel, _ in PIN_COLORS:
+            self._pin_color_combo.addItem(clabel, cid)
+        saved_color = self._settings.value(KEY_PIN_COLOR, DEFAULTS[KEY_PIN_COLOR])
+        _set_combo(self._pin_color_combo, saved_color)
+        form.addRow("Pin color:", self._pin_color_combo)
+
+        # Color preview swatch + custom picker button on one row
+        swatch_row = QWidget()
+        swatch_layout = QHBoxLayout(swatch_row)
+        swatch_layout.setContentsMargins(0, 0, 0, 0)
+        swatch_layout.setSpacing(6)
+
+        self._pin_swatch = QLabel()
+        self._pin_swatch.setFixedSize(24, 24)
+        self._pin_swatch.setAutoFillBackground(True)
+
+        self._pin_custom_btn = QPushButton("Pick…")
+        self._pin_custom_btn.setFixedWidth(60)
+        self._pin_custom_btn.clicked.connect(self._pick_custom_pin_color)
+
+        swatch_layout.addWidget(self._pin_swatch)
+        swatch_layout.addWidget(self._pin_custom_btn)
+        swatch_layout.addStretch()
+        form.addRow("", swatch_row)
+
+        layout.addWidget(group)
+        layout.addStretch()
+
+        self._pin_color_combo.currentIndexChanged.connect(self._on_pin_color_changed)
+        self._on_pin_color_changed()   # set initial swatch
+
+        return tab
+
+    def _on_pin_color_changed(self) -> None:
+        cid = self._pin_color_combo.currentData() or "mustard_yellow"
+        hex_color = next(
+            (h for id_, _, h in PIN_COLORS if id_ == cid),
+            self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR]),
+        )
+        if cid == "custom":
+            hex_color = self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
+        self._pin_custom_btn.setVisible(cid == "custom")
+        _set_swatch(self._pin_swatch, hex_color)
+
+    def _pick_custom_pin_color(self) -> None:
+        current = self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
+        color = QColorDialog.getColor(QColor(current), self, "Pick pin color")
+        if color.isValid():
+            hex_color = color.name()
+            self._settings.setValue(KEY_PIN_CUSTOM_COLOR, hex_color)
+            _set_swatch(self._pin_swatch, hex_color)
+
+    def _on_provider_changed(self) -> None:
+        from core.satellite.providers import get_provider
+        p = get_provider(self._provider_combo.currentData() or "esri_world")
+        show_key = p.requires_key
+        show_url = p.id == "custom"
+        for w in (self._api_key_label, self._api_key_edit):
+            w.setVisible(show_key)
+        for w in (self._custom_url_label, self._custom_url_edit):
+            w.setVisible(show_url)
+        if show_key:
+            self._api_key_label.setText(p.key_label or "API key:")
 
     def _build_output_tab(self) -> QWidget:
         tab, layout = _make_tab()
@@ -446,9 +616,11 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_CAMERA_SPEED,        self._speed_spin.value())
         self._settings.setValue(KEY_PATH_SMOOTHING,      self._path_combo.currentData())
         self._settings.setValue(KEY_HEIGHT_MODE,         self._height_combo.currentData())
-        self._settings.setValue(KEY_HEIGHT_OFFSET,       self._height_spin.value())
-        self._settings.setValue(KEY_ORIENTATION,         self._orient_combo.currentData())
-        self._settings.setValue(KEY_TILT_DEG,            self._tilt_spin.value())
+        self._settings.setValue(KEY_HEIGHT_OFFSET,        self._height_spin.value())
+        self._settings.setValue(KEY_ORIENTATION,          self._orient_combo.currentData())
+        self._settings.setValue(KEY_TILT_DEG,             self._tilt_spin.value())
+        self._settings.setValue(KEY_TANGENT_LOOKAHEAD_S,  self._lookahead_spin.value())
+        self._settings.setValue(KEY_TANGENT_WEIGHT,       self._tangent_weight_combo.currentData())
         self._settings.setValue(KEY_PHOTO_PAUSE_MODE,    self._pause_combo.currentData())
         self._settings.setValue(KEY_PHOTO_PAUSE_DURATION, self._pause_spin.value())
         self._settings.setValue(KEY_ENGINE,              self._engine_combo.currentData())
@@ -462,6 +634,11 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_ENCODER,     self._encoder_combo.currentData())
         self._settings.setValue(KEY_OUTPUT_CQ,   self._out_cq_spin.value())
         self._settings.setValue(KEY_OUTPUT_PRESET, self._preset_combo.currentData() or "")
+        self._settings.setValue(KEY_IMAGERY_PROVIDER,   self._provider_combo.currentData())
+        self._settings.setValue(KEY_IMAGERY_QUALITY,    self._imagery_quality_combo.currentData())
+        self._settings.setValue(KEY_IMAGERY_API_KEY,    self._api_key_edit.text().strip())
+        self._settings.setValue(KEY_IMAGERY_CUSTOM_URL, self._custom_url_edit.text().strip())
+        self._settings.setValue(KEY_PIN_COLOR,        self._pin_color_combo.currentData())
         self.accept()
 
 
@@ -482,3 +659,9 @@ def _set_combo(combo: QComboBox, value: str) -> None:
     idx = combo.findData(value)
     if idx >= 0:
         combo.setCurrentIndex(idx)
+
+
+def _set_swatch(label: QLabel, hex_color: str) -> None:
+    palette = label.palette()
+    palette.setColor(label.backgroundRole(), QColor(hex_color))
+    label.setPalette(palette)

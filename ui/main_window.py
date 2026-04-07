@@ -19,12 +19,17 @@ from PySide6.QtWidgets import (
 from .blender_settings_dialog import BlenderSettingsDialog
 from .compositor_progress_dialog import CompositorProgressDialog
 from .render_progress_dialog import RenderProgressDialog
-from .render_settings_dialog import RenderSettingsDialog, get_render_settings
+from .render_settings_dialog import (
+    RenderSettingsDialog, get_render_settings,
+    KEY_HEIGHT_OFFSET, KEY_TILT_DEG,
+)
 from .video_progress_dialog import VideoProgressDialog
 
 from core.dem_fetcher import DemFetchError, fetch_dem
+from core.frustum import frustum_margin
 from core.elevation_grid import ElevationGrid
-from core.satellite import SatelliteTexture, XyzSource
+from core.satellite import SatelliteTexture, build_source
+from core.satellite.providers import QUALITY_MAX_TILES
 from core.gpx_parser import GpxParseError, parse_gpx
 from core.photo_matcher import match_photos
 from core.photo_store import PhotoStore
@@ -36,6 +41,13 @@ from core.scene_builder import SceneBuildError, build_scene
 from .gpx_drop_area import GpxDropArea
 from .output_file_selector import OutputFileSelector
 from .photo_list_area import PhotoListArea
+
+_QUALITY_ORDER = {q: i for i, q in enumerate(QUALITY_MAX_TILES)}  # standard=0, high=1, very_high=2
+
+
+def _quality_rank(quality: str) -> int:
+    return _QUALITY_ORDER.get(quality, 0)
+
 
 _MATCH_MODES = [
     ("Timestamp", "timestamp"),
@@ -180,6 +192,7 @@ class MainWindow(QMainWindow):
             photos=self._store.all(),
             elevation_grid=self._cached_elevation_grid,
             satellite_texture=self._cached_satellite_texture,
+            render_settings=get_render_settings(self._settings),
         )
 
     # ------------------------------------------------------------------
@@ -264,15 +277,23 @@ class MainWindow(QMainWindow):
                 + (f", {len(warnings)} warning(s)" if warnings else "")
             )
 
+        # Compute expanded bbox for DEM + imagery (covers camera's visible ground)
+        render_settings = get_render_settings(self._settings)
+        margin_m = frustum_margin(
+            height_m=render_settings.get(KEY_HEIGHT_OFFSET, 200),
+            tilt_deg=render_settings.get(KEY_TILT_DEG, 45),
+        )
+        track_bbox = self._pipeline.bounding_box
+        fetch_bbox = track_bbox.expand(margin_m)
+
         # Stage 3 — DEM Fetcher
         cached = self._cached_elevation_grid
-        bbox = self._pipeline.bounding_box
         if (
             cached is not None
-            and cached.min_lat == bbox.min_lat
-            and cached.max_lat == bbox.max_lat
-            and cached.min_lon == bbox.min_lon
-            and cached.max_lon == bbox.max_lon
+            and cached.min_lat <= fetch_bbox.min_lat
+            and cached.max_lat >= fetch_bbox.max_lat
+            and cached.min_lon <= fetch_bbox.min_lon
+            and cached.max_lon >= fetch_bbox.max_lon
         ):
             self._pipeline.elevation_grid = cached
             self._status.showMessage(
@@ -280,9 +301,11 @@ class MainWindow(QMainWindow):
                 f"({cached.rows}×{cached.cols} points)."
             )
         else:
-            self._status.showMessage("Fetching DEM (SRTM)…")
+            self._status.showMessage(
+                f"Fetching DEM (SRTM, {margin_m/1000:.1f} km margin)…"
+            )
             try:
-                grid = fetch_dem(bbox)
+                grid = fetch_dem(fetch_bbox)
             except DemFetchError as e:
                 QMessageBox.critical(self, "DEM error", str(e))
                 self._status.showMessage("Pipeline stopped: DEM fetch failed.")
@@ -296,13 +319,17 @@ class MainWindow(QMainWindow):
             )
 
         # Stage 4 — Satellite Imagery Fetcher
+        provider_id = self._settings.value("imagery/provider", "esri_world")
+        img_quality = self._settings.value("imagery/quality",  "standard")
         cached_sat = self._cached_satellite_texture
         if (
             cached_sat is not None
-            and cached_sat.min_lat == bbox.min_lat
-            and cached_sat.max_lat == bbox.max_lat
-            and cached_sat.min_lon == bbox.min_lon
-            and cached_sat.max_lon == bbox.max_lon
+            and cached_sat.min_lat <= fetch_bbox.min_lat
+            and cached_sat.max_lat >= fetch_bbox.max_lat
+            and cached_sat.min_lon <= fetch_bbox.min_lon
+            and cached_sat.max_lon >= fetch_bbox.max_lon
+            and cached_sat.provider_id == provider_id
+            and _quality_rank(cached_sat.quality) >= _quality_rank(img_quality)
         ):
             self._pipeline.satellite_texture = cached_sat
             self._status.showMessage(
@@ -312,7 +339,13 @@ class MainWindow(QMainWindow):
         else:
             self._status.showMessage("Fetching satellite imagery…")
             try:
-                texture = XyzSource().fetch(bbox)
+                source = build_source(
+                    provider_id=provider_id,
+                    api_key=self._settings.value("imagery/api_key", ""),
+                    custom_url=self._settings.value("imagery/custom_url", ""),
+                    quality=img_quality,
+                )
+                texture = source.fetch(fetch_bbox)
             except Exception as e:
                 QMessageBox.critical(self, "Satellite imagery error", str(e))
                 self._status.showMessage("Pipeline stopped: satellite fetch failed.")
@@ -328,7 +361,8 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Building 3D scene (Blender)…")
         blender_exe = self._settings.value("blender/executable_path") or None
         try:
-            blend_path = build_scene(self._pipeline, blender_exe=blender_exe)
+            blend_path = build_scene(self._pipeline, blender_exe=blender_exe,
+                                     settings=render_settings)
         except SceneBuildError as e:
             QMessageBox.critical(self, "Scene build error", str(e))
             self._status.showMessage("Pipeline stopped: scene build failed.")
@@ -338,7 +372,6 @@ class MainWindow(QMainWindow):
 
         # Stage 6 — Camera Path Generator
         self._status.showMessage("Computing camera path…")
-        render_settings = get_render_settings(self._settings)
         try:
             keyframes = build_camera_path(self._pipeline, render_settings)
         except CameraPathError as e:
@@ -478,6 +511,9 @@ class MainWindow(QMainWindow):
 
         self._cached_elevation_grid = state.elevation_grid
         self._cached_satellite_texture = state.satellite_texture
+        if state.render_settings:
+            for key, value in state.render_settings.items():
+                self._settings.setValue(key, value)
         self._save_last_project_dir(path)
         self._project_path = path
         self._suggest_output_from_project(path)

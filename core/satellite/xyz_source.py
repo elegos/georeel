@@ -6,17 +6,11 @@ import requests
 from PIL import Image
 
 from ..bounding_box import BoundingBox
+from .providers import PROVIDERS, ProviderConfig, QUALITY_MAX_TILES, get_provider
 from .source import SatelliteSource
 from .texture import SatelliteTexture
 
-# Preset URL templates
-ESRI_WORLD_IMAGERY = (
-    "https://server.arcgisonline.com/ArcGIS/rest/services"
-    "/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-)
-
 _TILE_SIZE = 256
-_MAX_TILES = 200       # safety cap — auto-zoom stays below this
 _MAX_WORKERS = 8
 _TIMEOUT = 10          # seconds per tile request
 _USER_AGENT = "GeoReel/0.1 satellite-fetcher"
@@ -27,18 +21,33 @@ class XyzSource(SatelliteSource):
 
     def __init__(
         self,
-        url_template: str = ESRI_WORLD_IMAGERY,
-        zoom: int | None = None,
+        provider: ProviderConfig | None = None,
+        api_key: str = "",
+        custom_url: str = "",
+        quality: str = "standard",
     ):
-        self._url_template = url_template
-        self._zoom = zoom  # None → auto-select
+        if provider is None:
+            provider = PROVIDERS[0]
+        self._provider = provider
+        self._quality = quality
+
+        # Resolve the URL template
+        if provider.id == "custom":
+            self._url_template = custom_url
+        elif provider.requires_key:
+            self._url_template = provider.url_template.replace("{api_key}", api_key)
+        else:
+            self._url_template = provider.url_template
+
+        self._max_tiles = QUALITY_MAX_TILES.get(quality, 200)
+        self._max_zoom = provider.max_zoom
 
     @property
     def name(self) -> str:
-        return "XYZ tiles"
+        return self._provider.label
 
     def fetch(self, bbox: BoundingBox) -> SatelliteTexture:
-        zoom = self._zoom if self._zoom is not None else _auto_zoom(bbox)
+        zoom = _auto_zoom(bbox, self._max_tiles, self._max_zoom)
 
         x_min = _lon_to_x(bbox.min_lon, zoom)
         x_max = _lon_to_x(bbox.max_lon, zoom)
@@ -92,7 +101,24 @@ class XyzSource(SatelliteSource):
             max_lat=bbox.max_lat,
             min_lon=bbox.min_lon,
             max_lon=bbox.max_lon,
+            provider_id=self._provider.id,
+            quality=self._quality,
         )
+
+
+def build_source(
+    provider_id: str = "esri_world",
+    api_key: str = "",
+    custom_url: str = "",
+    quality: str = "standard",
+) -> XyzSource:
+    """Factory: build an XyzSource from plain config values (no Qt dependency)."""
+    return XyzSource(
+        provider=get_provider(provider_id),
+        api_key=api_key,
+        custom_url=custom_url,
+        quality=quality,
+    )
 
 
 # ------------------------------------------------------------------
@@ -116,11 +142,11 @@ def _tile_nw(tx: int, ty: int, zoom: int) -> tuple[float, float]:
     return lat, lon
 
 
-def _auto_zoom(bbox: BoundingBox) -> int:
-    """Pick the highest zoom where total tile count stays under _MAX_TILES."""
-    for zoom in range(16, 8, -1):
+def _auto_zoom(bbox: BoundingBox, max_tiles: int, max_zoom: int) -> int:
+    """Pick the highest zoom where total tile count stays under max_tiles."""
+    for zoom in range(max_zoom, 8, -1):
         cols = _lon_to_x(bbox.max_lon, zoom) - _lon_to_x(bbox.min_lon, zoom) + 1
         rows = _lat_to_y(bbox.min_lat, zoom) - _lat_to_y(bbox.max_lat, zoom) + 1
-        if cols * rows <= _MAX_TILES:
+        if cols * rows <= max_tiles:
             return zoom
     return 9

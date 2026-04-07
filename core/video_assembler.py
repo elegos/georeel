@@ -4,10 +4,12 @@ Stage 9 — Video Assembler.
 Encodes the composited frame sequence into the final output video using FFmpeg.
 """
 
+import json
 import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -51,6 +53,11 @@ def assemble_video(
     if out.suffix.lower() != expected_ext:
         out = out.with_suffix(expected_ext)
 
+    # Write settings JSON to a temp file so it can be attached for MKV
+    settings_json = _serialise_settings(settings)
+    tmp_settings = Path(tempfile.mktemp(suffix="_georeel_settings.json"))
+    tmp_settings.write_text(settings_json, encoding="utf-8")
+
     cmd = (
         [ffmpeg, "-y",
          "-framerate", str(fps),
@@ -60,6 +67,7 @@ def assemble_video(
         + _pix_fmt_args(enc)
         + _container_args(enc, container)
         + _attach_args(gpx_path, container)
+        + _attach_settings_args(str(tmp_settings), container)
         + [str(out)]
     )
 
@@ -88,6 +96,8 @@ def assemble_video(
         raise
     except Exception as e:
         raise VideoAssembleError(f"FFmpeg error: {e}") from e
+    finally:
+        tmp_settings.unlink(missing_ok=True)
 
     if proc.returncode != 0:
         raise VideoAssembleError(f"FFmpeg exited with code {proc.returncode}.")
@@ -96,6 +106,7 @@ def assemble_video(
         raise VideoAssembleError("FFmpeg finished but output file was not created.")
 
     _copy_gpx_alongside(gpx_path, out, container)
+    _write_settings(settings, out, container)
 
 
 # ------------------------------------------------------------------
@@ -140,6 +151,33 @@ def _attach_args(gpx_path: str | None, container: str) -> list[str]:
         "-metadata:s:t:0", "mimetype=application/gpx+xml",
         "-metadata:s:t:0", f"filename={Path(gpx_path).name}",
     ]
+
+
+_SETTINGS_ATTACHMENT_CONTAINERS = {"mkv"}   # MP4 attachment support is unreliable for JSON
+
+
+def _serialise_settings(settings: dict) -> str:
+    """Return a pretty-printed JSON string of settings, excluding the API key."""
+    safe = {k: v for k, v in settings.items() if k != "imagery/api_key"}
+    return json.dumps(safe, indent=2, sort_keys=True, default=str)
+
+
+def _attach_settings_args(settings_path: str, container: str) -> list[str]:
+    if container not in _SETTINGS_ATTACHMENT_CONTAINERS:
+        return []
+    return [
+        "-attach", settings_path,
+        "-metadata:s:t:1", "mimetype=application/json",
+        "-metadata:s:t:1", "filename=georeel_settings.json",
+    ]
+
+
+def _write_settings(settings: dict, out: Path, container: str) -> None:
+    """For non-MKV containers write <stem>_settings.json next to the video."""
+    if container in _SETTINGS_ATTACHMENT_CONTAINERS:
+        return
+    dest = out.with_name(out.stem + "_settings.json")
+    dest.write_text(_serialise_settings(settings), encoding="utf-8")
 
 
 def _copy_gpx_alongside(gpx_path: str | None, out: Path, container: str) -> None:

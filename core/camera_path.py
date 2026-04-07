@@ -46,25 +46,28 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     """
     if not pipeline.trackpoints:
         raise CameraPathError("No trackpoints available.")
-    if pipeline.bounding_box is None:
-        raise CameraPathError("No bounding box available.")
     if pipeline.elevation_grid is None:
         raise CameraPathError("Elevation grid is required for camera height.")
 
-    bbox  = pipeline.bounding_box
     grid  = pipeline.elevation_grid
 
     fps             = int(settings.get("render/fps", 30))
     speed_mps       = float(settings.get("render/camera_speed_mps", 80.0))
     path_method     = settings.get("render/path_smoothing", "spline")
     height_mode     = settings.get("render/camera_height_mode", "dem_fixed")
-    height_offset   = float(settings.get("render/camera_height_offset", 80.0))
-    orient_mode     = settings.get("render/camera_orientation", "tangent")
-    tilt_deg        = float(settings.get("render/camera_tilt_deg", 15))
+    height_offset   = float(settings.get("render/camera_height_offset", 200))
+    orient_mode       = settings.get("render/camera_orientation", "tangent")
+    tilt_deg          = float(settings.get("render/camera_tilt_deg", 45))
+    lookahead_s       = float(settings.get("render/tangent_lookahead_s", 60.0))
+    tangent_weight    = settings.get("render/tangent_weight", "linear")
     pause_mode      = settings.get("render/photo_pause_mode", "hold")
     pause_duration  = float(settings.get("render/photo_pause_duration", 3.0))
 
-    # Physical dimensions of the bounding box in metres
+    # Scene coordinate system matches the elevation grid's extent (which may be
+    # expanded beyond the track bbox by the frustum margin added in stage 3+4).
+    bbox = BoundingBox(grid.min_lat, grid.max_lat, grid.min_lon, grid.max_lon)
+
+    # Physical dimensions of the scene bbox in metres
     mean_lat_rad = math.radians((bbox.min_lat + bbox.max_lat) / 2)
     lat_m = (bbox.max_lat - bbox.min_lat) * 111_320.0
     lon_m = (bbox.max_lon - bbox.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
@@ -124,9 +127,16 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     # 5. Camera orientations → look-at points                             #
     # ------------------------------------------------------------------ #
 
-    dx_dt, dy_dt = splev(sample_t, tck, der=1)
     tilt_rad = math.radians(tilt_deg)
-    look_ats = _compute_look_ats(xs, ys, zs, dx_dt, dy_dt, orient_mode, tilt_rad)
+    lookahead_frames = max(1, round(lookahead_s * fps))
+
+    if orient_mode == "tangent":
+        look_ats = _compute_look_ats_ahead(
+            xs, ys, zs, sample_dists, lookahead_frames, tangent_weight, tilt_rad
+        )
+    else:
+        dx_dt, dy_dt = splev(sample_t, tck, der=1)
+        look_ats = _compute_look_ats(xs, ys, zs, dx_dt, dy_dt, orient_mode, tilt_rad)
 
     # ------------------------------------------------------------------ #
     # 6. Build base keyframe list                                          #
@@ -255,6 +265,73 @@ def _compute_look_ats(
         else:
             fwd = _tangent_fwd(dx_dt[i], dy_dt[i], tilt_rad)
 
+        look_at = pos + fwd * _LOOK_AHEAD_M
+        look_ats.append((float(look_at[0]), float(look_at[1]), float(look_at[2])))
+
+    return look_ats
+
+
+def _compute_look_ats_ahead(
+    xs: np.ndarray, ys: np.ndarray, zs: np.ndarray,
+    dists: np.ndarray,
+    lookahead_frames: int,
+    weight_mode: str,
+    tilt_rad: float,
+) -> list[tuple[float, float, float]]:
+    """Point-ahead orientation: camera looks at a weighted average position
+    over the next *lookahead_frames* frames, then applies downward tilt.
+
+    Weight modes:
+      uniform     — all frames in the window count equally
+      linear      — weight decreases linearly from 1 (nearest) to 0 (farthest)
+      exponential — weight = exp(-3 * t) where t ∈ [0, 1] across the window
+    """
+    n = len(xs)
+    look_ats = []
+
+    for i in range(n):
+        # Window: frames i+1 … i+lookahead_frames, clamped to array bounds
+        j_start = i + 1
+        j_end   = min(i + lookahead_frames + 1, n)
+
+        if j_start >= n:
+            # At or past the end: reuse last valid look-at
+            look_ats.append(look_ats[-1] if look_ats else
+                            (float(xs[i]), float(ys[i]) + 1.0, float(zs[i])))
+            continue
+
+        window = np.arange(j_start, j_end)
+        k = len(window)
+
+        # Build weights
+        t = np.linspace(0.0, 1.0, k)
+        if weight_mode == "uniform":
+            w = np.ones(k)
+        elif weight_mode == "exponential":
+            w = np.exp(-3.0 * t)
+        else:  # linear
+            w = 1.0 - t
+
+        w /= w.sum()
+
+        # Weighted average target position
+        tx = float(np.dot(w, xs[window]))
+        ty = float(np.dot(w, ys[window]))
+        tz = float(np.dot(w, zs[window]))
+
+        # Direction from camera to target, then apply tilt
+        pos = np.array([xs[i], ys[i], zs[i]])
+        target = np.array([tx, ty, tz])
+        fwd_xy = target - pos
+        horiz = math.sqrt(fwd_xy[0]**2 + fwd_xy[1]**2)
+
+        if horiz > 1e-6:
+            nx, ny = fwd_xy[0] / horiz, fwd_xy[1] / horiz
+        else:
+            nx, ny = 0.0, 1.0
+
+        c, s = math.cos(tilt_rad), math.sin(tilt_rad)
+        fwd = np.array([nx * c, ny * c, -s])
         look_at = pos + fwd * _LOOK_AHEAD_M
         look_ats.append((float(look_at[0]), float(look_at[1]), float(look_at[2])))
 

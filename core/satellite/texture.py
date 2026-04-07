@@ -13,6 +13,8 @@ class SatelliteTexture:
     max_lat: float
     min_lon: float
     max_lon: float
+    provider_id: str = ""
+    quality: str = "standard"
 
     @property
     def width(self) -> int:
@@ -39,6 +41,8 @@ class SatelliteTexture:
         max_lat: float,
         min_lon: float,
         max_lon: float,
+        provider_id: str = "",
+        quality: str = "standard",
     ) -> "SatelliteTexture":
         buf = io.BytesIO(data)
         image = Image.open(buf)
@@ -49,4 +53,6 @@ class SatelliteTexture:
             max_lat=max_lat,
             min_lon=min_lon,
             max_lon=max_lon,
+            provider_id=provider_id,
+            quality=quality,
         )

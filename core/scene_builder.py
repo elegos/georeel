@@ -1,8 +1,12 @@
 import json
+import math
 import shlex
 import subprocess
 import tempfile
 from pathlib import Path
+
+import numpy as np
+from scipy.interpolate import splev, splprep
 
 from .blender_runtime import find_blender
 from .elevation_grid import ElevationGrid
@@ -18,7 +22,8 @@ class SceneBuildError(Exception):
     pass
 
 
-def build_scene(pipeline: Pipeline, blender_exe: str | None = None) -> str:
+def build_scene(pipeline: Pipeline, blender_exe: str | None = None,
+                settings: dict | None = None) -> str:
     """Build a 3D terrain .blend from the pipeline's elevation grid and satellite texture.
 
     *blender_exe* overrides auto-detection (pass the value from QSettings).
@@ -43,7 +48,11 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None) -> str:
     work_dir = Path(tempfile.mkdtemp(prefix="georeel_scene_"))
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
     tex_path = _write_texture(pipeline.satellite_texture, work_dir)
+    track_path = _write_track(pipeline, work_dir)
+    pins_path = _write_pins(pipeline, work_dir)
     blend_path = work_dir / "scene.blend"
+
+    pin_color = _resolve_pin_color(settings or {})
 
     cmd = [
         exe,
@@ -54,6 +63,9 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None) -> str:
         str(data_path),
         str(tex_path),
         str(blend_path),
+        str(track_path),
+        str(pins_path),
+        pin_color,
     ] + _sun_args(pipeline)
 
     try:
@@ -88,14 +100,136 @@ def _sun_args(pipeline: "Pipeline") -> list[str]:
         (tp.timestamp for tp in pipeline.trackpoints if tp.timestamp is not None),
         None,
     )
-    if ts is None or pipeline.bounding_box is None:
+    if ts is None or pipeline.elevation_grid is None:
         return []
-    bb = pipeline.bounding_box
-    lat = (bb.min_lat + bb.max_lat) / 2
-    lon = (bb.min_lon + bb.max_lon) / 2
+    g = pipeline.elevation_grid
+    lat = (g.min_lat + g.max_lat) / 2
+    lon = (g.min_lon + g.max_lon) / 2
     az, el = sun_angles(lat, lon, ts)
     sx, sy, sz = sun_direction_vector(az, el)
     return [str(sx), str(sy), str(sz)]
+
+
+_RIBBON_SAMPLE_SPACING_M = 5.0  # resample every 5 m for smooth curves
+
+
+def _write_track(pipeline: "Pipeline", work_dir: Path) -> Path:
+    """Project trackpoints onto a B-spline, resample at 5 m intervals,
+    sample elevation from the DEM, compute slope, and write JSON."""
+    track_path = work_dir / "track.json"
+
+    if not pipeline.trackpoints or pipeline.elevation_grid is None:
+        track_path.write_text("[]")
+        return track_path
+
+    grid = pipeline.elevation_grid
+    mean_lat_rad = math.radians((grid.min_lat + grid.max_lat) / 2)
+    lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
+    lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
+
+    # Project trackpoints to scene XY, removing duplicates
+    raw: list[tuple[float, float]] = []
+    for tp in pipeline.trackpoints:
+        x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
+        y = (tp.latitude  - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
+        if raw and abs(x - raw[-1][0]) < 1e-4 and abs(y - raw[-1][1]) < 1e-4:
+            continue
+        raw.append((x, y))
+
+    if len(raw) < 4:
+        # Too few points for a spline: fall back to raw points with slope=0
+        points = [{"x": x, "y": y,
+                   "z": _elev_at_xy(x, y, grid, lat_m, lon_m),
+                   "slope": 0.0}
+                  for x, y in raw]
+        track_path.write_text(json.dumps(points))
+        return track_path
+
+    pts = np.array(raw)
+
+    # Fit parametric cubic B-spline through all trackpoints
+    tck, _ = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
+
+    # Compute total arc length on a dense evaluation
+    t_fine = np.linspace(0, 1, max(10_000, len(pts) * 100))
+    xs_fine, ys_fine = splev(t_fine, tck)
+    dx = np.diff(xs_fine)
+    dy = np.diff(ys_fine)
+    cumlen = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
+    total_length = cumlen[-1]
+
+    # Resample at equal spacing
+    n_samples = max(2, int(total_length / _RIBBON_SAMPLE_SPACING_M) + 1)
+    sample_dists = np.linspace(0, total_length, n_samples)
+    sample_t = np.interp(sample_dists, cumlen, t_fine)
+
+    xs, ys = splev(sample_t, tck)
+    # Derivatives for slope computation
+    dxs, dys = splev(sample_t, tck, der=1)
+
+    points: list[dict] = []
+    for i in range(n_samples):
+        x, y = float(xs[i]), float(ys[i])
+        z = _elev_at_xy(x, y, grid, lat_m, lon_m)
+        # Slope: rise over run using spline tangent and DEM elevation difference
+        # Sample elevation slightly ahead and behind for accurate grade
+        eps = _RIBBON_SAMPLE_SPACING_M / 2
+        horiz = math.sqrt(float(dxs[i])**2 + float(dys[i])**2)
+        if horiz > 1e-6 and i > 0 and i < n_samples - 1:
+            z_prev = _elev_at_xy(float(xs[i - 1]), float(ys[i - 1]), grid, lat_m, lon_m)
+            z_next = _elev_at_xy(float(xs[i + 1]), float(ys[i + 1]), grid, lat_m, lon_m)
+            seg_h = math.sqrt((float(xs[i+1]) - float(xs[i-1]))**2 +
+                               (float(ys[i+1]) - float(ys[i-1]))**2)
+            slope = abs(z_next - z_prev) / seg_h if seg_h > 1e-6 else 0.0
+        else:
+            slope = 0.0
+        points.append({"x": x, "y": y, "z": z, "slope": slope})
+
+    track_path.write_text(json.dumps(points))
+    return track_path
+
+
+def _elev_at_xy(x: float, y: float, grid: "ElevationGrid",
+                lat_m: float, lon_m: float) -> float:
+    lat = grid.min_lat + y / lat_m * (grid.max_lat - grid.min_lat)
+    lon = grid.min_lon + x / lon_m * (grid.max_lon - grid.min_lon)
+    return grid.elevation_at(lat, lon)
+
+
+def _write_pins(pipeline: "Pipeline", work_dir: Path) -> Path:
+    """Write per-waypoint pin data (scene XY, elevation, photo path) as JSON."""
+    pins_path = work_dir / "pins.json"
+
+    if not pipeline.match_results or pipeline.elevation_grid is None:
+        pins_path.write_text("[]")
+        return pins_path
+
+    grid = pipeline.elevation_grid
+    mean_lat_rad = math.radians((grid.min_lat + grid.max_lat) / 2)
+    lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
+    lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
+
+    pins: list[dict] = []
+    for r in pipeline.match_results:
+        if not r.ok or r.trackpoint_index is None:
+            continue
+        tp = pipeline.trackpoints[r.trackpoint_index]
+        x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
+        y = (tp.latitude  - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
+        z = grid.elevation_at(tp.latitude, tp.longitude)
+        pins.append({"x": x, "y": y, "z": z, "photo_path": r.photo_path})
+
+    pins_path.write_text(json.dumps(pins))
+    return pins_path
+
+
+def _resolve_pin_color(settings: dict) -> str:
+    """Return a #rrggbb color string for the pin from settings."""
+    from ui.render_settings_dialog import PIN_COLORS  # type: ignore[import]
+    color_id = settings.get("pins/color", "mustard_yellow")
+    if color_id == "custom":
+        return settings.get("pins/custom_color", "#ffbf1a")
+    return next((h for cid, _, h in PIN_COLORS if cid == color_id), "#ffbf1a")
 
 
 def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
