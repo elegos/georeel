@@ -1,0 +1,17 @@
+[project]
+name = "georeel"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "gpxpy>=1.6.2",
+    "numpy>=2.4.4",
+    "pillow>=12.2.0",
+    "pyside6>=6.11.0",
+    "scipy>=1.17.1",
+    "srtm-py>=0.3.7",
+]
+
+[project.scripts]
+georeel = "main:main"

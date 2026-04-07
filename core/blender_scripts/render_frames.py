@@ -1,0 +1,138 @@
+"""
+Blender script: loads the terrain scene, builds a fly-through camera from
+keyframe JSON data, and renders each frame to the output directory.
+
+Invoked headlessly by frame_renderer.py:
+    blender --background scene.blend --python render_frames.py \
+        -- keyframes.json output_dir engine resolution quality
+
+Progress is reported by printing  Fra:<n>/<total>  after each frame so the
+host process can track it.
+"""
+
+import json
+import math
+import sys
+
+
+# Resolution presets (width, height)
+_RESOLUTIONS = {
+    "720p":  (1280,  720),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "4k":    (3840, 2160),
+}
+
+# Render samples per quality/engine combination
+_SAMPLES = {
+    "eevee":  {"low": 32, "medium": 64,  "high": 128},
+    "cycles": {"low": 64, "medium": 128, "high": 256},
+}
+
+
+def main() -> None:
+    import bpy
+    from mathutils import Vector
+
+    argv = sys.argv
+    argv = argv[argv.index("--") + 1:] if "--" in argv else []
+    if len(argv) < 5:
+        print("Usage: render_frames.py -- keyframes.json output_dir engine resolution quality",
+              file=sys.stderr)
+        sys.exit(1)
+
+    keyframes_path, output_dir, engine, resolution, quality = argv[:5]
+
+    with open(keyframes_path) as f:
+        keyframes_data = json.load(f)
+
+    if not keyframes_data:
+        print("[georeel] No keyframes — nothing to render.", file=sys.stderr)
+        sys.exit(1)
+
+    total = len(keyframes_data)
+    width, height = _RESOLUTIONS.get(resolution, (1920, 1080))
+    samples = _SAMPLES.get(engine, _SAMPLES["eevee"]).get(quality, 64)
+
+    scene = bpy.context.scene
+
+    # ------------------------------------------------------------------ #
+    # Render engine                                                        #
+    # ------------------------------------------------------------------ #
+
+    if engine == "cycles":
+        scene.render.engine = "CYCLES"
+        scene.cycles.samples = samples
+        # Use GPU if available; fall back to CPU silently
+        try:
+            prefs = bpy.context.preferences.addons["cycles"].preferences
+            prefs.get_devices()
+            if any(d.type in ("OPTIX", "HIP", "METAL", "ONEAPI")
+                   for d in prefs.devices):
+                prefs.compute_device_type = next(
+                    d.type for d in prefs.devices
+                    if d.type in ("OPTIX", "HIP", "METAL", "ONEAPI")
+                )
+                scene.cycles.device = "GPU"
+        except Exception:
+            pass  # GPU not available; CPU rendering continues
+    else:
+        # EEVEE Next (Blender 4.2+); fall back to legacy name
+        try:
+            scene.render.engine = "BLENDER_EEVEE_NEXT"
+            scene.eevee.taa_render_samples = samples
+        except AttributeError:
+            scene.render.engine = "BLENDER_EEVEE"
+            scene.eevee.taa_render_samples = samples
+
+    # ------------------------------------------------------------------ #
+    # Output settings                                                      #
+    # ------------------------------------------------------------------ #
+
+    scene.render.resolution_x = width
+    scene.render.resolution_y = height
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGB"
+
+    # ------------------------------------------------------------------ #
+    # Camera                                                               #
+    # ------------------------------------------------------------------ #
+
+    cam_data = bpy.data.cameras.new("FlyCamera")
+    cam_data.lens = 35   # 35 mm focal length
+    cam_obj = bpy.data.objects.new("FlyCamera", cam_data)
+    scene.collection.objects.link(cam_obj)
+    scene.camera = cam_obj
+
+    # ------------------------------------------------------------------ #
+    # Render frame by frame                                                #
+    # ------------------------------------------------------------------ #
+
+    for kf in keyframes_data:
+        frame   = kf["frame"]
+        pos     = Vector((kf["x"],        kf["y"],        kf["z"]))
+        look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
+
+        direction = (look_at - pos)
+        if direction.length > 1e-6:
+            direction.normalize()
+        else:
+            direction = Vector((0.0, 1.0, 0.0))
+
+        rot_quat = direction.to_track_quat("-Z", "Y")
+
+        cam_obj.location       = pos
+        cam_obj.rotation_mode  = "QUATERNION"
+        cam_obj.rotation_quaternion = rot_quat
+
+        scene.frame_set(frame)
+        scene.render.filepath = f"{output_dir}/{frame:06d}"
+        bpy.ops.render.render(write_still=True)
+
+        print(f"Fra:{frame}/{total - 1}", flush=True)
+
+    print(f"[georeel] Rendered {total} frames to {output_dir}")
+
+
+main()

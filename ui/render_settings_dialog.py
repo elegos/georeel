@@ -1,0 +1,484 @@
+import shutil
+
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.encoder_registry import (
+    EncoderConfig,
+    detect_available_encoders,
+    encoders_for_codec,
+    get_encoder,
+)
+
+# ------------------------------------------------------------------
+# QSettings keys and defaults
+# ------------------------------------------------------------------
+
+KEY_PATH_SMOOTHING        = "render/path_smoothing"          # "spline" | "dp_spline"
+KEY_HEIGHT_MODE           = "render/camera_height_mode"      # "dem_fixed" | "dem_smooth"
+KEY_HEIGHT_OFFSET         = "render/camera_height_offset"    # metres (float)
+KEY_ORIENTATION           = "render/camera_orientation"      # "tangent" | "lookat"
+KEY_TILT_DEG              = "render/camera_tilt_deg"         # degrees below horizontal (int)
+KEY_PHOTO_PAUSE_MODE      = "render/photo_pause_mode"        # "hold" | "ease"
+KEY_PHOTO_PAUSE_DURATION  = "render/photo_pause_duration"    # seconds (float)
+KEY_FPS                   = "render/fps"                     # int: 24 | 30 | 60
+KEY_CAMERA_SPEED          = "render/camera_speed_mps"        # metres per second (float)
+KEY_ENGINE                = "render/engine"                  # "eevee" | "cycles"
+KEY_RESOLUTION            = "render/resolution"              # "720p" | "1080p" | "1440p" | "4k"
+KEY_QUALITY               = "render/quality"                 # "low" | "medium" | "high"
+KEY_PHOTO_TRANSITION      = "render/photo_transition"        # "fade" | "cut"
+KEY_PHOTO_FILL            = "render/photo_fill"              # "blurred" | "black"
+KEY_PHOTO_FADE_DURATION   = "render/photo_fade_duration"     # seconds (float)
+KEY_CONTAINER             = "output/container"               # "mkv" | "mp4"
+KEY_CODEC                 = "output/codec"                   # "h264" | "h265" | "av1"
+KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder name
+KEY_OUTPUT_CQ             = "output/cq"                      # int
+KEY_OUTPUT_PRESET         = "output/preset"                  # string
+
+DEFAULTS = {
+    KEY_PATH_SMOOTHING:       "spline",
+    KEY_HEIGHT_MODE:          "dem_fixed",
+    KEY_HEIGHT_OFFSET:        80.0,
+    KEY_ORIENTATION:          "tangent",
+    KEY_TILT_DEG:             15,
+    KEY_PHOTO_PAUSE_MODE:     "hold",
+    KEY_PHOTO_PAUSE_DURATION: 3.0,
+    KEY_FPS:                  30,
+    KEY_CAMERA_SPEED:         80.0,
+    KEY_ENGINE:               "eevee",
+    KEY_RESOLUTION:           "1080p",
+    KEY_QUALITY:              "medium",
+    KEY_PHOTO_TRANSITION:     "fade",
+    KEY_PHOTO_FILL:           "blurred",
+    KEY_PHOTO_FADE_DURATION:  0.5,
+    KEY_CONTAINER:            "mkv",
+    KEY_CODEC:                "h265",
+    KEY_ENCODER:              "libx265",
+    KEY_OUTPUT_CQ:            28,
+    KEY_OUTPUT_PRESET:        "medium",
+}
+
+
+def get_render_settings(settings: QSettings) -> dict:
+    """Return all render settings as a plain dict, filled with defaults."""
+    return {
+        key: type(default)(settings.value(key, default))
+        for key, default in DEFAULTS.items()
+    }
+
+
+# ------------------------------------------------------------------
+# Dialog
+# ------------------------------------------------------------------
+
+class RenderSettingsDialog(QDialog):
+    def __init__(self, settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Render Settings")
+        self.setMinimumSize(580, 320)
+        self._settings = settings
+
+        root = QVBoxLayout(self)
+        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        tabs = QTabWidget()
+        tabs.setTabPosition(QTabWidget.West)
+        tabs.addTab(self._build_playback_tab(),  "Playback")
+        tabs.addTab(self._build_camera_tab(),    "Camera")
+        tabs.addTab(self._build_rendering_tab(), "Rendering")
+        tabs.addTab(self._build_photos_tab(),    "Photos")
+        tabs.addTab(self._build_output_tab(),    "Output")
+        root.addWidget(tabs)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    # ------------------------------------------------------------------
+    # Tab builders
+    # ------------------------------------------------------------------
+
+    def _build_playback_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        group = QGroupBox("Playback")
+        form = QFormLayout(group)
+
+        self._fps_combo = QComboBox()
+        for fps in (24, 30, 60):
+            self._fps_combo.addItem(f"{fps} fps", fps)
+        _set_combo(self._fps_combo,
+                   int(self._settings.value(KEY_FPS, DEFAULTS[KEY_FPS])))
+        form.addRow("Frame rate:", self._fps_combo)
+
+        self._speed_spin = QDoubleSpinBox()
+        self._speed_spin.setRange(10.0, 500.0)
+        self._speed_spin.setSingleStep(10.0)
+        self._speed_spin.setSuffix(" m/s")
+        self._speed_spin.setValue(
+            float(self._settings.value(KEY_CAMERA_SPEED, DEFAULTS[KEY_CAMERA_SPEED]))
+        )
+        form.addRow("Camera speed:", self._speed_spin)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        return tab
+
+    def _build_camera_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        # Path smoothing
+        path_group = QGroupBox("Path smoothing")
+        path_form = QFormLayout(path_group)
+        self._path_combo = QComboBox()
+        self._path_combo.addItem("B-spline through all trackpoints", "spline")
+        self._path_combo.addItem("Douglas-Peucker simplification + B-spline", "dp_spline")
+        _set_combo(self._path_combo,
+                   self._settings.value(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING]))
+        path_form.addRow("Method:", self._path_combo)
+
+        # Height
+        height_group = QGroupBox("Height")
+        height_form = QFormLayout(height_group)
+        self._height_combo = QComboBox()
+        self._height_combo.addItem("Fixed offset above DEM", "dem_fixed")
+        self._height_combo.addItem("Smoothed DEM offset", "dem_smooth")
+        _set_combo(self._height_combo,
+                   self._settings.value(KEY_HEIGHT_MODE, DEFAULTS[KEY_HEIGHT_MODE]))
+        height_form.addRow("Mode:", self._height_combo)
+        self._height_spin = QDoubleSpinBox()
+        self._height_spin.setRange(5.0, 5000.0)
+        self._height_spin.setSingleStep(10.0)
+        self._height_spin.setSuffix(" m")
+        self._height_spin.setValue(
+            float(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET]))
+        )
+        height_form.addRow("Offset above terrain:", self._height_spin)
+
+        # Orientation
+        orient_group = QGroupBox("Orientation")
+        orient_form = QFormLayout(orient_group)
+        self._orient_combo = QComboBox()
+        self._orient_combo.addItem("Path tangent (look forward)", "tangent")
+        self._orient_combo.addItem("Look at next waypoint", "lookat")
+        _set_combo(self._orient_combo,
+                   self._settings.value(KEY_ORIENTATION, DEFAULTS[KEY_ORIENTATION]))
+        orient_form.addRow("Method:", self._orient_combo)
+        self._tilt_spin = QSpinBox()
+        self._tilt_spin.setRange(0, 89)
+        self._tilt_spin.setSuffix("°")
+        self._tilt_spin.setValue(
+            int(self._settings.value(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG]))
+        )
+        orient_form.addRow("Downward tilt:", self._tilt_spin)
+
+        # Photo pause (camera movement)
+        pause_group = QGroupBox("Photo pause")
+        pause_form = QFormLayout(pause_group)
+        self._pause_combo = QComboBox()
+        self._pause_combo.addItem("Hold (freeze camera)", "hold")
+        self._pause_combo.addItem("Ease in / hold / ease out", "ease")
+        _set_combo(self._pause_combo,
+                   self._settings.value(KEY_PHOTO_PAUSE_MODE, DEFAULTS[KEY_PHOTO_PAUSE_MODE]))
+        pause_form.addRow("Camera movement:", self._pause_combo)
+        self._pause_spin = QDoubleSpinBox()
+        self._pause_spin.setRange(0.5, 30.0)
+        self._pause_spin.setSingleStep(0.5)
+        self._pause_spin.setSuffix(" s")
+        self._pause_spin.setValue(
+            float(self._settings.value(KEY_PHOTO_PAUSE_DURATION,
+                                       DEFAULTS[KEY_PHOTO_PAUSE_DURATION]))
+        )
+        pause_form.addRow("Duration per photo:", self._pause_spin)
+
+        layout.addWidget(path_group)
+        layout.addWidget(height_group)
+        layout.addWidget(orient_group)
+        layout.addWidget(pause_group)
+        layout.addStretch()
+        return tab
+
+    def _build_rendering_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        group = QGroupBox("3D Rendering")
+        form = QFormLayout(group)
+
+        self._engine_combo = QComboBox()
+        self._engine_combo.addItem("EEVEE (fast, rasterisation)", "eevee")
+        self._engine_combo.addItem("Cycles (slow, path tracing)", "cycles")
+        _set_combo(self._engine_combo,
+                   self._settings.value(KEY_ENGINE, DEFAULTS[KEY_ENGINE]))
+        form.addRow("Engine:", self._engine_combo)
+
+        self._resolution_combo = QComboBox()
+        for label, value in [("720p  (1280×720)",  "720p"),
+                              ("1080p (1920×1080)", "1080p"),
+                              ("1440p (2560×1440)", "1440p"),
+                              ("4K    (3840×2160)", "4k")]:
+            self._resolution_combo.addItem(label, value)
+        _set_combo(self._resolution_combo,
+                   self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION]))
+        form.addRow("Resolution:", self._resolution_combo)
+
+        self._quality_combo = QComboBox()
+        self._quality_combo.addItem("Low    (EEVEE 32  / Cycles 64 samples)",  "low")
+        self._quality_combo.addItem("Medium (EEVEE 64  / Cycles 128 samples)", "medium")
+        self._quality_combo.addItem("High   (EEVEE 128 / Cycles 256 samples)", "high")
+        _set_combo(self._quality_combo,
+                   self._settings.value(KEY_QUALITY, DEFAULTS[KEY_QUALITY]))
+        form.addRow("Quality:", self._quality_combo)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        return tab
+
+    def _build_photos_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        group = QGroupBox("Photo overlay")
+        form = QFormLayout(group)
+
+        self._transition_combo = QComboBox()
+        self._transition_combo.addItem("Fade (cross-dissolve)", "fade")
+        self._transition_combo.addItem("Cut (hard edit)", "cut")
+        _set_combo(self._transition_combo,
+                   self._settings.value(KEY_PHOTO_TRANSITION, DEFAULTS[KEY_PHOTO_TRANSITION]))
+        form.addRow("Transition:", self._transition_combo)
+
+        self._fill_combo = QComboBox()
+        self._fill_combo.addItem("Blurred fill", "blurred")
+        self._fill_combo.addItem("Black bars", "black")
+        _set_combo(self._fill_combo,
+                   self._settings.value(KEY_PHOTO_FILL, DEFAULTS[KEY_PHOTO_FILL]))
+        form.addRow("Letterbox fill:", self._fill_combo)
+
+        self._fade_dur_spin = QDoubleSpinBox()
+        self._fade_dur_spin.setRange(0.1, 2.0)
+        self._fade_dur_spin.setSingleStep(0.1)
+        self._fade_dur_spin.setDecimals(1)
+        self._fade_dur_spin.setSuffix(" s")
+        self._fade_dur_spin.setValue(
+            float(self._settings.value(KEY_PHOTO_FADE_DURATION,
+                                       DEFAULTS[KEY_PHOTO_FADE_DURATION]))
+        )
+        form.addRow("Fade duration:", self._fade_dur_spin)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        return tab
+
+    def _build_output_tab(self) -> QWidget:
+        tab, layout = _make_tab()
+
+        # Detect available encoders once at dialog open (fast, < 1 s)
+        ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+        self._available_encoders = detect_available_encoders(ffmpeg)
+        self._ffmpeg_path = ffmpeg
+
+        group = QGroupBox("Video output")
+        form = QFormLayout(group)
+
+        # Container
+        self._container_combo = QComboBox()
+        self._container_combo.addItem("Matroska (.mkv)", "mkv")
+        self._container_combo.addItem("MPEG-4 (.mp4)",   "mp4")
+        _set_combo(self._container_combo,
+                   self._settings.value(KEY_CONTAINER, DEFAULTS[KEY_CONTAINER]))
+        form.addRow("Container:", self._container_combo)
+
+        # Codec
+        self._out_codec_combo = QComboBox()
+        self._out_codec_combo.addItem("H.264 (AVC)",  "h264")
+        self._out_codec_combo.addItem("H.265 (HEVC)", "h265")
+        self._out_codec_combo.addItem("AV1",           "av1")
+        _set_combo(self._out_codec_combo,
+                   self._settings.value(KEY_CODEC, DEFAULTS[KEY_CODEC]))
+        form.addRow("Codec:", self._out_codec_combo)
+
+        # Encoder (dynamic, populated by _refresh_encoders)
+        self._encoder_combo = QComboBox()
+        form.addRow("Encoder:", self._encoder_combo)
+
+        # CQ
+        self._out_cq_spin = QSpinBox()
+        self._out_cq_spin.setRange(0, 63)
+        form.addRow("Quality (CQ/CRF):", self._out_cq_spin)
+
+        # Preset (dynamic)
+        self._preset_combo = QComboBox()
+        form.addRow("Preset:", self._preset_combo)
+
+        # Suggestion label
+        self._suggestion_label = QLabel()
+        self._suggestion_label.setWordWrap(True)
+        form.addRow("Suggestion:", self._suggestion_label)
+
+        # Apply suggestion button
+        self._apply_btn = QPushButton("Apply suggestion")
+        self._apply_btn.clicked.connect(self._apply_suggestion)
+        form.addRow("", self._apply_btn)
+
+        layout.addWidget(group)
+
+        # Detection status — shown only when something looks wrong
+        self._detect_label = QLabel()
+        self._detect_label.setWordWrap(True)
+        if not self._available_encoders:
+            self._detect_label.setText(
+                f"⚠ Encoder detection returned no results.\n"
+                f"FFmpeg path: {self._ffmpeg_path}\n"
+                "Only software fallback encoders are listed."
+            )
+        layout.addWidget(self._detect_label)
+        layout.addStretch()
+
+        # Populate encoder combo for the current codec (blocks signals during init)
+        self._refreshing = False
+        self._refresh_encoders(
+            saved_encoder=self._settings.value(KEY_ENCODER, DEFAULTS[KEY_ENCODER]),
+            saved_cq=int(self._settings.value(KEY_OUTPUT_CQ, DEFAULTS[KEY_OUTPUT_CQ])),
+            saved_preset=self._settings.value(KEY_OUTPUT_PRESET, DEFAULTS[KEY_OUTPUT_PRESET]),
+        )
+
+        # Connect signals after init to avoid spurious resets
+        self._out_codec_combo.currentIndexChanged.connect(self._on_codec_changed)
+        self._encoder_combo.currentIndexChanged.connect(self._on_encoder_changed)
+
+        return tab
+
+    # ------------------------------------------------------------------
+    # Output tab dynamics
+    # ------------------------------------------------------------------
+
+    def _refresh_encoders(
+        self,
+        saved_encoder: str = "",
+        saved_cq: int = -1,
+        saved_preset: str = "",
+    ) -> None:
+        """Rebuild encoder combo for the currently selected codec."""
+        self._refreshing = True
+        codec = self._out_codec_combo.currentData() or "h265"
+        encoders = encoders_for_codec(codec, self._available_encoders)
+
+        # Always include at least the software fallback even if not detected
+        fallbacks = {"h264": "libx264", "h265": "libx265", "av1": "libsvtav1"}
+        sw_name = fallbacks.get(codec, "libx265")
+        fallback = get_encoder(sw_name)
+        if fallback and sw_name not in {e.name for e in encoders}:
+            encoders.append(fallback)
+
+        self._encoder_combo.clear()
+        for enc in encoders:
+            self._encoder_combo.addItem(enc.label, enc.name)
+
+        # Select saved encoder if available, else first in list
+        idx = self._encoder_combo.findData(saved_encoder)
+        self._encoder_combo.setCurrentIndex(max(idx, 0))
+
+        # Populate preset/cq for the selected encoder
+        enc = get_encoder(self._encoder_combo.currentData() or "")
+        if enc:
+            self._populate_encoder_details(enc, saved_cq, saved_preset)
+
+        self._refreshing = False
+
+    def _populate_encoder_details(
+        self,
+        enc: EncoderConfig,
+        cq: int = -1,
+        preset: str = "",
+    ) -> None:
+        """Update CQ range, preset combo, and suggestion for *enc*."""
+        self._out_cq_spin.blockSignals(True)
+        self._out_cq_spin.setRange(*enc.cq_range)
+        self._out_cq_spin.setValue(cq if enc.cq_range[0] <= cq <= enc.cq_range[1]
+                                   else enc.default_cq)
+        self._out_cq_spin.blockSignals(False)
+
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        for value, label in enc.presets:
+            self._preset_combo.addItem(label, value)
+        idx = self._preset_combo.findData(preset if preset else enc.default_preset)
+        self._preset_combo.setCurrentIndex(max(idx, 0))
+        self._preset_combo.setEnabled(bool(enc.presets))
+        self._preset_combo.blockSignals(False)
+
+        self._suggestion_label.setText(enc.suggestion)
+
+    def _on_codec_changed(self) -> None:
+        if not self._refreshing:
+            self._refresh_encoders()
+
+    def _on_encoder_changed(self) -> None:
+        if self._refreshing:
+            return
+        enc = get_encoder(self._encoder_combo.currentData() or "")
+        if enc:
+            self._populate_encoder_details(enc)
+
+    def _apply_suggestion(self) -> None:
+        enc = get_encoder(self._encoder_combo.currentData() or "")
+        if enc:
+            self._populate_encoder_details(enc)
+
+    # ------------------------------------------------------------------
+
+    def _save_and_accept(self):
+        self._settings.setValue(KEY_FPS,                 self._fps_combo.currentData())
+        self._settings.setValue(KEY_CAMERA_SPEED,        self._speed_spin.value())
+        self._settings.setValue(KEY_PATH_SMOOTHING,      self._path_combo.currentData())
+        self._settings.setValue(KEY_HEIGHT_MODE,         self._height_combo.currentData())
+        self._settings.setValue(KEY_HEIGHT_OFFSET,       self._height_spin.value())
+        self._settings.setValue(KEY_ORIENTATION,         self._orient_combo.currentData())
+        self._settings.setValue(KEY_TILT_DEG,            self._tilt_spin.value())
+        self._settings.setValue(KEY_PHOTO_PAUSE_MODE,    self._pause_combo.currentData())
+        self._settings.setValue(KEY_PHOTO_PAUSE_DURATION, self._pause_spin.value())
+        self._settings.setValue(KEY_ENGINE,              self._engine_combo.currentData())
+        self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
+        self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
+        self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())
+        self._settings.setValue(KEY_PHOTO_FILL,          self._fill_combo.currentData())
+        self._settings.setValue(KEY_PHOTO_FADE_DURATION, self._fade_dur_spin.value())
+        self._settings.setValue(KEY_CONTAINER,  self._container_combo.currentData())
+        self._settings.setValue(KEY_CODEC,       self._out_codec_combo.currentData())
+        self._settings.setValue(KEY_ENCODER,     self._encoder_combo.currentData())
+        self._settings.setValue(KEY_OUTPUT_CQ,   self._out_cq_spin.value())
+        self._settings.setValue(KEY_OUTPUT_PRESET, self._preset_combo.currentData() or "")
+        self.accept()
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _make_tab() -> tuple[QWidget, QVBoxLayout]:
+    """Return a (widget, layout) pair for a tab page."""
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
+    layout.setSpacing(10)
+    layout.setContentsMargins(12, 12, 12, 12)
+    return tab, layout
+
+
+def _set_combo(combo: QComboBox, value: str) -> None:
+    idx = combo.findData(value)
+    if idx >= 0:
+        combo.setCurrentIndex(idx)
