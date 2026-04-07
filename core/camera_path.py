@@ -115,42 +115,56 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     xs, ys = splev(sample_t, tck)
 
     # ------------------------------------------------------------------ #
-    # 4. Camera heights                                                    #
+    # 4. Terrain heights and tilt                                         #
     # ------------------------------------------------------------------ #
 
-    zs = np.array([
-        _height_at(xs[i], ys[i], grid, bbox, lat_m, lon_m, height_mode, height_offset)
+    tilt_rad = math.radians(tilt_deg)
+
+    terrain_zs = np.array([
+        _height_at(xs[i], ys[i], grid, bbox, lat_m, lon_m, height_mode, 0.0)
         for i in range(n_frames)
     ])
 
     # ------------------------------------------------------------------ #
-    # 5. Camera orientations → look-at points                             #
+    # 5. Forward directions (horizontal heading at each frame)            #
     # ------------------------------------------------------------------ #
 
-    tilt_rad = math.radians(tilt_deg)
     lookahead_frames = max(1, round(lookahead_s * fps))
 
     if orient_mode == "tangent":
-        look_ats = _compute_look_ats_ahead(
-            xs, ys, zs, sample_dists, lookahead_frames, tangent_weight, tilt_rad
+        forward_dirs = _compute_forward_dirs_tangent(
+            xs, ys, lookahead_frames, tangent_weight,
         )
     else:
         dx_dt, dy_dt = splev(sample_t, tck, der=1)
-        look_ats = _compute_look_ats(xs, ys, zs, dx_dt, dy_dt, orient_mode, tilt_rad)
+        forward_dirs = _compute_forward_dirs_spline(
+            xs, ys, dx_dt, dy_dt, orient_mode,
+        )
 
     # ------------------------------------------------------------------ #
-    # 6. Build base keyframe list                                          #
+    # 6. Camera positions and look-at points                              #
+    #                                                                     #
+    # Camera is placed height_offset metres (slant distance) behind and  #
+    # above the track marker at the given tilt angle:                     #
+    #   horiz_back = d * cos(tilt)  — behind the marker                  #
+    #   height     = d * sin(tilt)  — above the terrain at the marker    #
+    # Look-at = the marker itself, so pitch == -tilt exactly.            #
     # ------------------------------------------------------------------ #
 
+    horiz_back = height_offset * math.cos(tilt_rad)
+    height_above = height_offset * math.sin(tilt_rad)
+
+    # Frame numbers start at 1 to match Blender's default timeline origin and
+    # the Build modifier's frame_start=1 in build_scene.py.
     keyframes: list[CameraKeyframe] = [
         CameraKeyframe(
-            frame=i,
-            x=float(xs[i]),
-            y=float(ys[i]),
-            z=float(zs[i]),
-            look_at_x=look_ats[i][0],
-            look_at_y=look_ats[i][1],
-            look_at_z=look_ats[i][2],
+            frame=i + 1,
+            x=float(xs[i]) - forward_dirs[i][0] * horiz_back,
+            y=float(ys[i]) - forward_dirs[i][1] * horiz_back,
+            z=float(terrain_zs[i]) + height_above,
+            look_at_x=float(xs[i]),
+            look_at_y=float(ys[i]),
+            look_at_z=float(terrain_zs[i]),
         )
         for i in range(n_frames)
     ]
@@ -247,63 +261,24 @@ def _smooth_elevation(grid: ElevationGrid, lat: float, lon: float) -> float:
 # Orientation helpers
 # ------------------------------------------------------------------
 
-def _compute_look_ats(
-    xs: np.ndarray, ys: np.ndarray, zs: np.ndarray,
-    dx_dt: np.ndarray, dy_dt: np.ndarray,
-    orient_mode: str, tilt_rad: float,
-) -> list[tuple[float, float, float]]:
+def _compute_forward_dirs_tangent(
+    xs: np.ndarray, ys: np.ndarray,
+    lookahead_frames: int, weight_mode: str,
+) -> list[tuple[float, float]]:
+    """Weighted-average forward direction using upcoming track positions."""
     n = len(xs)
-    look_ats = []
-    for i in range(n):
-        pos = np.array([xs[i], ys[i], zs[i]])
-
-        if orient_mode == "lookat" and i + 1 < n:
-            target = np.array([xs[i + 1], ys[i + 1], zs[i + 1]])
-            fwd = target - pos
-            norm = np.linalg.norm(fwd)
-            fwd = fwd / norm if norm > 1e-6 else _tangent_fwd(dx_dt[i], dy_dt[i], tilt_rad)
-        else:
-            fwd = _tangent_fwd(dx_dt[i], dy_dt[i], tilt_rad)
-
-        look_at = pos + fwd * _LOOK_AHEAD_M
-        look_ats.append((float(look_at[0]), float(look_at[1]), float(look_at[2])))
-
-    return look_ats
-
-
-def _compute_look_ats_ahead(
-    xs: np.ndarray, ys: np.ndarray, zs: np.ndarray,
-    dists: np.ndarray,
-    lookahead_frames: int,
-    weight_mode: str,
-    tilt_rad: float,
-) -> list[tuple[float, float, float]]:
-    """Point-ahead orientation: camera looks at a weighted average position
-    over the next *lookahead_frames* frames, then applies downward tilt.
-
-    Weight modes:
-      uniform     — all frames in the window count equally
-      linear      — weight decreases linearly from 1 (nearest) to 0 (farthest)
-      exponential — weight = exp(-3 * t) where t ∈ [0, 1] across the window
-    """
-    n = len(xs)
-    look_ats = []
+    dirs: list[tuple[float, float]] = []
 
     for i in range(n):
-        # Window: frames i+1 … i+lookahead_frames, clamped to array bounds
         j_start = i + 1
         j_end   = min(i + lookahead_frames + 1, n)
 
         if j_start >= n:
-            # At or past the end: reuse last valid look-at
-            look_ats.append(look_ats[-1] if look_ats else
-                            (float(xs[i]), float(ys[i]) + 1.0, float(zs[i])))
+            dirs.append(dirs[-1] if dirs else (0.0, 1.0))
             continue
 
         window = np.arange(j_start, j_end)
         k = len(window)
-
-        # Build weights
         t = np.linspace(0.0, 1.0, k)
         if weight_mode == "uniform":
             w = np.ones(k)
@@ -311,45 +286,45 @@ def _compute_look_ats_ahead(
             w = np.exp(-3.0 * t)
         else:  # linear
             w = 1.0 - t
-
         w /= w.sum()
 
-        # Weighted average target position
         tx = float(np.dot(w, xs[window]))
         ty = float(np.dot(w, ys[window]))
-        tz = float(np.dot(w, zs[window]))
-
-        # Direction from camera to target, then apply tilt
-        pos = np.array([xs[i], ys[i], zs[i]])
-        target = np.array([tx, ty, tz])
-        fwd_xy = target - pos
-        horiz = math.sqrt(fwd_xy[0]**2 + fwd_xy[1]**2)
-
-        if horiz > 1e-6:
-            nx, ny = fwd_xy[0] / horiz, fwd_xy[1] / horiz
+        dx = tx - float(xs[i])
+        dy = ty - float(ys[i])
+        norm = math.sqrt(dx * dx + dy * dy)
+        if norm > 1e-6:
+            dirs.append((dx / norm, dy / norm))
         else:
-            nx, ny = 0.0, 1.0
+            dirs.append(dirs[-1] if dirs else (0.0, 1.0))
 
-        c, s = math.cos(tilt_rad), math.sin(tilt_rad)
-        fwd = np.array([nx * c, ny * c, -s])
-        look_at = pos + fwd * _LOOK_AHEAD_M
-        look_ats.append((float(look_at[0]), float(look_at[1]), float(look_at[2])))
-
-    return look_ats
+    return dirs
 
 
-def _tangent_fwd(dx: float, dy: float, tilt_rad: float) -> np.ndarray:
-    """Unit forward vector from XY tangent with downward tilt applied.
+def _compute_forward_dirs_spline(
+    xs: np.ndarray, ys: np.ndarray,
+    dx_dt: np.ndarray, dy_dt: np.ndarray,
+    orient_mode: str,
+) -> list[tuple[float, float]]:
+    """Forward direction from spline tangent or next-point vector."""
+    n = len(xs)
+    dirs: list[tuple[float, float]] = []
 
-    Derivation: rotating [fx, fy, 0] around the camera's right vector
-    [fy, -fx, 0] by tilt_rad downward gives [fx·cos t, fy·cos t, -sin t].
-    """
-    norm = math.sqrt(dx * dx + dy * dy)
-    if norm < 1e-10:
-        return np.array([0.0, 1.0, -math.sin(tilt_rad)])
-    fx, fy = dx / norm, dy / norm
-    c, s = math.cos(tilt_rad), math.sin(tilt_rad)
-    return np.array([fx * c, fy * c, -s])
+    for i in range(n):
+        if orient_mode == "lookat" and i + 1 < n:
+            dx = float(xs[i + 1] - xs[i])
+            dy = float(ys[i + 1] - ys[i])
+        else:
+            dx, dy = float(dx_dt[i]), float(dy_dt[i])
+
+        norm = math.sqrt(dx * dx + dy * dy)
+        if norm > 1e-10:
+            dirs.append((dx / norm, dy / norm))
+        else:
+            dirs.append(dirs[-1] if dirs else (0.0, 1.0))
+
+    return dirs
+
 
 
 # ------------------------------------------------------------------
@@ -378,7 +353,10 @@ def _insert_pauses(
     if not waypoints:
         return keyframes
 
-    kf_xy = np.array([(kf.x, kf.y) for kf in keyframes])
+    # Match against look-at positions (= track marker positions), not camera
+    # positions, so the pause is inserted at the frame where the camera is
+    # looking at the waypoint — not when it physically passes through it.
+    kf_xy = np.array([(kf.look_at_x, kf.look_at_y) for kf in keyframes])
 
     # Compute insertion indices — sort descending so earlier insertions
     # don't invalidate later indices
@@ -415,8 +393,8 @@ def _insert_pauses(
         ]
         keyframes = keyframes[: idx + 1] + block + keyframes[idx + 1:]
 
-    # Renumber frames sequentially
+    # Renumber frames sequentially starting at 1 (Blender timeline origin)
     for i, kf in enumerate(keyframes):
-        kf.frame = i
+        kf.frame = i + 1
 
     return keyframes

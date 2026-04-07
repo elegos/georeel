@@ -15,6 +15,39 @@ import math
 import sys
 
 
+def _zero_roll_quat(pos, look_at, Vector, Matrix, Quaternion):
+    """Return a quaternion that points the camera -Z toward look_at with zero
+    roll (X axis is always horizontal, i.e. world Z is never tilted sideways).
+    """
+    world_z = Vector((0.0, 0.0, 1.0))
+
+    fwd = look_at - pos
+    if fwd.length > 1e-6:
+        fwd.normalize()
+    else:
+        fwd = Vector((0.0, 1.0, 0.0))
+
+    # If forward is (nearly) straight up or down, fall back to a safe up vector
+    if abs(fwd.dot(world_z)) > 0.9999:
+        right = Vector((1.0, 0.0, 0.0))
+    else:
+        right = fwd.cross(world_z)
+        right.normalize()
+
+    up = right.cross(fwd)          # derived up — guaranteed no roll
+    up.normalize()
+
+    # Blender camera convention: X right, Y up, -Z forward
+    # Build rotation matrix from column vectors
+    mat = Matrix((
+        ( right.x,  right.y,  right.z),   # row 0 = X axis of camera
+        (    up.x,     up.y,     up.z),   # row 1 = Y axis of camera
+        (  -fwd.x,   -fwd.y,   -fwd.z),  # row 2 = -Z axis of camera (forward)
+    )).transposed()   # transpose: columns become rows expected by from_matrix
+
+    return mat.to_quaternion()
+
+
 # Resolution presets (width, height)
 _RESOLUTIONS = {
     "720p":  (1280,  720),
@@ -32,7 +65,7 @@ _SAMPLES = {
 
 def main() -> None:
     import bpy
-    from mathutils import Vector
+    from mathutils import Matrix, Quaternion, Vector
 
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
@@ -100,7 +133,9 @@ def main() -> None:
     # ------------------------------------------------------------------ #
 
     cam_data = bpy.data.cameras.new("FlyCamera")
-    cam_data.lens = 35   # 35 mm focal length
+    cam_data.lens      = 35      # 35 mm focal length
+    cam_data.clip_start = 1.0
+    cam_data.clip_end   = 100_000.0   # large enough for any terrain extent
     cam_obj = bpy.data.objects.new("FlyCamera", cam_data)
     scene.collection.objects.link(cam_obj)
     scene.camera = cam_obj
@@ -114,13 +149,7 @@ def main() -> None:
         pos     = Vector((kf["x"],        kf["y"],        kf["z"]))
         look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
 
-        direction = (look_at - pos)
-        if direction.length > 1e-6:
-            direction.normalize()
-        else:
-            direction = Vector((0.0, 1.0, 0.0))
-
-        rot_quat = direction.to_track_quat("-Z", "Y")
+        rot_quat = _zero_roll_quat(pos, look_at, Vector, Matrix, Quaternion)
 
         cam_obj.location       = pos
         cam_obj.rotation_mode  = "QUATERNION"

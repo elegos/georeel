@@ -88,9 +88,11 @@ class ScenePrepWorker(QThread):
                 pass   # preview still works without pins
 
         # Expand bbox for DEM + imagery
+        _distance_m = float(self._settings.get("render/camera_height_offset", 200))
+        _tilt_deg   = float(self._settings.get("render/camera_tilt_deg", 45))
         margin_m = frustum_margin(
-            height_m=float(self._settings.get("render/camera_height_offset", 200)),
-            tilt_deg=float(self._settings.get("render/camera_tilt_deg", 45)),
+            height_m=_distance_m * math.sin(math.radians(_tilt_deg)),
+            tilt_deg=_tilt_deg,
         )
         fetch_bbox = bbox.expand(margin_m)
 

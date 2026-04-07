@@ -1,4 +1,5 @@
 import logging
+import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
@@ -186,6 +187,11 @@ class MainWindow(QMainWindow):
         self._preview_video_btn.setEnabled(False)
         self._preview_video_btn.clicked.connect(self._show_preview_video)
 
+        self._open_blender_btn = QPushButton("Open in Blender")
+        self._open_blender_btn.setFixedHeight(36)
+        self._open_blender_btn.setEnabled(False)
+        self._open_blender_btn.clicked.connect(self._open_in_blender)
+
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedHeight(36)
         self._start_btn.clicked.connect(self._start)
@@ -199,6 +205,7 @@ class MainWindow(QMainWindow):
         row.addStretch()
         row.addWidget(self._preview_map_btn)
         row.addWidget(self._preview_video_btn)
+        row.addWidget(self._open_blender_btn)
         row.addWidget(self._start_btn)
         row.addWidget(self._clear_btn)
         return row
@@ -268,11 +275,14 @@ class MainWindow(QMainWindow):
     def _on_worker_scene_ready(self, blend_path: str, pipeline):
         self._pipeline = pipeline
         self._scene_stale = False
+        self._open_blender_btn.setEnabled(True)
         self._preview_map_btn.setEnabled(True)
         self._preview_video_btn.setEnabled(True)
         self._status_show("Scene ready.")
         if self._pending_preview == "video":
             self._show_preview_video()
+        elif self._pending_preview == "blender":
+            self._open_in_blender()
         else:
             self._show_preview_map()
 
@@ -301,6 +311,7 @@ class MainWindow(QMainWindow):
         self._invalidate_scene()
         self._preview_map_btn.setEnabled(True)
         self._preview_video_btn.setEnabled(True)
+        self._open_blender_btn.setEnabled(True)
 
     def _on_photos_changed(self):
         ts_ok = self._store.all_have_timestamp
@@ -414,6 +425,63 @@ class MainWindow(QMainWindow):
             return
         self._status_show(f"Preview video ready: {video_path}")
         open_preview_video(video_path, parent=self)
+
+    def _open_in_blender(self):
+        if not self._gpx_path:
+            QMessageBox.warning(self, "No GPX", "Please load a GPX file first.")
+            return
+
+        if self._scene_stale or self._pipeline.scene is None:
+            if self._scene_prep_worker and self._scene_prep_worker.isRunning():
+                self._status_show("Building scene… please wait.")
+                return
+            self._pending_preview = "blender"
+            self._preview_map_btn.setEnabled(False)
+            self._preview_video_btn.setEnabled(False)
+            self._open_blender_btn.setEnabled(False)
+            self._status_show("Building scene for Blender…")
+            self._trigger_scene_prep()
+            return
+
+        blender_exe = self._settings.value("blender/executable_path") or None
+        from core.blender_runtime import find_blender
+        exe = find_blender(blender_exe)
+        if exe is None:
+            QMessageBox.critical(self, "Blender not found",
+                                 "Blender executable not found.\n"
+                                 "Set the path via Options → Blender…")
+            return
+
+        render_settings = get_render_settings(self._settings)
+
+        # Compute camera path if not yet done
+        if not self._pipeline.camera_keyframes:
+            self._status_show("Computing camera path…")
+            try:
+                from core.camera_path import CameraPathError, build_camera_path
+                self._pipeline.camera_keyframes = build_camera_path(
+                    self._pipeline, render_settings
+                )
+            except CameraPathError as e:
+                QMessageBox.critical(self, "Camera path error", str(e))
+                self._status_show("Open in Blender failed: camera path error.")
+                return
+
+        # Inject camera keyframes into a copy of the .blend
+        self._status_show("Injecting camera into scene…")
+        try:
+            from core.open_in_blender import inject_camera_and_open
+            inject_camera_and_open(
+                exe,
+                self._pipeline.scene,
+                self._pipeline.camera_keyframes,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Open in Blender failed", str(e))
+            self._status_show("Open in Blender failed.")
+            return
+
+        self._status_show(f"Opened in Blender: {self._pipeline.scene}")
 
     def _start(self):
         if not self._gpx_path:
@@ -580,6 +648,7 @@ class MainWindow(QMainWindow):
             return
         self._pipeline.scene = blend_path
         self._scene_stale = False
+        self._open_blender_btn.setEnabled(True)
         self._preview_map_btn.setEnabled(True)
         self._preview_video_btn.setEnabled(True)
         self._status_show(f"3D scene ready: {blend_path}")
@@ -751,6 +820,7 @@ class MainWindow(QMainWindow):
         if self._gpx_path:
             self._preview_map_btn.setEnabled(True)
             self._preview_video_btn.setEnabled(True)
+            self._open_blender_btn.setEnabled(True)
 
     def _clear(self):
         self._suppress_dirty = True
@@ -770,6 +840,7 @@ class MainWindow(QMainWindow):
         self._project_path = None
         self._pipeline = Pipeline()
         self._scene_stale = True
+        self._open_blender_btn.setEnabled(False)
         self._preview_map_btn.setEnabled(False)
         self._preview_video_btn.setEnabled(False)
         if self._scene_prep_worker and self._scene_prep_worker.isRunning():

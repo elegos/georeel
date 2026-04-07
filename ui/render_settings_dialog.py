@@ -35,7 +35,7 @@ from core.encoder_registry import (
 
 KEY_PATH_SMOOTHING        = "render/path_smoothing"          # "spline" | "dp_spline"
 KEY_HEIGHT_MODE           = "render/camera_height_mode"      # "dem_fixed" | "dem_smooth"
-KEY_HEIGHT_OFFSET         = "render/camera_height_offset"    # metres (float)
+KEY_HEIGHT_OFFSET         = "render/camera_height_offset"    # slant distance to track point (metres)
 KEY_ORIENTATION           = "render/camera_orientation"      # "tangent" | "lookat"
 KEY_TILT_DEG              = "render/camera_tilt_deg"         # degrees below horizontal (int)
 KEY_PHOTO_PAUSE_MODE      = "render/photo_pause_mode"        # "hold" | "ease"
@@ -194,7 +194,7 @@ class RenderSettingsDialog(QDialog):
         self._height_spin.setValue(
             int(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET]))
         )
-        height_form.addRow("Offset above terrain:", self._height_spin)
+        height_form.addRow("Distance to track:", self._height_spin)
 
         # Orientation
         orient_group = QGroupBox("Orientation")
