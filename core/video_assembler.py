@@ -71,6 +71,11 @@ def assemble_video(
         + [str(out)]
     )
 
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    _log.debug("FFmpeg command: %s", shlex.join(cmd))
+
+    stderr_lines: list[str] = []
     try:
         proc = subprocess.Popen(
             shlex.join(cmd),
@@ -80,6 +85,7 @@ def assemble_video(
             shell=True,
         )
         for line in proc.stderr:
+            stderr_lines.append(line)
             # FFmpeg progress: "frame=  123 fps=..."
             m = re.search(r"frame=\s*(\d+)", line)
             if m and progress_cb:
@@ -99,8 +105,13 @@ def assemble_video(
     finally:
         tmp_settings.unlink(missing_ok=True)
 
+    stderr_tail = "".join(stderr_lines[-40:])
+    _log.debug("FFmpeg output:\n%s", "".join(stderr_lines))
+
     if proc.returncode != 0:
-        raise VideoAssembleError(f"FFmpeg exited with code {proc.returncode}.")
+        raise VideoAssembleError(
+            f"FFmpeg exited with code {proc.returncode}.\n{stderr_tail}"
+        )
 
     if not out.is_file():
         raise VideoAssembleError("FFmpeg finished but output file was not created.")

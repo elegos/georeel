@@ -9,6 +9,7 @@ Row 0 of the elevation grid is the northernmost row (max_lat).
 
 import json
 import math
+import os
 import struct
 import sys
 
@@ -31,10 +32,20 @@ def main() -> None:
 
     meta_path, data_path, texture_path, output_path, track_path, pins_path, pin_color = argv[:7]
 
+    height_offset = float(argv[7]) if len(argv) > 7  else 200.0
+    fps           = float(argv[8]) if len(argv) > 8  else 30.0
+    speed_mps     = float(argv[9]) if len(argv) > 9  else 80.0
+    pauses_path   = argv[10]       if len(argv) > 10 else None
+
+    pause_schedule: dict = {}
+    if pauses_path and os.path.isfile(pauses_path):
+        with open(pauses_path) as _f:
+            pause_schedule = json.load(_f)
+
     sun_vec = None
-    if len(argv) >= 10:
+    if len(argv) >= 14:
         try:
-            sun_vec = (float(argv[7]), float(argv[8]), float(argv[9]))
+            sun_vec = (float(argv[11]), float(argv[12]), float(argv[13]))
         except ValueError:
             pass
 
@@ -210,12 +221,15 @@ def main() -> None:
     # GPX path ribbon                                                      #
     # ------------------------------------------------------------------ #
 
-    import os
     if os.path.isfile(track_path):
         with open(track_path) as f:
             track_data = json.load(f)
         if len(track_data) >= 2:
-            _build_ribbon(bpy, track_data)
+            _build_ribbon(bpy, track_data, fps=fps, speed_mps=speed_mps,
+                          pause_schedule=pause_schedule)
+            _build_marker(bpy, track_data, height_offset=height_offset,
+                          fps=fps, speed_mps=speed_mps,
+                          pause_schedule=pause_schedule)
 
     # ------------------------------------------------------------------ #
     # Photo waypoint pins (billboards)                                     #
@@ -225,7 +239,7 @@ def main() -> None:
         with open(pins_path) as f:
             pins_data = json.load(f)
         if pins_data:
-            _build_pins(bpy, pins_data, pin_color)
+            _build_pins(bpy, pins_data, pin_color, height_offset)
 
     # Pack the texture so the .blend is self-contained
     bpy.ops.file.pack_all()
@@ -248,22 +262,28 @@ def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
 
 
 def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
-                pin_height: float = 40.0, pin_width: float = 24.0,
-                photo_fraction: float = 0.65,
-                border: float = 1.5, z_offset: float = 3.0) -> None:
+                height_offset: float = 200.0) -> None:
     """Build one billboard pin per waypoint.
 
-    Each pin is a flat mesh in the XY plane (local space) shaped like a
-    Google Maps pin: a rounded rectangle on top with a downward-pointing
-    triangle.  The upper portion shows the photo thumbnail; the body uses
-    the pin color.  A Locked Track constraint keeps the pin always facing
-    the camera.
+    Each pin is a circular disc in the local XZ plane, extruded via a Solidify
+    modifier to give it physical depth.  Pin dimensions and thickness scale with
+    *height_offset* so the pins appear consistent at different camera altitudes.
+    A Locked Track constraint keeps each pin always facing the camera.
     """
-    import mathutils
+    # Scale all dimensions proportionally to camera height so the pins
+    # appear the same angular size regardless of altitude.
+    scale      = height_offset / 200.0
+    pin_width  = 24.0 * scale
+    thickness  = max(2.0, pin_width * 0.3)   # 30% of width, minimum 2 m
+    z_offset   = 3.0 * scale
+    border     = 1.5 * scale
+    _N_CIRCLE  = 20   # polygon segments for the disc
+
+    # Photo face sits just in front of the solidified front face
+    # (LOCKED_TRACK → Y toward camera → negative Y = toward camera)
+    photo_front_y = -(thickness / 2.0 + 0.2 * scale)
 
     pin_r, pin_g, pin_b = _hex_to_rgb(pin_color_hex)
-
-    # Ensure a camera object exists for the constraint target
     cam_obj = next((o for o in bpy.data.objects if o.type == 'CAMERA'), None)
 
     for i, pin in enumerate(pins_data):
@@ -271,50 +291,34 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
         base_y = pin["y"]
         base_z = pin["z"] + z_offset
 
-        hw = pin_width / 2.0     # half width
-        body_top = pin_height    # top of rounded rect
-        body_bot = pin_height * (1.0 - photo_fraction) * 0.5  # bottom of rect body
-        tip_z    = 0.0            # tip of triangle at local origin
+        radius   = pin_width / 2.0
+        center_z = radius   # circle bottom at z=0, top at z=2*radius
 
         # ---------------------------------------------------------------- #
-        # Build the pin outline as a flat mesh in the local XZ plane        #
-        # (X = horizontal, Z = vertical; Y = 0 faces toward camera)         #
-        # Local origin = pin tip (bottom point)                              #
+        # Circular disc in local XZ plane (Y=0); Solidify adds depth       #
         # ---------------------------------------------------------------- #
-
-        # Triangle: tip → lower-left corner → lower-right corner
-        tri_verts = [
-            (0.0,   0.0, tip_z),
-            (-hw,   0.0, body_bot),
-            ( hw,   0.0, body_bot),
+        circle_verts = [
+            (radius * math.cos(2 * math.pi * k / _N_CIRCLE),
+             0.0,
+             center_z + radius * math.sin(2 * math.pi * k / _N_CIRCLE))
+            for k in range(_N_CIRCLE)
         ]
-        # Rectangle body (above triangle)
-        rect_verts = [
-            (-hw,   0.0, body_bot),
-            ( hw,   0.0, body_bot),
-            ( hw,   0.0, body_top),
-            (-hw,   0.0, body_top),
-        ]
-        all_verts = tri_verts + rect_verts  # indices 0-2 triangle, 3-6 rect
-
-        faces = [
-            (0, 1, 2),          # triangle
-            (3, 4, 5, 6),       # rectangle body
-        ]
+        circle_face = list(range(_N_CIRCLE))
 
         pin_mesh = bpy.data.meshes.new(f"Pin_{i}")
-        pin_mesh.from_pydata(all_verts, [], faces)
+        pin_mesh.from_pydata(circle_verts, [], [circle_face])
         pin_mesh.update()
 
-        # ---------------------------------------------------------------- #
-        # Material: pin body color (emission)                               #
-        # ---------------------------------------------------------------- #
+        # Convenience bounds for photo face (inscribed square)
+        hw       = radius * 0.9
+        body_bot = center_z - radius * 0.9
+        body_top = center_z + radius * 0.9
+
         body_mat = bpy.data.materials.new(f"PinBody_{i}")
         body_mat.use_nodes = True
         bnodes = body_mat.node_tree.nodes
         blinks = body_mat.node_tree.links
         bnodes.clear()
-
         emit = bnodes.new("ShaderNodeEmission")
         emit.inputs["Color"].default_value = (pin_r, pin_g, pin_b, 1.0)
         emit.inputs["Strength"].default_value = 2.0
@@ -326,16 +330,21 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
         pin_obj.location = (base_x, base_y, base_z)
         bpy.context.scene.collection.objects.link(pin_obj)
 
+        # Solidify: symmetric extrusion → front face at -thickness/2, back at +thickness/2
+        mod = pin_obj.modifiers.new(name="Solidify", type='SOLIDIFY')
+        mod.thickness = thickness
+        mod.offset = 0.0
+
         # ---------------------------------------------------------------- #
-        # Photo thumbnail plane (upper portion of pin)                      #
+        # Photo thumbnail (sits in front of the solidified front face)     #
         # ---------------------------------------------------------------- #
         photo_path = pin.get("photo_path", "")
         if photo_path and os.path.isfile(photo_path):
             _add_photo_face(bpy, pin_obj, i, photo_path,
-                            hw, body_bot, body_top, border)
+                            hw, body_bot, body_top, border, photo_front_y)
 
         # ---------------------------------------------------------------- #
-        # Always-face-camera constraint                                      #
+        # Always-face-camera constraint                                     #
         # ---------------------------------------------------------------- #
         con = pin_obj.constraints.new(type='LOCKED_TRACK')
         con.track_axis = 'TRACK_Y'
@@ -344,21 +353,16 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
             con.target = cam_obj
 
         # ---------------------------------------------------------------- #
-        # Thin black border outline (slightly larger, rendered behind)       #
+        # Dark border outline (slightly larger circle, same thickness)     #
         # ---------------------------------------------------------------- #
+        out_r = radius + border
         outline_verts = [
-            (0.0,          0.001, tip_z - border),
-            (-hw - border, 0.001, body_bot - border * 0.5),
-            ( hw + border, 0.001, body_bot - border * 0.5),
-            (-hw - border, 0.001, body_bot),
-            ( hw + border, 0.001, body_bot),
-            ( hw + border, 0.001, body_top + border),
-            (-hw - border, 0.001, body_top + border),
+            (out_r * math.cos(2 * math.pi * k / _N_CIRCLE),
+             0.0,
+             center_z + out_r * math.sin(2 * math.pi * k / _N_CIRCLE))
+            for k in range(_N_CIRCLE)
         ]
-        outline_faces = [
-            (0, 1, 2),
-            (3, 4, 5, 6),
-        ]
+        outline_faces = [list(range(_N_CIRCLE))]
         out_mesh = bpy.data.meshes.new(f"PinOutline_{i}")
         out_mesh.from_pydata(outline_verts, [], outline_faces)
         out_mesh.update()
@@ -376,8 +380,13 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
         out_mesh.materials.append(out_mat)
 
         out_obj = bpy.data.objects.new(f"PinOutline_{i}", out_mesh)
-        out_obj.location = (base_x, base_y, base_z - 0.1)
+        out_obj.location = (base_x, base_y, base_z)
         bpy.context.scene.collection.objects.link(out_obj)
+
+        out_mod = out_obj.modifiers.new(name="Solidify", type='SOLIDIFY')
+        out_mod.thickness = thickness + 0.2 * scale
+        out_mod.offset = 0.0
+
         con2 = out_obj.constraints.new(type='LOCKED_TRACK')
         con2.track_axis = 'TRACK_Y'
         con2.lock_axis  = 'LOCK_Z'
@@ -387,17 +396,21 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
 
 def _add_photo_face(bpy, pin_obj, index: int, photo_path: str,
                     hw: float, body_bot: float, body_top: float,
-                    border: float) -> None:
-    """Add a textured quad showing the photo thumbnail inside the pin body."""
+                    border: float, front_y: float) -> None:
+    """Add a textured quad showing the photo thumbnail inside the pin body.
+
+    *front_y* is the local Y coordinate of the front face of the solidified
+    pin, so the photo sits just in front of it (more negative Y = toward camera).
+    """
     pad = border * 1.5
     x0, x1 = -hw + pad,  hw - pad
     z0, z1 = body_bot + pad, body_top - pad
 
     photo_verts = [
-        (x0, -0.01, z0),
-        (x1, -0.01, z0),
-        (x1, -0.01, z1),
-        (x0, -0.01, z1),
+        (x0, front_y, z0),
+        (x1, front_y, z0),
+        (x1, front_y, z1),
+        (x0, front_y, z1),
     ]
     photo_mesh = bpy.data.meshes.new(f"PinPhoto_{index}")
     photo_mesh.from_pydata(photo_verts, [], [(0, 1, 2, 3)])
@@ -417,10 +430,7 @@ def _add_photo_face(bpy, pin_obj, index: int, photo_path: str,
 
     tex_node = nodes.new("ShaderNodeTexImage")
     try:
-        img = bpy.data.images.load(photo_path)
-        # Downscale to a small thumbnail to keep the .blend lightweight
-        img.scale(256, 256)
-        tex_node.image = img
+        tex_node.image = bpy.data.images.load(photo_path)
     except Exception:
         pass
     tex_node.location = (-300, 0)
@@ -441,7 +451,6 @@ def _add_photo_face(bpy, pin_obj, index: int, photo_path: str,
     photo_obj.location = pin_obj.location
     bpy.context.scene.collection.objects.link(photo_obj)
 
-    # Inherit the same face-camera constraint
     con = photo_obj.constraints.new(type='LOCKED_TRACK')
     con.track_axis = 'TRACK_Y'
     con.lock_axis  = 'LOCK_Z'
@@ -471,9 +480,126 @@ def _slope_color(slope: float) -> tuple[float, float, float]:
     return r, g, b
 
 
+def _build_marker(bpy, track_data: list[dict],
+                  height_offset: float = 200.0,
+                  fps: float = 30.0, speed_mps: float = 80.0,
+                  z_offset: float = 4.0,
+                  pause_schedule: dict | None = None) -> None:
+    """Create an animated position marker that travels along the track.
+
+    Strategy:
+      1. Build a NURBS path object through the ribbon centreline.
+      2. Give the marker a Follow Path constraint on that curve.
+      3. Keyframe offset_factor 0→1 over the path duration so the marker
+         moves in sync with the camera (same speed_mps, same fps).
+    """
+    n = len(track_data)
+    ribbon_spacing_m = 5.0
+    frames_per_point = max(1.0, ribbon_spacing_m * fps / speed_mps)
+    fly_total        = (pause_schedule or {}).get("fly_total_frames",
+                                                   int((n - 1) * frames_per_point))
+    total_scene      = (pause_schedule or {}).get("total_scene_frames", fly_total)
+    pauses           = (pause_schedule or {}).get("pauses", [])
+    total_path_frames = max(2, fly_total)
+
+    scale = height_offset / 200.0
+    marker_radius = max(3.0, 8.0 * scale)
+
+    # ------------------------------------------------------------------ #
+    # NURBS path through track centreline                                  #
+    # ------------------------------------------------------------------ #
+    curve_data = bpy.data.curves.new("TrackCurve", type='CURVE')
+    curve_data.dimensions = '3D'
+    curve_data.path_duration = max(2, total_scene)
+
+    spline = curve_data.splines.new('NURBS')
+    spline.points.add(n - 1)          # spline starts with 1 point
+    spline.use_endpoint_u = True      # curve passes through end points
+    spline.order_u = min(4, n)
+
+    for i, pt in enumerate(track_data):
+        spline.points[i].co = (pt["x"], pt["y"], pt["z"] + z_offset, 1.0)
+
+    path_obj = bpy.data.objects.new("TrackCurve", curve_data)
+    bpy.context.scene.collection.objects.link(path_obj)
+
+    # ------------------------------------------------------------------ #
+    # Marker mesh: flat disc                                               #
+    # ------------------------------------------------------------------ #
+    bpy.ops.mesh.primitive_circle_add(
+        vertices=16, radius=marker_radius, fill_type='NGON', location=(0, 0, 0)
+    )
+    marker_obj = bpy.context.object
+    marker_obj.name = "TrackMarker"
+
+    mat = bpy.data.materials.new("TrackMarker")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+    emit = nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    emit.inputs["Strength"].default_value = 3.0
+    out = nodes.new("ShaderNodeOutputMaterial")
+    links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    marker_obj.data.materials.append(mat)
+
+    # ------------------------------------------------------------------ #
+    # Follow Path constraint                                               #
+    # ------------------------------------------------------------------ #
+    con = marker_obj.constraints.new(type='FOLLOW_PATH')
+    con.target = path_obj
+    con.use_fixed_location = True
+    con.use_curve_follow = False
+
+    # Keyframe offset_factor with pause-aware timing:
+    #   - LINEAR between pauses (camera moves → marker moves)
+    #   - CONSTANT during pauses (camera holds → marker holds)
+    last_frame = max(2, total_scene)
+    con.offset_factor = 0.0
+    con.keyframe_insert("offset_factor", frame=1)
+
+    pause_starts: set[int] = set()
+    for pause in pauses:
+        ps = pause["scene_start"]
+        pd = pause["duration"]
+        cb = pause["cumulative_before"]
+        # fly frames elapsed just before this pause
+        fly_before = ps - cb - 1
+        # At pause start: hold at fly_before/fly_total (CONSTANT)
+        con.offset_factor = fly_before / fly_total if fly_total > 0 else 0.0
+        con.keyframe_insert("offset_factor", frame=ps)
+        pause_starts.add(ps)
+        # At pause end: resume from (fly_before+1)/fly_total (LINEAR)
+        con.offset_factor = (fly_before + 1) / fly_total if fly_total > 0 else 0.0
+        con.keyframe_insert("offset_factor", frame=ps + pd)
+
+    con.offset_factor = 1.0
+    con.keyframe_insert("offset_factor", frame=last_frame)
+
+    # Apply interpolation: CONSTANT at pause-start KFs, LINEAR everywhere else
+    action = marker_obj.animation_data.action
+    if action:
+        for fcurve in action.fcurves:
+            if fcurve.data_path.endswith("offset_factor"):
+                for kp in fcurve.keyframe_points:
+                    kp.interpolation = (
+                        'CONSTANT' if int(round(kp.co.x)) in pause_starts
+                        else 'LINEAR'
+                    )
+
+
 def _build_ribbon(bpy, track_data: list[dict],
-                  half_width: float = 5.0, z_offset: float = 2.0) -> None:
-    """Build a flat ribbon mesh along the track, colored by slope grade."""
+                  half_width: float = 5.0, z_offset: float = 2.0,
+                  fps: float = 30.0, speed_mps: float = 80.0,
+                  pause_schedule: dict | None = None) -> None:
+    """Build a flat ribbon mesh along the track, colored by slope grade.
+
+    A Build modifier progressively reveals quads so the ribbon unfolds as the
+    camera travels.  When pause_schedule is provided, the Build modifier's
+    frame_start is keyframed so the ribbon freezes during photo pauses and
+    resumes when the camera moves again.
+    """
     n = len(track_data)
     verts: list[tuple[float, float, float]] = []
     vert_colors: list[tuple[float, float, float]] = []
@@ -533,6 +659,49 @@ def _build_ribbon(bpy, track_data: list[dict],
 
     obj = bpy.data.objects.new("Track", mesh)
     bpy.context.scene.collection.objects.link(obj)
+
+    # Build modifier: reveal one quad per "fly frame" so the ribbon unfolds
+    # in sync with the camera.  frame_duration covers only fly frames;
+    # frame_start is keyframed to advance during pauses so the ribbon freezes.
+    ribbon_spacing_m = 5.0  # must match _RIBBON_SAMPLE_SPACING_M in scene_builder.py
+    frames_per_face = max(1.0, ribbon_spacing_m * fps / speed_mps)
+    fly_total = (pause_schedule or {}).get("fly_total_frames",
+                                           int((n - 1) * frames_per_face))
+
+    build_mod = obj.modifiers.new(name="Unfold", type='BUILD')
+    build_mod.frame_start = 1
+    build_mod.frame_duration = max(1, fly_total)
+    build_mod.use_random_order = False
+
+    pauses = (pause_schedule or {}).get("pauses", [])
+    if pauses:
+        dp = f'modifiers["Unfold"].frame_start'
+        if obj.animation_data is None:
+            obj.animation_data_create()
+        # Initial KF: frame_start=1, CONSTANT (holds until first pause)
+        build_mod.frame_start = 1
+        obj.keyframe_insert(data_path=dp, frame=1)
+        for pause in pauses:
+            ps = pause["scene_start"]
+            pd = pause["duration"]
+            cb = pause["cumulative_before"]
+            # At pause start: frame_start = cb+1 (freeze: LINEAR to cb+pd+1 over pd frames)
+            build_mod.frame_start = cb + 1
+            obj.keyframe_insert(data_path=dp, frame=ps)
+            # At pause end: frame_start = cb+pd+1 (CONSTANT until next pause)
+            build_mod.frame_start = cb + pd + 1
+            obj.keyframe_insert(data_path=dp, frame=ps + pd)
+        # Set interpolation: LINEAR on pause-start KFs, CONSTANT elsewhere
+        pause_starts = {p["scene_start"] for p in pauses}
+        action = obj.animation_data.action
+        if action:
+            for fc in action.fcurves:
+                if fc.data_path == dp:
+                    for kp in fc.keyframe_points:
+                        kp.interpolation = (
+                            'LINEAR' if int(round(kp.co.x)) in pause_starts
+                            else 'CONSTANT'
+                        )
 
     # Material: emission reading vertex color so the ribbon is always visible
     mat = bpy.data.materials.new("TrackRibbon")

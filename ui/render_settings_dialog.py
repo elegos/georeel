@@ -3,7 +3,6 @@ import shutil
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.satellite.providers import PROVIDERS
+from ui.color_picker_dialog import CSS3_COLORS, ColorPickerDialog, get_color_hex
 
 from core.encoder_registry import (
     EncoderConfig,
@@ -45,6 +45,7 @@ KEY_CAMERA_SPEED          = "render/camera_speed_mps"        # metres per second
 KEY_ENGINE                = "render/engine"                  # "eevee" | "cycles"
 KEY_RESOLUTION            = "render/resolution"              # "720p" | "1080p" | "1440p" | "4k"
 KEY_QUALITY               = "render/quality"                 # "low" | "medium" | "high"
+KEY_PHOTO_TZ_OFFSET       = "render/photo_tz_offset_hours"   # float: UTC offset of camera clock
 KEY_PHOTO_TRANSITION      = "render/photo_transition"        # "fade" | "cut"
 KEY_PHOTO_FILL            = "render/photo_fill"              # "blurred" | "black"
 KEY_PHOTO_FADE_DURATION   = "render/photo_fade_duration"     # seconds (float)
@@ -83,26 +84,16 @@ DEFAULTS = {
     KEY_ENCODER:              "libx265",
     KEY_OUTPUT_CQ:            28,
     KEY_OUTPUT_PRESET:        "medium",
+    KEY_PHOTO_TZ_OFFSET:      0.0,
     KEY_TANGENT_LOOKAHEAD_S:  60.0,
     KEY_TANGENT_WEIGHT:       "linear",
     KEY_IMAGERY_PROVIDER:     "esri_world",
     KEY_IMAGERY_QUALITY:      "standard",
     KEY_IMAGERY_API_KEY:      "",
     KEY_IMAGERY_CUSTOM_URL:   "",
-    KEY_PIN_COLOR:            "mustard_yellow",
-    KEY_PIN_CUSTOM_COLOR:     "#ff9900",
+    KEY_PIN_COLOR:            "ForestGreen",
+    KEY_PIN_CUSTOM_COLOR:     "#228B22",
 }
-
-# Named pin color palette: id → (display label, #rrggbb)
-PIN_COLORS: tuple[tuple[str, str, str], ...] = (
-    ("mustard_yellow", "Mustard Yellow", "#ffbf1a"),
-    ("white",          "White",          "#ffffff"),
-    ("red",            "Red",            "#e62617"),
-    ("blue",           "Blue",           "#2673ff"),
-    ("green",          "Green",          "#1abf40"),
-    ("black",          "Black",          "#0d0d0d"),
-    ("custom",         "Custom…",        "#ff9900"),
-)
 
 
 def get_render_settings(settings: QSettings) -> dict:
@@ -305,6 +296,26 @@ class RenderSettingsDialog(QDialog):
     def _build_photos_tab(self) -> QWidget:
         tab, layout = _make_tab()
 
+        tz_group = QGroupBox("Timestamp matching")
+        tz_form = QFormLayout(tz_group)
+        self._tz_offset_spin = QDoubleSpinBox()
+        self._tz_offset_spin.setRange(-14.0, 14.0)
+        self._tz_offset_spin.setSingleStep(0.5)
+        self._tz_offset_spin.setDecimals(1)
+        self._tz_offset_spin.setPrefix("UTC")
+        self._tz_offset_spin.setSuffix(" h")
+        self._tz_offset_spin.setSpecialValueText("")
+        self._tz_offset_spin.setValue(
+            float(self._settings.value(KEY_PHOTO_TZ_OFFSET, DEFAULTS[KEY_PHOTO_TZ_OFFSET]))
+        )
+        tz_form.addRow("Camera clock timezone:", self._tz_offset_spin)
+        tz_note = QLabel(
+            "EXIF timestamps are local time. Set this to the UTC offset "
+            "of the camera's clock (e.g. +2.0 for UTC+2 / CEST)."
+        )
+        tz_note.setWordWrap(True)
+        tz_form.addRow(tz_note)
+
         group = QGroupBox("Photo overlay")
         form = QFormLayout(group)
 
@@ -333,6 +344,7 @@ class RenderSettingsDialog(QDialog):
         )
         form.addRow("Fade duration:", self._fade_dur_spin)
 
+        layout.addWidget(tz_group)
         layout.addWidget(group)
         layout.addStretch()
         return tab
@@ -388,14 +400,13 @@ class RenderSettingsDialog(QDialog):
         group = QGroupBox("Photo waypoint pins")
         form = QFormLayout(group)
 
-        self._pin_color_combo = QComboBox()
-        for cid, clabel, _ in PIN_COLORS:
-            self._pin_color_combo.addItem(clabel, cid)
-        saved_color = self._settings.value(KEY_PIN_COLOR, DEFAULTS[KEY_PIN_COLOR])
-        _set_combo(self._pin_color_combo, saved_color)
-        form.addRow("Pin color:", self._pin_color_combo)
+        saved_name   = self._settings.value(KEY_PIN_COLOR,        DEFAULTS[KEY_PIN_COLOR])
+        saved_custom = self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
 
-        # Color preview swatch + custom picker button on one row
+        self._pin_color_name   = saved_name
+        self._pin_custom_color = saved_custom
+
+        # One row: swatch + resolved name + "Change…" button
         swatch_row = QWidget()
         swatch_layout = QHBoxLayout(swatch_row)
         swatch_layout.setContentsMargins(0, 0, 0, 0)
@@ -405,41 +416,45 @@ class RenderSettingsDialog(QDialog):
         self._pin_swatch.setFixedSize(24, 24)
         self._pin_swatch.setAutoFillBackground(True)
 
-        self._pin_custom_btn = QPushButton("Pick…")
-        self._pin_custom_btn.setFixedWidth(60)
-        self._pin_custom_btn.clicked.connect(self._pick_custom_pin_color)
+        self._pin_color_label = QLabel()
+
+        change_btn = QPushButton("Change…")
+        change_btn.setFixedWidth(80)
+        change_btn.clicked.connect(self._change_pin_color)
 
         swatch_layout.addWidget(self._pin_swatch)
-        swatch_layout.addWidget(self._pin_custom_btn)
+        swatch_layout.addWidget(self._pin_color_label)
+        swatch_layout.addWidget(change_btn)
         swatch_layout.addStretch()
-        form.addRow("", swatch_row)
+        form.addRow("Pin color:", swatch_row)
 
         layout.addWidget(group)
         layout.addStretch()
 
-        self._pin_color_combo.currentIndexChanged.connect(self._on_pin_color_changed)
-        self._on_pin_color_changed()   # set initial swatch
-
+        self._refresh_pin_swatch()
         return tab
 
-    def _on_pin_color_changed(self) -> None:
-        cid = self._pin_color_combo.currentData() or "mustard_yellow"
-        hex_color = next(
-            (h for id_, _, h in PIN_COLORS if id_ == cid),
-            self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR]),
-        )
-        if cid == "custom":
-            hex_color = self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
-        self._pin_custom_btn.setVisible(cid == "custom")
+    def _refresh_pin_swatch(self) -> None:
+        name = self._pin_color_name
+        if name == "custom":
+            hex_color = self._pin_custom_color
+            label_text = f"Custom  {hex_color.upper()}"
+        else:
+            hex_color = get_color_hex(name, self._pin_custom_color)
+            label_text = name
         _set_swatch(self._pin_swatch, hex_color)
+        self._pin_color_label.setText(label_text)
 
-    def _pick_custom_pin_color(self) -> None:
-        current = self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
-        color = QColorDialog.getColor(QColor(current), self, "Pick pin color")
-        if color.isValid():
-            hex_color = color.name()
-            self._settings.setValue(KEY_PIN_CUSTOM_COLOR, hex_color)
-            _set_swatch(self._pin_swatch, hex_color)
+    def _change_pin_color(self) -> None:
+        dlg = ColorPickerDialog(
+            current_name=self._pin_color_name,
+            current_custom_hex=self._pin_custom_color,
+            parent=self,
+        )
+        if dlg.exec() == QDialog.Accepted:
+            self._pin_color_name   = dlg.selected_name()
+            self._pin_custom_color = dlg.custom_hex()
+            self._refresh_pin_swatch()
 
     def _on_provider_changed(self) -> None:
         from core.satellite.providers import get_provider
@@ -626,6 +641,7 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_ENGINE,              self._engine_combo.currentData())
         self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
         self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
+        self._settings.setValue(KEY_PHOTO_TZ_OFFSET,     self._tz_offset_spin.value())
         self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FILL,          self._fill_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FADE_DURATION, self._fade_dur_spin.value())
@@ -638,7 +654,8 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_IMAGERY_QUALITY,    self._imagery_quality_combo.currentData())
         self._settings.setValue(KEY_IMAGERY_API_KEY,    self._api_key_edit.text().strip())
         self._settings.setValue(KEY_IMAGERY_CUSTOM_URL, self._custom_url_edit.text().strip())
-        self._settings.setValue(KEY_PIN_COLOR,        self._pin_color_combo.currentData())
+        self._settings.setValue(KEY_PIN_COLOR,        self._pin_color_name)
+        self._settings.setValue(KEY_PIN_CUSTOM_COLOR, self._pin_custom_color)
         self.accept()
 
 

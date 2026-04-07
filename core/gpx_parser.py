@@ -1,4 +1,5 @@
 import gpxpy
+from datetime import timezone
 
 from .bounding_box import BoundingBox
 from .trackpoint import Trackpoint
@@ -27,7 +28,7 @@ def parse_gpx(path: str) -> tuple[list[Trackpoint], BoundingBox]:
                     latitude=point.latitude,
                     longitude=point.longitude,
                     elevation=point.elevation,
-                    timestamp=point.time.replace(tzinfo=None) if point.time else None,
+                    timestamp=point.time.astimezone(timezone.utc) if point.time else None,
                 ))
 
     if not trackpoints:

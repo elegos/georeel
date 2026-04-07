@@ -1,6 +1,9 @@
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
+
+_log = logging.getLogger(__name__)
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -21,9 +24,13 @@ from .compositor_progress_dialog import CompositorProgressDialog
 from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
     RenderSettingsDialog, get_render_settings,
-    KEY_HEIGHT_OFFSET, KEY_TILT_DEG,
+    KEY_HEIGHT_OFFSET, KEY_TILT_DEG, KEY_PHOTO_TZ_OFFSET,
 )
 from .video_progress_dialog import VideoProgressDialog
+from .preview_map_dialog import PreviewMapDialog
+from .preview_video_dialog import open_preview_video
+from .preview_video_progress_dialog import PreviewVideoProgressDialog
+from .scene_prep_worker import ScenePrepWorker
 
 from core.dem_fetcher import DemFetchError, fetch_dem
 from core.frustum import frustum_margin
@@ -37,6 +44,7 @@ from core.pipeline import Pipeline
 from core.project import ProjectState, load_project, save_project
 from core.camera_path import CameraPathError, build_camera_path
 from core.scene_builder import SceneBuildError, build_scene
+from core.preview_map import PreviewMapError, render_preview_map
 
 from .gpx_drop_area import GpxDropArea
 from .output_file_selector import OutputFileSelector
@@ -68,6 +76,10 @@ class MainWindow(QMainWindow):
         self._cached_satellite_texture: SatelliteTexture | None = None
         self._dirty = False
         self._suppress_dirty = False
+        self._scene_stale = True        # True → stage 5 must rerun in _start()
+        self._scene_prep_worker: ScenePrepWorker | None = None
+        self._pipeline = Pipeline()
+        self._pending_preview: str = "map"  # "map" or "video"
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
 
@@ -85,13 +97,15 @@ class MainWindow(QMainWindow):
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status.showMessage("Ready.")
+        self._status_show("Ready.")
 
         self._build_menu_bar()
 
         self._photo_area.photos_changed.connect(self._on_photos_changed)
         self._photo_area.photos_changed.connect(self._mark_dirty)
+        self._photo_area.photos_changed.connect(self._invalidate_scene)
         self._match_group.buttonClicked.connect(self._mark_dirty)
+        self._match_group.buttonClicked.connect(self._invalidate_scene)
         self._output_selector.path_changed.connect(self._mark_dirty)
 
     # ------------------------------------------------------------------
@@ -111,7 +125,8 @@ class MainWindow(QMainWindow):
 
     def _open_render_settings(self):
         dlg = RenderSettingsDialog(self._settings, parent=self)
-        dlg.exec()
+        if dlg.exec():
+            self._invalidate_scene()
 
     def _build_gpx_group(self) -> QGroupBox:
         group = QGroupBox("GPX Track")
@@ -161,6 +176,16 @@ class MainWindow(QMainWindow):
         self._save_btn.setFixedHeight(36)
         self._save_btn.clicked.connect(self._save_project)
 
+        self._preview_map_btn = QPushButton("Preview Map")
+        self._preview_map_btn.setFixedHeight(36)
+        self._preview_map_btn.setEnabled(False)
+        self._preview_map_btn.clicked.connect(self._show_preview_map)
+
+        self._preview_video_btn = QPushButton("Preview Video")
+        self._preview_video_btn.setFixedHeight(36)
+        self._preview_video_btn.setEnabled(False)
+        self._preview_video_btn.clicked.connect(self._show_preview_video)
+
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedHeight(36)
         self._start_btn.clicked.connect(self._start)
@@ -172,6 +197,8 @@ class MainWindow(QMainWindow):
         row.addWidget(self._load_btn)
         row.addWidget(self._save_btn)
         row.addStretch()
+        row.addWidget(self._preview_map_btn)
+        row.addWidget(self._preview_video_btn)
         row.addWidget(self._start_btn)
         row.addWidget(self._clear_btn)
         return row
@@ -180,9 +207,77 @@ class MainWindow(QMainWindow):
     # Dirty tracking
     # ------------------------------------------------------------------
 
+    def _status_show(self, message: str, level: int = logging.INFO) -> None:
+        """Show *message* in the status bar and log it to the terminal."""
+        _log.log(level, message)
+        self._status.showMessage(message)
+
     def _mark_dirty(self, *_):
         if not self._suppress_dirty:
             self._dirty = True
+
+    def _invalidate_scene(self, *_):
+        """Mark the cached scene as stale so _start() will rebuild it."""
+        self._scene_stale = True
+        self._pipeline.scene = None
+
+    def _trigger_scene_prep(self):
+        """Start a background worker to run stages 1–5 for the preview map."""
+        if not self._gpx_path:
+            return
+        # Cancel any in-flight worker
+        if self._scene_prep_worker and self._scene_prep_worker.isRunning():
+            self._scene_prep_worker.scene_ready.disconnect()
+            self._scene_prep_worker.error.disconnect()
+            self._scene_prep_worker.status.disconnect()
+            self._scene_prep_worker.dem_fetched.disconnect()
+            self._scene_prep_worker.satellite_fetched.disconnect()
+            self._scene_prep_worker.quit()
+
+        render_settings = get_render_settings(self._settings)
+        tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+        blender_exe = self._settings.value("blender/executable_path") or None
+
+        worker = ScenePrepWorker(
+            gpx_path=self._gpx_path,
+            match_mode=self._match_mode(),
+            tz_offset_hours=tz_offset,
+            render_settings=render_settings,
+            blender_exe=blender_exe,
+            cached_elevation_grid=self._cached_elevation_grid,
+            cached_satellite_texture=self._cached_satellite_texture,
+            api_key=self._settings.value("imagery/api_key", ""),
+            custom_url=self._settings.value("imagery/custom_url", ""),
+        )
+        worker.status.connect(self._status_show)
+        worker.dem_fetched.connect(self._on_worker_dem_fetched)
+        worker.satellite_fetched.connect(self._on_worker_satellite_fetched)
+        worker.scene_ready.connect(self._on_worker_scene_ready)
+        worker.error.connect(self._on_worker_error)
+        self._scene_prep_worker = worker
+        worker.start()
+
+    def _on_worker_dem_fetched(self, grid):
+        self._cached_elevation_grid = grid
+        self._mark_dirty()
+
+    def _on_worker_satellite_fetched(self, texture):
+        self._cached_satellite_texture = texture
+        self._mark_dirty()
+
+    def _on_worker_scene_ready(self, blend_path: str, pipeline):
+        self._pipeline = pipeline
+        self._scene_stale = False
+        self._preview_map_btn.setEnabled(True)
+        self._preview_video_btn.setEnabled(True)
+        self._status_show("Scene ready.")
+        if self._pending_preview == "video":
+            self._show_preview_video()
+        else:
+            self._show_preview_map()
+
+    def _on_worker_error(self, message: str):
+        self._status_show(f"Auto-build failed: {message}", level=logging.ERROR)
 
     def _current_state(self) -> ProjectState:
         return ProjectState(
@@ -202,7 +297,10 @@ class MainWindow(QMainWindow):
     def _on_gpx_selected(self, path: str):
         self._gpx_path = path
         self._mark_dirty()
-        self._status.showMessage(f"GPX: {path}")
+        self._status_show(f"GPX: {path}")
+        self._invalidate_scene()
+        self._preview_map_btn.setEnabled(True)
+        self._preview_video_btn.setEnabled(True)
 
     def _on_photos_changed(self):
         ts_ok = self._store.all_have_timestamp
@@ -228,33 +326,146 @@ class MainWindow(QMainWindow):
         checked = self._match_group.checkedButton()
         return checked.property("match_value") if checked else "timestamp"
 
-    def _start(self):
+    def _show_preview_map(self):
         if not self._gpx_path:
-            self._status.showMessage("Please select a GPX file first.")
+            QMessageBox.warning(self, "No GPX", "Please load a GPX file first.")
             return
 
-        self._pipeline = Pipeline()
+        # Scene not ready: build it first, then come back here via the worker signal
+        if self._scene_stale or self._pipeline.scene is None:
+            if self._scene_prep_worker and self._scene_prep_worker.isRunning():
+                self._status_show("Building scene… please wait.")
+                return
+            self._pending_preview = "map"
+            self._preview_map_btn.setEnabled(False)
+            self._preview_video_btn.setEnabled(False)
+            self._status_show("Building scene for preview map…")
+            self._trigger_scene_prep()
+            return
+
+        blender_exe = self._settings.value("blender/executable_path") or None
+        render_settings = get_render_settings(self._settings)
+        res = render_settings.get("render/resolution", "1080p")
+        wh = {"720p": (1280, 720), "1080p": (1920, 1080),
+              "1440p": (2560, 1440), "4k": (3840, 2160)}
+        width, height = wh.get(res, (1920, 1080))
+
+        self._status_show("Rendering preview map…")
+        try:
+            png_path = render_preview_map(
+                self._pipeline.scene,
+                blender_exe=blender_exe,
+                width=width,
+                height=height,
+            )
+        except PreviewMapError as e:
+            QMessageBox.critical(self, "Preview map error", str(e))
+            self._status_show("Preview map rendering failed.")
+            return
+
+        self._status_show(f"Preview map ready: {png_path}")
+        dlg = PreviewMapDialog(png_path, initial_dir=self._last_project_dir(), parent=self)
+        dlg.exec()
+
+    def _show_preview_video(self):
+        if not self._gpx_path:
+            QMessageBox.warning(self, "No GPX", "Please load a GPX file first.")
+            return
+
+        # Scene not ready: trigger auto-build first, then come back via worker signal
+        if self._scene_stale or self._pipeline.scene is None:
+            if self._scene_prep_worker and self._scene_prep_worker.isRunning():
+                self._status_show("Building scene… please wait.")
+                return
+            self._pending_preview = "video"
+            self._preview_map_btn.setEnabled(False)
+            self._preview_video_btn.setEnabled(False)
+            self._status_show("Building scene for preview video…")
+            self._trigger_scene_prep()
+            return
+
+        render_settings = get_render_settings(self._settings)
+
+        # Build camera path if not already done (fast, synchronous)
+        if not self._pipeline.camera_keyframes:
+            self._status_show("Computing camera path…")
+            try:
+                from core.camera_path import CameraPathError, build_camera_path
+                self._pipeline.camera_keyframes = build_camera_path(
+                    self._pipeline, render_settings
+                )
+            except CameraPathError as e:
+                QMessageBox.critical(self, "Camera path error", str(e))
+                self._status_show("Preview video failed: camera path error.")
+                return
+
+        blender_exe = self._settings.value("blender/executable_path") or None
+        self._status_show("Rendering preview video…")
+        dlg = PreviewVideoProgressDialog(
+            self._pipeline, render_settings,
+            blender_exe=blender_exe, parent=self,
+        )
+        if dlg.exec() != PreviewVideoProgressDialog.Accepted:
+            self._status_show("Preview video cancelled or failed.")
+            return
+
+        video_path = dlg.output_path()
+        if not video_path:
+            return
+        self._status_show(f"Preview video ready: {video_path}")
+        open_preview_video(video_path, parent=self)
+
+    def _start(self):
+        if not self._gpx_path:
+            self._status_show("Please select a GPX file first.")
+            return
+
+        # If the background worker is still building the scene, wait for it
+        # to finish rather than starting a duplicate Blender process.
+        if self._scene_prep_worker and self._scene_prep_worker.isRunning():
+            self._status_show(
+                "Scene is still being built in the background — please wait."
+            )
+            return
+
+        # Preserve the background-built pipeline if it is fresh (not stale).
+        # Otherwise start a clean pipeline so all stages run from scratch.
+        if self._scene_stale or self._pipeline.scene is None:
+            self._pipeline = Pipeline()
+
+        # Stages 1–5: skip entirely if the background worker already built
+        # a fresh scene for the current inputs.
+        if not self._scene_stale and self._pipeline.scene is not None:
+            self._status_show(
+                f"Reusing existing scene: {self._pipeline.scene}"
+            )
+            render_settings = get_render_settings(self._settings)
+            # Jump straight to stage 6
+            self._start_from_camera_path(render_settings)
+            return
 
         # Stage 1 — GPX Parser
-        self._status.showMessage("Parsing GPX…")
+        self._status_show("Parsing GPX…")
         try:
             trackpoints, bbox = parse_gpx(self._gpx_path)
         except GpxParseError as e:
             QMessageBox.critical(self, "GPX error", str(e))
-            self._status.showMessage("GPX parsing failed.")
+            self._status_show("GPX parsing failed.")
             return
 
         self._pipeline.trackpoints = trackpoints
         self._pipeline.bounding_box = bbox
-        self._status.showMessage(
+        self._status_show(
             f"GPX parsed: {len(trackpoints)} trackpoints, bounds: {bbox}"
         )
 
         # Stage 2 — Photo Matcher
         photos = self._store.all()
         if photos:
-            self._status.showMessage("Matching photos to trackpoints…")
-            results = match_photos(photos, trackpoints, self._match_mode())
+            self._status_show("Matching photos to trackpoints…")
+            tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+            results = match_photos(photos, trackpoints, self._match_mode(),
+                                   tz_offset_hours=tz_offset)
             self._pipeline.match_results = results
             self._photo_area.update_match_statuses(results)
 
@@ -268,11 +479,11 @@ class MainWindow(QMainWindow):
                     self, "Photo matching failed",
                     f"{len(failed)} photo(s) could not be matched:\n\n{lines}",
                 )
-                self._status.showMessage("Pipeline stopped: photo matching errors.")
+                self._status_show("Pipeline stopped: photo matching errors.")
                 return
 
             warnings = [r for r in results if r.warning]
-            self._status.showMessage(
+            self._status_show(
                 f"Photos matched: {len(results)} ok"
                 + (f", {len(warnings)} warning(s)" if warnings else "")
             )
@@ -296,24 +507,24 @@ class MainWindow(QMainWindow):
             and cached.max_lon >= fetch_bbox.max_lon
         ):
             self._pipeline.elevation_grid = cached
-            self._status.showMessage(
+            self._status_show(
                 f"DEM: using cached grid "
                 f"({cached.rows}×{cached.cols} points)."
             )
         else:
-            self._status.showMessage(
+            self._status_show(
                 f"Fetching DEM (SRTM, {margin_m/1000:.1f} km margin)…"
             )
             try:
                 grid = fetch_dem(fetch_bbox)
             except DemFetchError as e:
                 QMessageBox.critical(self, "DEM error", str(e))
-                self._status.showMessage("Pipeline stopped: DEM fetch failed.")
+                self._status_show("Pipeline stopped: DEM fetch failed.")
                 return
             self._pipeline.elevation_grid = grid
             self._cached_elevation_grid = grid
             self._mark_dirty()
-            self._status.showMessage(
+            self._status_show(
                 f"DEM fetched: {grid.rows}×{grid.cols} points "
                 f"({grid.rows * grid.cols:,} total)."
             )
@@ -332,12 +543,12 @@ class MainWindow(QMainWindow):
             and _quality_rank(cached_sat.quality) >= _quality_rank(img_quality)
         ):
             self._pipeline.satellite_texture = cached_sat
-            self._status.showMessage(
+            self._status_show(
                 f"Satellite: using cached texture "
                 f"({cached_sat.width}×{cached_sat.height} px)."
             )
         else:
-            self._status.showMessage("Fetching satellite imagery…")
+            self._status_show("Fetching satellite imagery…")
             try:
                 source = build_source(
                     provider_id=provider_id,
@@ -348,40 +559,48 @@ class MainWindow(QMainWindow):
                 texture = source.fetch(fetch_bbox)
             except Exception as e:
                 QMessageBox.critical(self, "Satellite imagery error", str(e))
-                self._status.showMessage("Pipeline stopped: satellite fetch failed.")
+                self._status_show("Pipeline stopped: satellite fetch failed.")
                 return
             self._pipeline.satellite_texture = texture
             self._cached_satellite_texture = texture
             self._mark_dirty()
-            self._status.showMessage(
+            self._status_show(
                 f"Satellite imagery fetched: {texture.width}×{texture.height} px."
             )
 
         # Stage 5 — 3D Scene Builder
-        self._status.showMessage("Building 3D scene (Blender)…")
+        self._status_show("Building 3D scene (Blender)…")
         blender_exe = self._settings.value("blender/executable_path") or None
         try:
             blend_path = build_scene(self._pipeline, blender_exe=blender_exe,
                                      settings=render_settings)
         except SceneBuildError as e:
             QMessageBox.critical(self, "Scene build error", str(e))
-            self._status.showMessage("Pipeline stopped: scene build failed.")
+            self._status_show("Pipeline stopped: scene build failed.")
             return
         self._pipeline.scene = blend_path
-        self._status.showMessage(f"3D scene ready: {blend_path}")
+        self._scene_stale = False
+        self._preview_map_btn.setEnabled(True)
+        self._preview_video_btn.setEnabled(True)
+        self._status_show(f"3D scene ready: {blend_path}")
+
+        self._start_from_camera_path(render_settings)
+
+    def _start_from_camera_path(self, render_settings: dict) -> None:
+        """Run stages 6–9, assuming self._pipeline already has stages 1–5."""
 
         # Stage 6 — Camera Path Generator
-        self._status.showMessage("Computing camera path…")
+        self._status_show("Computing camera path…")
         try:
             keyframes = build_camera_path(self._pipeline, render_settings)
         except CameraPathError as e:
             QMessageBox.critical(self, "Camera path error", str(e))
-            self._status.showMessage("Pipeline stopped: camera path failed.")
+            self._status_show("Pipeline stopped: camera path failed.")
             return
         self._pipeline.camera_keyframes = keyframes
         fps = render_settings.get("render/fps", 30)
         duration_s = len(keyframes) / fps
-        self._status.showMessage(
+        self._status_show(
             f"Camera path: {len(keyframes)} frames "
             f"({duration_s:.1f} s at {fps} fps)"
         )
@@ -393,20 +612,20 @@ class MainWindow(QMainWindow):
             blender_exe=blender_exe, parent=self,
         )
         if dlg.exec() != RenderProgressDialog.Accepted:
-            self._status.showMessage("Pipeline stopped: rendering cancelled or failed.")
+            self._status_show("Pipeline stopped: rendering cancelled or failed.")
             return
         self._pipeline.rendered_frames_dir = dlg.frames_dir()
-        self._status.showMessage(
+        self._status_show(
             f"Frames rendered: {self._pipeline.rendered_frames_dir}"
         )
 
         # Stage 8 — Photo Overlay Compositor
         dlg = CompositorProgressDialog(self._pipeline, render_settings, parent=self)
         if dlg.exec() != CompositorProgressDialog.Accepted:
-            self._status.showMessage("Pipeline stopped: compositing cancelled or failed.")
+            self._status_show("Pipeline stopped: compositing cancelled or failed.")
             return
         self._pipeline.composited_frames_dir = dlg.composited_frames_dir()
-        self._status.showMessage(
+        self._status_show(
             f"Compositing done: {self._pipeline.composited_frames_dir}"
         )
 
@@ -414,8 +633,18 @@ class MainWindow(QMainWindow):
         output_path = self._output_selector.output_path()
         if not output_path:
             QMessageBox.warning(self, "No output path", "Please set an output video path before starting.")
-            self._status.showMessage("Pipeline stopped: no output path set.")
+            self._status_show("Pipeline stopped: no output path set.")
             return
+        if Path(output_path).exists():
+            answer = QMessageBox.question(
+                self, "Overwrite file?",
+                f"The file already exists:\n{output_path}\n\nOverwrite it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self._status_show("Pipeline stopped: output file not overwritten.")
+                return
         total_frames = len(self._pipeline.camera_keyframes or [])
         dlg = VideoProgressDialog(
             self._pipeline.composited_frames_dir,
@@ -426,10 +655,10 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         if dlg.exec() != VideoProgressDialog.Accepted:
-            self._status.showMessage("Pipeline stopped: video encoding cancelled or failed.")
+            self._status_show("Pipeline stopped: video encoding cancelled or failed.")
             return
         self._pipeline.output_video_path = output_path
-        self._status.showMessage(f"Done! Video saved: {output_path}")
+        self._status_show(f"Done! Video saved: {output_path}")
 
     # ------------------------------------------------------------------
     # Project persistence
@@ -463,7 +692,7 @@ class MainWindow(QMainWindow):
             self._project_path = path
             self._suggest_output_from_project(path)
             self._dirty = False
-            self._status.showMessage(f"Project saved: {path}")
+            self._status_show(f"Project saved: {path}")
             return True
         except Exception as e:
             QMessageBox.critical(self, "Save failed", str(e))
@@ -518,7 +747,10 @@ class MainWindow(QMainWindow):
         self._project_path = path
         self._suggest_output_from_project(path)
         self._dirty = False
-        self._status.showMessage(f"Project loaded: {path}")
+        self._status_show(f"Project loaded: {path}")
+        if self._gpx_path:
+            self._preview_map_btn.setEnabled(True)
+            self._preview_video_btn.setEnabled(True)
 
     def _clear(self):
         self._suppress_dirty = True
@@ -536,8 +768,14 @@ class MainWindow(QMainWindow):
         self._cached_elevation_grid = None
         self._cached_satellite_texture = None
         self._project_path = None
+        self._pipeline = Pipeline()
+        self._scene_stale = True
+        self._preview_map_btn.setEnabled(False)
+        self._preview_video_btn.setEnabled(False)
+        if self._scene_prep_worker and self._scene_prep_worker.isRunning():
+            self._scene_prep_worker.quit()
         self._dirty = False
-        self._status.showMessage("Cleared.")
+        self._status_show("Cleared.")
 
     # ------------------------------------------------------------------
     # Close / unsaved-changes guard

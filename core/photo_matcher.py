@@ -1,4 +1,5 @@
 import math
+from datetime import timedelta, timezone
 
 from .match_result import MatchResult
 from .photo_metadata import PhotoMetadata
@@ -13,12 +14,19 @@ def match_photos(
     photos: list[PhotoMetadata],
     trackpoints: list[Trackpoint],
     mode: str,
+    tz_offset_hours: float = 0.0,
 ) -> list[MatchResult]:
     """Match each photo to its nearest trackpoint using the given strategy.
 
     mode: "timestamp" | "gps" | "both"
+
+    tz_offset_hours: UTC offset of the camera clock, e.g. +2.0 for UTC+2.
+      EXIF DateTimeOriginal is local time with no embedded timezone; this
+      offset converts it to UTC so it can be compared against GPX timestamps
+      (which are always stored in UTC).
     """
-    return [_match_one(photo, trackpoints, mode) for photo in photos]
+    tz = timezone(timedelta(hours=tz_offset_hours))
+    return [_match_one(photo, trackpoints, mode, tz) for photo in photos]
 
 
 # ------------------------------------------------------------------
@@ -29,12 +37,13 @@ def _match_one(
     photo: PhotoMetadata,
     trackpoints: list[Trackpoint],
     mode: str,
+    tz: timezone,
 ) -> MatchResult:
     if mode == "timestamp":
-        return _match_by_timestamp(photo, trackpoints)
+        return _match_by_timestamp(photo, trackpoints, tz)
     if mode == "gps":
         return _match_by_gps(photo, trackpoints)
-    return _match_by_both(photo, trackpoints)
+    return _match_by_both(photo, trackpoints, tz)
 
 
 # ------------------------------------------------------------------
@@ -44,6 +53,7 @@ def _match_one(
 def _match_by_timestamp(
     photo: PhotoMetadata,
     trackpoints: list[Trackpoint],
+    tz: timezone,
 ) -> MatchResult:
     if not photo.has_timestamp:
         return MatchResult(photo_path=photo.path, error="No timestamp in EXIF")
@@ -52,9 +62,13 @@ def _match_by_timestamp(
     if not timed:
         return MatchResult(photo_path=photo.path, error="No trackpoints have timestamps")
 
+    # Attach the user-supplied UTC offset to the naive EXIF timestamp so that
+    # subtraction against the UTC-aware GPX timestamps is unambiguous.
+    photo_utc = photo.timestamp.replace(tzinfo=tz)
+
     best_i, _ = min(
         timed,
-        key=lambda x: abs((x[1].timestamp - photo.timestamp).total_seconds()),
+        key=lambda x: abs((x[1].timestamp - photo_utc).total_seconds()),
     )
     return MatchResult(photo_path=photo.path, trackpoint_index=best_i)
 
@@ -79,6 +93,7 @@ def _match_by_gps(
 def _match_by_both(
     photo: PhotoMetadata,
     trackpoints: list[Trackpoint],
+    tz: timezone,
 ) -> MatchResult:
     has_gps = photo.has_gps
     has_ts = photo.has_timestamp
@@ -93,11 +108,11 @@ def _match_by_both(
         return _match_by_gps(photo, trackpoints)
 
     if has_ts and not has_gps:
-        return _match_by_timestamp(photo, trackpoints)
+        return _match_by_timestamp(photo, trackpoints, tz)
 
     # Both available: GPS is primary; warn if the two methods disagree.
     gps_result = _match_by_gps(photo, trackpoints)
-    ts_result = _match_by_timestamp(photo, trackpoints)
+    ts_result = _match_by_timestamp(photo, trackpoints, tz)
 
     warning = None
     if gps_result.trackpoint_index != ts_result.trackpoint_index:

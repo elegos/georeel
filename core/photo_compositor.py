@@ -71,10 +71,11 @@ def composite_photos(
     if total == 0:
         raise CompositorError("No rendered frames found in source directory.")
 
-    # Group keyframes into consecutive blocks: (is_pause, photo_path) → [frames]
-    # We process src_frames sequentially; for each pause block we need the
-    # first and last terrain frame for fading.
+    # Group keyframes into pause / non-pause blocks, then collapse short
+    # fly-through gaps between consecutive photo blocks so photos are shown
+    # back-to-back without the terrain briefly reappearing in between.
     blocks = _build_blocks(pipeline.camera_keyframes)
+    blocks = _absorb_photo_gaps(blocks, max_gap=max(1, fade_frames * 2))
 
     # Preload photo frames for each unique photo_path (resized once per photo)
     photo_cache: dict[str, Image.Image] = {}
@@ -162,6 +163,36 @@ def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict]:
         frames = [kf.frame for kf in group]
         blocks.append({"is_pause": is_pause, "photo_path": photo_path, "frames": frames})
     return blocks
+
+
+def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> list[dict]:
+    """Absorb short fly-through gaps between consecutive photo pause blocks.
+
+    When two photo blocks are separated by ≤ *max_gap* fly frames, those
+    terrain frames are folded into the preceding photo block so the map
+    never flashes between photos.  The compositor then shows photo A for
+    the gap frames (fading into photo B as its block starts), giving a
+    clean photo-to-photo cross-fade with no terrain in between.
+    """
+    result: list[dict] = []
+    i = 0
+    while i < len(blocks):
+        current = blocks[i]
+        # Repeatedly try to absorb the next fly gap into this pause block
+        while (
+            current["is_pause"]
+            and i + 2 < len(blocks)
+            and not blocks[i + 1]["is_pause"]
+            and blocks[i + 2]["is_pause"]
+            and len(blocks[i + 1]["frames"]) <= max_gap
+        ):
+            # Extend this pause block to cover the gap frames
+            current = dict(current)
+            current["frames"] = current["frames"] + blocks[i + 1]["frames"]
+            i += 2  # consume current + fly gap; next iteration sees blocks[i+2]
+        result.append(current)
+        i += 1
+    return result
 
 
 def _fit_photo(photo: Image.Image, out_w: int, out_h: int, fill: str) -> Image.Image:

@@ -109,7 +109,7 @@ def main() -> None:
     # Render frame by frame                                                #
     # ------------------------------------------------------------------ #
 
-    for kf in keyframes_data:
+    for seq_idx, kf in enumerate(keyframes_data):
         frame   = kf["frame"]
         pos     = Vector((kf["x"],        kf["y"],        kf["z"]))
         look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
@@ -127,10 +127,12 @@ def main() -> None:
         cam_obj.rotation_quaternion = rot_quat
 
         scene.frame_set(frame)
-        scene.render.filepath = f"{output_dir}/{frame:06d}"
+        scene.render.filepath = f"{output_dir}/{seq_idx:06d}"
         bpy.ops.render.render(write_still=True)
 
-        print(f"Fra:{frame}/{total - 1}", flush=True)
+        # Report sequential index (not timeline frame number) so the host
+        # progress bar stays in [0, total-1].
+        print(f"Fra:{seq_idx}/{total - 1}", flush=True)
 
     print(f"[georeel] Rendered {total} frames to {output_dir}")
 

@@ -1,9 +1,12 @@
 import json
+import logging
 import math
 import shlex
 import subprocess
 import tempfile
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 import numpy as np
 from scipy.interpolate import splev, splprep
@@ -47,12 +50,19 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None,
 
     work_dir = Path(tempfile.mkdtemp(prefix="georeel_scene_"))
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
-    tex_path = _write_texture(pipeline.satellite_texture, work_dir)
-    track_path = _write_track(pipeline, work_dir)
-    pins_path = _write_pins(pipeline, work_dir)
+    tex_path = _write_texture(pipeline.satellite_texture, pipeline.elevation_grid, work_dir)
+    settings = settings or {}
+    track_path, ribbon_points = _write_track(pipeline, work_dir)
+    pins_path = _write_pins(pipeline, work_dir, settings)
+    pause_schedule = _compute_pause_schedule(pipeline, settings, ribbon_points)
+    pauses_path = work_dir / "pauses.json"
+    pauses_path.write_text(json.dumps(pause_schedule))
     blend_path = work_dir / "scene.blend"
 
-    pin_color = _resolve_pin_color(settings or {})
+    pin_color     = _resolve_pin_color(settings)
+    height_offset = float(settings.get("render/camera_height_offset", 200))
+    fps           = float(settings.get("render/fps", 30))
+    speed_mps     = float(settings.get("render/camera_speed_mps", 80.0))
 
     cmd = [
         exe,
@@ -66,6 +76,10 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None,
         str(track_path),
         str(pins_path),
         pin_color,
+        str(height_offset),
+        str(fps),
+        str(speed_mps),
+        str(pauses_path),
     ] + _sun_args(pipeline)
 
     try:
@@ -81,8 +95,14 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None,
             f"Blender timed out after {_TIMEOUT_SECONDS // 60} minutes."
         )
 
+    blender_output = (result.stderr or "") + (result.stdout or "")
+    if blender_output:
+        _log.debug("Blender output:\n%s", blender_output)
+
     if result.returncode != 0 or not blend_path.is_file():
-        tail = (result.stderr or result.stdout or "")[-2000:]
+        _log.error("Blender scene build failed (exit %d):\n%s",
+                   result.returncode, blender_output)
+        tail = blender_output[-2000:]
         raise SceneBuildError(
             f"Blender scene build failed (exit {result.returncode}).\n{tail}"
         )
@@ -113,14 +133,18 @@ def _sun_args(pipeline: "Pipeline") -> list[str]:
 _RIBBON_SAMPLE_SPACING_M = 5.0  # resample every 5 m for smooth curves
 
 
-def _write_track(pipeline: "Pipeline", work_dir: Path) -> Path:
+def _write_track(pipeline: "Pipeline", work_dir: Path) -> tuple[Path, list[dict]]:
     """Project trackpoints onto a B-spline, resample at 5 m intervals,
-    sample elevation from the DEM, compute slope, and write JSON."""
+    sample elevation from the DEM, compute slope, and write JSON.
+
+    Returns (track_path, ribbon_points) where ribbon_points is the list of
+    {x, y, z, slope} dicts — used by _compute_pause_schedule without re-parsing.
+    """
     track_path = work_dir / "track.json"
 
     if not pipeline.trackpoints or pipeline.elevation_grid is None:
         track_path.write_text("[]")
-        return track_path
+        return track_path, []
 
     grid = pipeline.elevation_grid
     mean_lat_rad = math.radians((grid.min_lat + grid.max_lat) / 2)
@@ -143,7 +167,7 @@ def _write_track(pipeline: "Pipeline", work_dir: Path) -> Path:
                    "slope": 0.0}
                   for x, y in raw]
         track_path.write_text(json.dumps(points))
-        return track_path
+        return track_path, points
 
     pts = np.array(raw)
 
@@ -186,7 +210,7 @@ def _write_track(pipeline: "Pipeline", work_dir: Path) -> Path:
         points.append({"x": x, "y": y, "z": z, "slope": slope})
 
     track_path.write_text(json.dumps(points))
-    return track_path
+    return track_path, points
 
 
 def _elev_at_xy(x: float, y: float, grid: "ElevationGrid",
@@ -196,8 +220,14 @@ def _elev_at_xy(x: float, y: float, grid: "ElevationGrid",
     return grid.elevation_at(lat, lon)
 
 
-def _write_pins(pipeline: "Pipeline", work_dir: Path) -> Path:
-    """Write per-waypoint pin data (scene XY, elevation, photo path) as JSON."""
+def _write_pins(pipeline: "Pipeline", work_dir: Path,
+                settings: dict | None = None) -> Path:
+    """Write per-waypoint pin data (scene XY, elevation, photo path) as JSON.
+
+    Pins sharing the same trackpoint are spread horizontally so they don't
+    overlap and cause flickering.  Spread step scales with camera height so
+    the separation is consistent across zoom levels.
+    """
     pins_path = work_dir / "pins.json"
 
     if not pipeline.match_results or pipeline.elevation_grid is None:
@@ -209,7 +239,14 @@ def _write_pins(pipeline: "Pipeline", work_dir: Path) -> Path:
     lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
     lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
 
-    pins: list[dict] = []
+    height_offset = float((settings or {}).get("render/camera_height_offset", 200))
+    scale = height_offset / 200.0
+    # Spread step = 1.5 × scaled pin width so adjacent pins have a small gap
+    spread_step_m = 24.0 * scale * 1.5
+
+    # Collect raw pins, keyed by trackpoint_index to detect collisions
+    from collections import defaultdict
+    groups: dict[int, list[dict]] = defaultdict(list)
     for r in pipeline.match_results:
         if not r.ok or r.trackpoint_index is None:
             continue
@@ -217,19 +254,108 @@ def _write_pins(pipeline: "Pipeline", work_dir: Path) -> Path:
         x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
         y = (tp.latitude  - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
         z = grid.elevation_at(tp.latitude, tp.longitude)
-        pins.append({"x": x, "y": y, "z": z, "photo_path": r.photo_path})
+        groups[r.trackpoint_index].append({"x": x, "y": y, "z": z,
+                                            "photo_path": r.photo_path})
+
+    pins: list[dict] = []
+    for tp_idx in sorted(groups):
+        group = sorted(groups[tp_idx], key=lambda p: p["photo_path"])
+        n = len(group)
+        for k, pin in enumerate(group):
+            if n == 1:
+                dx, dy = 0.0, 0.0
+            else:
+                # Arrange evenly on a circle around the trackpoint
+                angle = 2 * math.pi * k / n
+                dx = spread_step_m * math.cos(angle)
+                dy = spread_step_m * math.sin(angle)
+            pins.append({
+                "x": pin["x"] + dx,
+                "y": pin["y"] + dy,
+                "z": pin["z"],
+                "photo_path": pin["photo_path"],
+            })
 
     pins_path.write_text(json.dumps(pins))
     return pins_path
 
 
+def _compute_pause_schedule(
+    pipeline: "Pipeline",
+    settings: dict,
+    ribbon_points: list[dict],
+) -> dict:
+    """Compute when each photo pause happens in the scene timeline.
+
+    Uses the same logic as camera_path._insert_pauses but works from
+    ribbon geometry rather than the full camera keyframe list, since
+    scene building happens before camera path generation.
+
+    Returns a dict suitable for JSON serialisation:
+      fly_total_frames  — non-pause frames (ribbon travel only)
+      total_scene_frames — fly + all pause frames
+      pauses — list of {scene_start, duration, cumulative_before}
+    """
+    fps           = float(settings.get("render/fps", 30))
+    speed_mps     = float(settings.get("render/camera_speed_mps", 80.0))
+    pause_dur     = float(settings.get("render/photo_pause_duration", 3.0))
+    pause_frames  = max(1, round(pause_dur * fps))
+    dist_per_frame = speed_mps / fps
+
+    n_ribbon = len(ribbon_points)
+    total_ribbon_len = (n_ribbon - 1) * _RIBBON_SAMPLE_SPACING_M if n_ribbon > 1 else 0.0
+    fly_total = max(2, int(total_ribbon_len / dist_per_frame))
+
+    pauses: list[dict] = []
+
+    if pipeline.match_results and pipeline.elevation_grid is not None and n_ribbon >= 2:
+        grid = pipeline.elevation_grid
+        mean_lat_rad = math.radians((grid.min_lat + grid.max_lat) / 2)
+        lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
+        lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
+
+        ribbon_xy = np.array([(p["x"], p["y"]) for p in ribbon_points])
+
+        # Collect (fly_frame, photo_path) per matched result — same order as _insert_pauses
+        waypoints: list[tuple[int, str]] = []
+        for r in pipeline.match_results:
+            if not r.ok or r.trackpoint_index is None:
+                continue
+            tp = pipeline.trackpoints[r.trackpoint_index]
+            x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
+            y = (tp.latitude  - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
+            dists = np.sqrt((ribbon_xy[:, 0] - x) ** 2 + (ribbon_xy[:, 1] - y) ** 2)
+            nearest_idx = int(np.argmin(dists))
+            fly_frame = max(0, round(nearest_idx * _RIBBON_SAMPLE_SPACING_M / dist_per_frame))
+            waypoints.append((fly_frame, r.photo_path or ""))
+
+        waypoints.sort(key=lambda w: w[0])
+
+        cumulative_pause = 0
+        for fly_frame, _ in waypoints:
+            scene_start = fly_frame + cumulative_pause + 1   # Blender frames are 1-indexed
+            pauses.append({
+                "scene_start":        scene_start,
+                "duration":           pause_frames,
+                "cumulative_before":  cumulative_pause,
+            })
+            cumulative_pause += pause_frames
+
+    total_scene_frames = fly_total + sum(p["duration"] for p in pauses)
+    return {
+        "fly_total_frames":   fly_total,
+        "total_scene_frames": total_scene_frames,
+        "pauses":             pauses,
+    }
+
+
 def _resolve_pin_color(settings: dict) -> str:
     """Return a #rrggbb color string for the pin from settings."""
-    from ui.render_settings_dialog import PIN_COLORS  # type: ignore[import]
-    color_id = settings.get("pins/color", "mustard_yellow")
+    from ui.color_picker_dialog import get_color_hex  # type: ignore[import]
+    color_id = settings.get("pins/color", "ForestGreen")
     if color_id == "custom":
-        return settings.get("pins/custom_color", "#ffbf1a")
-    return next((h for cid, _, h in PIN_COLORS if cid == color_id), "#ffbf1a")
+        return settings.get("pins/custom_color", "#228B22")
+    return get_color_hex(color_id, "#228B22")
 
 
 def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
@@ -248,7 +374,43 @@ def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
     return meta_path, data_path
 
 
-def _write_texture(texture: SatelliteTexture, work_dir: Path) -> Path:
+def _write_texture(texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path) -> Path:
+    """Save the satellite texture, cropped to the DEM grid's geographic bounds.
+
+    The satellite and DEM may cover slightly different extents when cached data
+    from a previous run (with a different frustum margin) is reused.  Without
+    cropping, the terrain UV mapping [0,1] spans the DEM extent while the PNG
+    covers a different extent, causing the imagery to appear spatially offset.
+    """
+    import io
+    from PIL import Image as _PILImage
+
+    img = texture.image
+
+    bounds_match = (
+        abs(texture.min_lat - grid.min_lat) < 1e-9 and
+        abs(texture.max_lat - grid.max_lat) < 1e-9 and
+        abs(texture.min_lon - grid.min_lon) < 1e-9 and
+        abs(texture.max_lon - grid.max_lon) < 1e-9
+    )
+
+    if not bounds_match:
+        w, h = img.size
+        lat_span = texture.max_lat - texture.min_lat
+        lon_span = texture.max_lon - texture.min_lon
+        # Convert DEM geographic bounds to pixel coordinates within the satellite image.
+        # Satellite image: row 0 = max_lat (north), col 0 = min_lon (west).
+        left   = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
+        right  = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
+        top    = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
+        bottom = int(round((texture.max_lat - grid.min_lat) / lat_span * h))
+        left, right = max(0, left), min(w, right)
+        top, bottom = max(0, top), min(h, bottom)
+        if right > left and bottom > top:
+            img = img.crop((left, top, right, bottom))
+
     tex_path = work_dir / "satellite.png"
-    tex_path.write_bytes(texture.to_png_bytes())
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG", optimize=False)
+    tex_path.write_bytes(buf.getvalue())
     return tex_path
