@@ -9,6 +9,6 @@
     "request": "launch",
     "args": [],
     "cwd": "$ZED_WORKTREE_ROOT",
-    "program": "main.py",
+    "program": "src/georeel/main.py",
   },
 ]

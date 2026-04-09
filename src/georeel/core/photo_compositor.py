@@ -88,74 +88,34 @@ def composite_photos(
     blocks = _build_blocks(pipeline.camera_keyframes)
     blocks = _absorb_photo_gaps(blocks, max_gap=max(1, fade_frames * 2))
 
-    # Preload photo frames for each unique photo_path (resized once per photo)
+    # Consecutive pause blocks form a carousel: each photo is shown for its
+    # own duration and photos cross-fade into each other.  Terrain fades only
+    # appear at the very first and very last boundary of a run.
+    runs = _group_into_runs(blocks)
+
     photo_cache: dict[str, Image.Image] = {}
 
     done = 0
-    for block in blocks:
+    for run in runs:
         if cancel_check and cancel_check():
             raise CompositorError("Compositing cancelled.")
 
-        if not block["is_pause"]:
+        if not run[0]["is_pause"]:
             # Regular fly-through frames — copy as-is
-            for frame_num in block["frames"]:
-                src = src_dir / f"{frame_num - 1:06d}.png"
-                if src.exists():
-                    shutil.copy(src, out_dir / src.name)
-                done += 1
-                if progress_cb:
-                    progress_cb(done, total)
-        else:
-            photo_path = block["photo_path"]
-            frame_nums = block["frames"]
-            n = len(frame_nums)
-
-            if photo_path is None or n == 0:
-                # No photo associated — copy terrain frames
-                for frame_num in frame_nums:
+            for block in run:
+                for frame_num in block["frames"]:
                     src = src_dir / f"{frame_num - 1:06d}.png"
                     if src.exists():
                         shutil.copy(src, out_dir / src.name)
                     done += 1
                     if progress_cb:
                         progress_cb(done, total)
-                continue
-
-            # Load and fit the photo
-            if photo_path not in photo_cache:
-                photo_cache[photo_path] = _fit_photo(
-                    Image.open(photo_path), out_w, out_h, fill
-                )
-            photo_img = photo_cache[photo_path]
-
-            # Determine fade range within this block
-            if transition == "fade":
-                actual_fade = min(fade_frames, n // 2)
-            else:
-                actual_fade = 0
-
-            for i, frame_num in enumerate(frame_nums):
-                src_path = src_dir / f"{frame_num - 1:06d}.png"
-
-                if actual_fade > 0 and i < actual_fade:
-                    # Fade in: blend terrain → photo
-                    alpha = (i + 1) / (actual_fade + 1)
-                    terrain = _load_rgb(src_path, out_w, out_h)
-                    frame_img = Image.blend(terrain, photo_img, alpha)
-                elif actual_fade > 0 and i >= n - actual_fade:
-                    # Fade out: blend photo → terrain
-                    steps_from_end = n - i
-                    alpha = steps_from_end / (actual_fade + 1)
-                    terrain = _load_rgb(src_path, out_w, out_h)
-                    frame_img = Image.blend(terrain, photo_img, alpha)
-                else:
-                    # Full photo
-                    frame_img = photo_img
-
-                frame_img.save(out_dir / f"{frame_num - 1:06d}.png")
-                done += 1
-                if progress_cb:
-                    progress_cb(done, total)
+        else:
+            done = _composite_pause_run(
+                run, src_dir, out_dir, out_w, out_h, fill,
+                transition, fade_frames, photo_cache,
+                done, total, progress_cb,
+            )
 
     return str(out_dir)
 
@@ -163,6 +123,110 @@ def composite_photos(
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _group_into_runs(blocks: list[dict]) -> list[list[dict]]:
+    """Group consecutive pause blocks into carousel runs.
+
+    Non-pause blocks are each their own single-element run.
+    """
+    runs: list[list[dict]] = []
+    i = 0
+    while i < len(blocks):
+        if blocks[i]["is_pause"]:
+            run = [blocks[i]]
+            while i + 1 < len(blocks) and blocks[i + 1]["is_pause"]:
+                i += 1
+                run.append(blocks[i])
+            runs.append(run)
+        else:
+            runs.append([blocks[i]])
+        i += 1
+    return runs
+
+
+def _composite_pause_run(
+    run: list[dict],
+    src_dir: Path, out_dir: Path,
+    out_w: int, out_h: int, fill: str,
+    transition: str, fade_frames: int,
+    photo_cache: dict[str, Image.Image],
+    done: int, total: int,
+    progress_cb,
+) -> int:
+    """Composite a run of consecutive pause blocks as a photo carousel.
+
+    - Terrain fade-in applies only at the start of the first photo.
+    - Terrain fade-out applies only at the end of the last photo.
+    - Between photos a cross-fade is used: the last *fade_frames* of photo A
+      blend A→B so that B is already fully visible at the start of its block.
+    """
+    # Preload all photos in the run
+    for block in run:
+        photo_path = block["photo_path"]
+        if photo_path and photo_path not in photo_cache:
+            photo_cache[photo_path] = _fit_photo(
+                Image.open(photo_path), out_w, out_h, fill
+            )
+
+    n_photos = len(run)
+
+    for p_idx, block in enumerate(run):
+        photo_path = block["photo_path"]
+        frame_nums = block["frames"]
+        n = len(frame_nums)
+        is_first = p_idx == 0
+        is_last  = p_idx == n_photos - 1
+
+        photo_img = photo_cache.get(photo_path) if photo_path else None
+
+        if photo_img is None or n == 0:
+            for frame_num in frame_nums:
+                src = src_dir / f"{frame_num - 1:06d}.png"
+                if src.exists():
+                    shutil.copy(src, out_dir / src.name)
+                done += 1
+                if progress_cb:
+                    progress_cb(done, total)
+            continue
+
+        actual_fade = min(fade_frames, n // 2) if transition == "fade" else 0
+
+        next_photo_img: Image.Image | None = None
+        if not is_last and actual_fade > 0:
+            next_path = run[p_idx + 1]["photo_path"]
+            next_photo_img = photo_cache.get(next_path) if next_path else None
+
+        for j, frame_num in enumerate(frame_nums):
+            src_path = src_dir / f"{frame_num - 1:06d}.png"
+
+            if is_first and actual_fade > 0 and j < actual_fade:
+                # Terrain → first photo fade-in
+                alpha = (j + 1) / (actual_fade + 1)
+                terrain = _load_rgb(src_path, out_w, out_h)
+                frame_img = Image.blend(terrain, photo_img, alpha)
+
+            elif not is_last and actual_fade > 0 and j >= n - actual_fade and next_photo_img is not None:
+                # Cross-fade current photo → next photo
+                alpha = (j - (n - actual_fade) + 1) / (actual_fade + 1)
+                frame_img = Image.blend(photo_img, next_photo_img, alpha)
+
+            elif is_last and actual_fade > 0 and j >= n - actual_fade:
+                # Last photo → terrain fade-out
+                steps_from_end = n - j
+                alpha = steps_from_end / (actual_fade + 1)
+                terrain = _load_rgb(src_path, out_w, out_h)
+                frame_img = Image.blend(terrain, photo_img, alpha)
+
+            else:
+                frame_img = photo_img
+
+            frame_img.save(out_dir / f"{frame_num - 1:06d}.png")
+            done += 1
+            if progress_cb:
+                progress_cb(done, total)
+
+    return done
+
 
 def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict]:
     """Group consecutive keyframes into pause / non-pause blocks."""
