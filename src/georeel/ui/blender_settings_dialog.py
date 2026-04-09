@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.blender_runtime import (
+from georeel.core.blender_runtime import (
     AVAILABLE_VERSIONS,
     DEFAULT_VERSION,
     BlenderVersion,

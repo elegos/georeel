@@ -9,56 +9,59 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.blender_runtime import BlenderDownloadError, BlenderVersion, download_blender
+from georeel.core.photo_compositor import CompositorError, composite_photos
+from georeel.core.pipeline import Pipeline
 
 
 class _Worker(QObject):
-    progress = Signal(int, int)   # downloaded, total
-    finished = Signal(str)        # executable path
-    failed = Signal(str)          # error message
+    progress = Signal(int, int)   # done, total
+    finished = Signal(str)        # composited_frames_dir
+    failed   = Signal(str)        # error message
 
-    def __init__(self, version: BlenderVersion):
+    def __init__(self, pipeline: Pipeline, settings: dict):
         super().__init__()
-        self._version = version
-        self._cancel = threading.Event()
+        self._pipeline = pipeline
+        self._settings = settings
+        self._cancel   = threading.Event()
 
     def cancel(self):
         self._cancel.set()
 
     def run(self):
         try:
-            path = download_blender(
-                self._version,
-                progress_cb=lambda dl, tot: self.progress.emit(dl, tot),
+            out_dir = composite_photos(
+                self._pipeline,
+                self._settings,
+                progress_cb=lambda done, total: self.progress.emit(done, total),
                 cancel_check=self._cancel.is_set,
             )
-            self.finished.emit(path)
-        except BlenderDownloadError as e:
+            self.finished.emit(out_dir)
+        except CompositorError as e:
             self.failed.emit(str(e))
         except Exception as e:
             self.failed.emit(f"Unexpected error: {e}")
 
 
-class BlenderDownloadDialog(QDialog):
-    """Shows download progress and allows cancellation."""
+class CompositorProgressDialog(QDialog):
+    """Shows photo compositing progress with a cancel button."""
 
-    def __init__(self, version: BlenderVersion, parent=None):
+    def __init__(self, pipeline: Pipeline, settings: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Downloading Blender {version.label}")
-        self.setMinimumWidth(420)
+        self.setWindowTitle("Compositing photo overlays")
+        self.setMinimumWidth(440)
         self.setModal(True)
 
-        self._executable: str | None = None
+        self._out_dir: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
 
-        self._label = QLabel(f"Downloading Blender {version.label}…")
+        self._label = QLabel("Preparing…")
         layout.addWidget(self._label)
 
         self._bar = QProgressBar()
-        self._bar.setRange(0, 0)   # indeterminate until we have Content-Length
+        self._bar.setRange(0, 0)
         layout.addWidget(self._bar)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
@@ -66,9 +69,8 @@ class BlenderDownloadDialog(QDialog):
         layout.addWidget(buttons)
         self._cancel_btn = buttons.button(QDialogButtonBox.Cancel)
 
-        # Worker + thread
         self._thread = QThread(self)
-        self._worker = _Worker(version)
+        self._worker = _Worker(pipeline, settings)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -80,8 +82,8 @@ class BlenderDownloadDialog(QDialog):
 
     # ------------------------------------------------------------------
 
-    def executable(self) -> str | None:
-        return self._executable
+    def composited_frames_dir(self) -> str | None:
+        return self._out_dir
 
     # ------------------------------------------------------------------
 
@@ -90,19 +92,13 @@ class BlenderDownloadDialog(QDialog):
         self._label.setText("Cancelling…")
         self._cancel_btn.setEnabled(False)
 
-    def _on_progress(self, downloaded: int, total: int):
-        if total > 0:
-            self._bar.setRange(0, total)
-            self._bar.setValue(downloaded)
-            mb = downloaded / 1_048_576
-            total_mb = total / 1_048_576
-            self._label.setText(f"Downloading… {mb:.1f} / {total_mb:.1f} MB")
-        else:
-            mb = downloaded / 1_048_576
-            self._label.setText(f"Downloading… {mb:.1f} MB")
+    def _on_progress(self, done: int, total: int):
+        self._bar.setRange(0, total)
+        self._bar.setValue(done)
+        self._label.setText(f"Compositing frame {done} / {total}…")
 
-    def _on_finished(self, path: str):
-        self._executable = path
+    def _on_finished(self, out_dir: str):
+        self._out_dir = out_dir
         self._thread.quit()
         self.accept()
 

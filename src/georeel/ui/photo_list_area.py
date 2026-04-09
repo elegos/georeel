@@ -18,11 +18,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.camera_keyframe import CameraKeyframe
-from core.exif_reader import read_photo_metadata
-from core.match_result import MatchResult
-from core.photo_store import PhotoStore
-from core.trackpoint import Trackpoint
+from georeel.core.camera_keyframe import CameraKeyframe
+from georeel.core.exif_reader import read_photo_metadata
+from georeel.core.match_result import MatchResult
+from georeel.core.photo_store import PhotoStore
+from georeel.core.trackpoint import Trackpoint
 
 from .datetime_picker_dialog import DateTimePickerDialog
 from .drop_area import DropArea

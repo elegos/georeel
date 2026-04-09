@@ -9,62 +9,66 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.frame_renderer import FrameRenderError, render_frames
-from core.pipeline import Pipeline
+from georeel.core.video_assembler import VideoAssembleError, assemble_video
 
 
 class _Worker(QObject):
     progress = Signal(int, int)   # current_frame, total_frames
-    finished = Signal(str)        # frames_dir
-    failed   = Signal(str)        # error message
+    finished = Signal()
+    failed   = Signal(str)
 
-    def __init__(self, pipeline: Pipeline, settings: dict, blender_exe: str | None):
+    def __init__(self, frames_dir: str, output_path: str,
+                 settings: dict, total_frames: int, gpx_path: str | None = None):
         super().__init__()
-        self._pipeline    = pipeline
-        self._settings    = settings
-        self._blender_exe = blender_exe
-        self._cancel      = threading.Event()
+        self._frames_dir   = frames_dir
+        self._output_path  = output_path
+        self._settings     = settings
+        self._total_frames = total_frames
+        self._gpx_path     = gpx_path
+        self._cancel       = threading.Event()
 
     def cancel(self):
         self._cancel.set()
 
     def run(self):
         try:
-            frames_dir = render_frames(
-                self._pipeline,
+            assemble_video(
+                self._frames_dir,
+                self._output_path,
                 self._settings,
-                blender_exe=self._blender_exe,
+                self._total_frames,
+                gpx_path=self._gpx_path,
                 progress_cb=lambda cur, tot: self.progress.emit(cur, tot),
                 cancel_check=self._cancel.is_set,
             )
-            self.finished.emit(frames_dir)
-        except FrameRenderError as e:
+            self.finished.emit()
+        except VideoAssembleError as e:
             self.failed.emit(str(e))
         except Exception as e:
             self.failed.emit(f"Unexpected error: {e}")
 
 
-class RenderProgressDialog(QDialog):
-    """Shows frame-by-frame render progress with a cancel button."""
+class VideoProgressDialog(QDialog):
+    """Shows FFmpeg encoding progress with a cancel button."""
 
-    def __init__(self, pipeline: Pipeline, settings: dict,
-                 blender_exe: str | None = None, parent=None):
+    def __init__(self, frames_dir: str, output_path: str,
+                 settings: dict, total_frames: int,
+                 gpx_path: str | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Rendering frames")
+        self.setWindowTitle("Encoding video")
         self.setMinimumWidth(440)
         self.setModal(True)
-
-        self._frames_dir: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
 
-        self._label = QLabel("Initialising Blender…")
+        encoder = settings.get("output/encoder", "")
+        self._label = QLabel(f"Encoding with {encoder}…")
         layout.addWidget(self._label)
 
         self._bar = QProgressBar()
-        self._bar.setRange(0, 0)
+        self._bar.setRange(0, max(total_frames, 1))
         layout.addWidget(self._bar)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
@@ -73,7 +77,7 @@ class RenderProgressDialog(QDialog):
         self._cancel_btn = buttons.button(QDialogButtonBox.Cancel)
 
         self._thread = QThread(self)
-        self._worker = _Worker(pipeline, settings, blender_exe)
+        self._worker = _Worker(frames_dir, output_path, settings, total_frames, gpx_path)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -85,11 +89,6 @@ class RenderProgressDialog(QDialog):
 
     # ------------------------------------------------------------------
 
-    def frames_dir(self) -> str | None:
-        return self._frames_dir
-
-    # ------------------------------------------------------------------
-
     def _cancel(self):
         self._worker.cancel()
         self._label.setText("Cancelling…")
@@ -98,10 +97,9 @@ class RenderProgressDialog(QDialog):
     def _on_progress(self, current: int, total: int):
         self._bar.setRange(0, total)
         self._bar.setValue(current)
-        self._label.setText(f"Rendering frame {current} / {total}…")
+        self._label.setText(f"Encoding frame {current} / {total}…")
 
-    def _on_finished(self, frames_dir: str):
-        self._frames_dir = frames_dir
+    def _on_finished(self):
         self._thread.quit()
         self.accept()
 

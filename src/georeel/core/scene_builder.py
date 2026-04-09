@@ -407,7 +407,7 @@ def _compute_pause_schedule(
 
 def _resolve_pin_color(settings: dict) -> str:
     """Return a #rrggbb color string for the pin from settings."""
-    from ui.color_picker_dialog import get_color_hex  # type: ignore[import]
+    from georeel.ui.color_picker_dialog import get_color_hex  # type: ignore[import]
 
     color_id = settings.get("pins/color", "ForestGreen")
     if color_id == "custom":
@@ -417,7 +417,7 @@ def _resolve_pin_color(settings: dict) -> str:
 
 def _resolve_marker_color(settings: dict) -> str:
     """Return a #rrggbb color string for the track marker from settings."""
-    from ui.color_picker_dialog import get_color_hex  # type: ignore[import]
+    from georeel.ui.color_picker_dialog import get_color_hex  # type: ignore[import]
 
     color_id = settings.get("marker/color", "Navy")
     if color_id == "custom":

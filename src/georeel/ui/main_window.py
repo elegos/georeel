@@ -37,19 +37,19 @@ from .preview_video_progress_dialog import PreviewVideoProgressDialog
 from .keyframe_calc_worker import KeyframeCalcWorker
 from .scene_prep_worker import ScenePrepWorker
 
-from core.dem_fetcher import DemFetchError, fetch_dem
-from core.frustum import frustum_margin
-from core.elevation_grid import ElevationGrid
-from core.satellite import SatelliteTexture, build_source
-from core.satellite.providers import QUALITY_MAX_TILES
-from core.gpx_parser import GpxParseError, parse_gpx
-from core.photo_matcher import match_photos
-from core.photo_store import PhotoStore
-from core.pipeline import Pipeline
-from core.project import ProjectState, load_project, save_project
-from core.camera_path import CameraPathError, build_camera_path
-from core.scene_builder import SceneBuildError, build_scene
-from core.preview_map import PreviewMapError, render_preview_map
+from georeel.core.dem_fetcher import DemFetchError, fetch_dem
+from georeel.core.frustum import frustum_margin
+from georeel.core.elevation_grid import ElevationGrid
+from georeel.core.satellite import SatelliteTexture, build_source
+from georeel.core.satellite.providers import QUALITY_MAX_TILES
+from georeel.core.gpx_parser import GpxParseError, parse_gpx
+from georeel.core.photo_matcher import match_photos
+from georeel.core.photo_store import PhotoStore
+from georeel.core.pipeline import Pipeline
+from georeel.core.project import ProjectState, load_project, save_project
+from georeel.core.camera_path import CameraPathError, build_camera_path
+from georeel.core.scene_builder import SceneBuildError, build_scene
+from georeel.core.preview_map import PreviewMapError, render_preview_map
 
 from .gpx_drop_area import GpxDropArea
 from .gpx_stats_widget import GpxStatsWidget
@@ -405,7 +405,7 @@ class MainWindow(QMainWindow):
         self._preview_video_btn.setEnabled(True)
         self._open_blender_btn.setEnabled(True)
         try:
-            from core.gpx_parser import parse_gpx
+            from georeel.core.gpx_parser import parse_gpx
             trackpoints, _ = parse_gpx(path)
             self._gpx_stats.update_stats(trackpoints)
         except Exception:
@@ -505,7 +505,7 @@ class MainWindow(QMainWindow):
         if not self._pipeline.camera_keyframes:
             self._status_show("Computing camera path…")
             try:
-                from core.camera_path import CameraPathError, build_camera_path
+                from georeel.core.camera_path import CameraPathError, build_camera_path
                 self._pipeline.camera_keyframes = build_camera_path(
                     self._pipeline, render_settings
                 )
@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
             return
 
         blender_exe = self._settings.value("blender/executable_path") or None
-        from core.blender_runtime import find_blender
+        from georeel.core.blender_runtime import find_blender
         exe = find_blender(blender_exe)
         if exe is None:
             QMessageBox.critical(self, "Blender not found",
@@ -562,7 +562,7 @@ class MainWindow(QMainWindow):
         if not self._pipeline.camera_keyframes:
             self._status_show("Computing camera path…")
             try:
-                from core.camera_path import CameraPathError, build_camera_path
+                from georeel.core.camera_path import CameraPathError, build_camera_path
                 self._pipeline.camera_keyframes = build_camera_path(
                     self._pipeline, render_settings
                 )
@@ -574,7 +574,7 @@ class MainWindow(QMainWindow):
         # Inject camera keyframes into a copy of the .blend
         self._status_show("Injecting camera into scene…")
         try:
-            from core.open_in_blender import inject_camera_and_open
+            from georeel.core.open_in_blender import inject_camera_and_open
             inject_camera_and_open(
                 exe,
                 self._pipeline.scene,

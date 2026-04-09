@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.gpx_stats import GpxStats, compute_stats
-from core.trackpoint import Trackpoint
+from georeel.core.gpx_stats import GpxStats, compute_stats
+from georeel.core.trackpoint import Trackpoint
 
 _ROWS = [
     "Start",

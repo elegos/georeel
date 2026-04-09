@@ -19,10 +19,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.satellite.providers import PROVIDERS
-from ui.color_picker_dialog import CSS3_COLORS, ColorPickerDialog, get_color_hex
+from georeel.core.satellite.providers import PROVIDERS
+from georeel.ui.color_picker_dialog import CSS3_COLORS, ColorPickerDialog, get_color_hex
 
-from core.encoder_registry import (
+from georeel.core.encoder_registry import (
     EncoderConfig,
     detect_available_encoders,
     encoders_for_codec,
@@ -534,7 +534,7 @@ class RenderSettingsDialog(QDialog):
             self._refresh_pin_swatch()
 
     def _on_provider_changed(self) -> None:
-        from core.satellite.providers import get_provider
+        from georeel.core.satellite.providers import get_provider
         p = get_provider(self._provider_combo.currentData() or "esri_world")
         show_key = p.requires_key
         show_url = p.id == "custom"

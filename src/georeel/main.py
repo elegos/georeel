@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from ui import MainWindow
+from georeel.ui import MainWindow
 
 _ICON_PATH = Path(__file__).parent / "assets" / "icon.svg"
 

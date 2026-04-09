@@ -17,14 +17,14 @@ import math
 
 from PySide6.QtCore import QThread, Signal
 
-from core.camera_path import CameraPathError, build_camera_path
-from core.dem_fetcher import DemFetchError, fetch_dem
-from core.elevation_grid import ElevationGrid
-from core.frustum import frustum_margin
-from core.gpx_parser import GpxParseError, parse_gpx
-from core.photo_matcher import match_photos
-from core.photo_store import PhotoStore
-from core.pipeline import Pipeline
+from georeel.core.camera_path import CameraPathError, build_camera_path
+from georeel.core.dem_fetcher import DemFetchError, fetch_dem
+from georeel.core.elevation_grid import ElevationGrid
+from georeel.core.frustum import frustum_margin
+from georeel.core.gpx_parser import GpxParseError, parse_gpx
+from georeel.core.photo_matcher import match_photos
+from georeel.core.photo_store import PhotoStore
+from georeel.core.pipeline import Pipeline
 
 
 class KeyframeCalcWorker(QThread):

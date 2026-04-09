@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.pipeline import Pipeline
-from core.preview_video import PreviewVideoError, render_preview_video
+from georeel.core.pipeline import Pipeline
+from georeel.core.preview_video import PreviewVideoError, render_preview_video
 
 
 class _Worker(QObject):

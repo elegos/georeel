@@ -15,17 +15,17 @@ import math
 
 from PySide6.QtCore import QThread, Signal
 
-from core.bounding_box import BoundingBox
-from core.dem_fetcher import DemFetchError, fetch_dem
-from core.elevation_grid import ElevationGrid
-from core.frustum import frustum_margin
-from core.gpx_parser import GpxParseError, parse_gpx
-from core.photo_matcher import match_photos
-from core.photo_store import PhotoStore
-from core.pipeline import Pipeline
-from core.satellite import SatelliteTexture, build_source
-from core.satellite.providers import QUALITY_MAX_TILES
-from core.scene_builder import SceneBuildError, build_scene
+from georeel.core.bounding_box import BoundingBox
+from georeel.core.dem_fetcher import DemFetchError, fetch_dem
+from georeel.core.elevation_grid import ElevationGrid
+from georeel.core.frustum import frustum_margin
+from georeel.core.gpx_parser import GpxParseError, parse_gpx
+from georeel.core.photo_matcher import match_photos
+from georeel.core.photo_store import PhotoStore
+from georeel.core.pipeline import Pipeline
+from georeel.core.satellite import SatelliteTexture, build_source
+from georeel.core.satellite.providers import QUALITY_MAX_TILES
+from georeel.core.scene_builder import SceneBuildError, build_scene
 
 
 def _quality_rank(q: str, order: dict) -> int:

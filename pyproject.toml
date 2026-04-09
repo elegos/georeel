@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=74"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "georeel"
 version = "0.1.0"
@@ -14,4 +18,10 @@ dependencies = [
 ]
 
 [project.scripts]
-georeel = "main:main"
+georeel = "georeel.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+georeel = ["assets/*"]
