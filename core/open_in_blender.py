@@ -27,6 +27,7 @@ def inject_camera_and_open(
     blender_exe: str,
     blend_path: str,
     keyframes: list[CameraKeyframe],
+    resolution: str = "1080p",
 ) -> None:
     """Write keyframes into a sibling .blend and open it in Blender.
 
@@ -61,6 +62,7 @@ def inject_camera_and_open(
         "--",
         str(kf_path),
         str(out_blend),
+        resolution,
     ]
 
     try:

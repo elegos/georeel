@@ -50,10 +50,21 @@ def _zero_roll_quat(pos, look_at, Vector, Matrix, Quaternion):
 
 # Resolution presets (width, height)
 _RESOLUTIONS = {
+    # Landscape (16:9)
     "720p":  (1280,  720),
     "1080p": (1920, 1080),
     "1440p": (2560, 1440),
     "4k":    (3840, 2160),
+    # Portrait (9:16)
+    "portrait_720p":  ( 720, 1280),
+    "portrait_1080p": (1080, 1920),
+    "portrait_1440p": (1440, 2560),
+    "portrait_4k":    (2160, 3840),
+    # Square (1:1)
+    "square_720":  ( 720,  720),
+    "square_1080": (1080, 1080),
+    "square_1440": (1440, 1440),
+    "square_2160": (2160, 2160),
 }
 
 # Render samples per quality/engine combination
@@ -130,14 +141,19 @@ def main() -> None:
 
     # ------------------------------------------------------------------ #
     # Camera                                                               #
+    # Reuse the existing FlyCamera placeholder created by build_scene.py  #
+    # so that LOCKED_TRACK constraints on pins and the marker keep their   #
+    # target reference pointing at the actual render camera.               #
     # ------------------------------------------------------------------ #
 
-    cam_data = bpy.data.cameras.new("FlyCamera")
-    cam_data.lens      = 35      # 35 mm focal length
-    cam_data.clip_start = 1.0
-    cam_data.clip_end   = 100_000.0   # large enough for any terrain extent
-    cam_obj = bpy.data.objects.new("FlyCamera", cam_data)
-    scene.collection.objects.link(cam_obj)
+    cam_obj = bpy.data.objects.get("FlyCamera")
+    if cam_obj is None:
+        cam_data = bpy.data.cameras.new("FlyCamera")
+        cam_obj = bpy.data.objects.new("FlyCamera", cam_data)
+        scene.collection.objects.link(cam_obj)
+    cam_obj.data.lens       = 35
+    cam_obj.data.clip_start = 1.0
+    cam_obj.data.clip_end   = 100_000.0
     scene.camera = cam_obj
 
     # ------------------------------------------------------------------ #

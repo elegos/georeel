@@ -43,7 +43,8 @@ KEY_PHOTO_PAUSE_DURATION  = "render/photo_pause_duration"    # seconds (float)
 KEY_FPS                   = "render/fps"                     # int: 24 | 30 | 60
 KEY_CAMERA_SPEED          = "render/camera_speed_mps"        # metres per second (float)
 KEY_ENGINE                = "render/engine"                  # "eevee" | "cycles"
-KEY_RESOLUTION            = "render/resolution"              # "720p" | "1080p" | "1440p" | "4k"
+KEY_ASPECT_RATIO          = "render/aspect_ratio"            # "landscape" | "portrait" | "square"
+KEY_RESOLUTION            = "render/resolution"              # see _ASPECT_RESOLUTIONS values
 KEY_QUALITY               = "render/quality"                 # "low" | "medium" | "high"
 KEY_PHOTO_TZ_OFFSET       = "render/photo_tz_offset_hours"   # float: UTC offset of camera clock
 KEY_PHOTO_TRANSITION      = "render/photo_transition"        # "fade" | "cut"
@@ -65,6 +66,27 @@ KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder na
 KEY_OUTPUT_CQ             = "output/cq"                      # int
 KEY_OUTPUT_PRESET         = "output/preset"                  # string
 
+_ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
+    "landscape": [
+        ("720p   (1280 × 720)",   "720p"),
+        ("1080p  (1920 × 1080)", "1080p"),
+        ("1440p  (2560 × 1440)", "1440p"),
+        ("4K     (3840 × 2160)", "4k"),
+    ],
+    "portrait": [
+        ("720 × 1280",                    "portrait_720p"),
+        ("1080 × 1920 (Instagram reel)", "portrait_1080p"),
+        ("1440 × 2560",                  "portrait_1440p"),
+        ("2160 × 3840",                  "portrait_4k"),
+    ],
+    "square": [
+        ("720 × 720",   "square_720"),
+        ("1080 × 1080", "square_1080"),
+        ("1440 × 1440", "square_1440"),
+        ("2160 × 2160", "square_2160"),
+    ],
+}
+
 DEFAULTS = {
     KEY_PATH_SMOOTHING:       "spline",
     KEY_HEIGHT_MODE:          "dem_fixed",
@@ -76,6 +98,7 @@ DEFAULTS = {
     KEY_FPS:                  30,
     KEY_CAMERA_SPEED:         80.0,
     KEY_ENGINE:               "eevee",
+    KEY_ASPECT_RATIO:         "landscape",
     KEY_RESOLUTION:           "1080p",
     KEY_QUALITY:              "medium",
     KEY_PHOTO_TRANSITION:     "fade",
@@ -275,14 +298,17 @@ class RenderSettingsDialog(QDialog):
                    self._settings.value(KEY_ENGINE, DEFAULTS[KEY_ENGINE]))
         form.addRow("Engine:", self._engine_combo)
 
+        self._aspect_combo = QComboBox()
+        self._aspect_combo.addItem("Landscape (16:9)", "landscape")
+        self._aspect_combo.addItem("Portrait (9:16)",  "portrait")
+        self._aspect_combo.addItem("Square (1:1)",     "square")
+        saved_aspect = self._settings.value(KEY_ASPECT_RATIO, DEFAULTS[KEY_ASPECT_RATIO])
+        _set_combo(self._aspect_combo, saved_aspect)
+        form.addRow("Aspect ratio:", self._aspect_combo)
+
         self._resolution_combo = QComboBox()
-        for label, value in [("720p  (1280×720)",  "720p"),
-                              ("1080p (1920×1080)", "1080p"),
-                              ("1440p (2560×1440)", "1440p"),
-                              ("4K    (3840×2160)", "4k")]:
-            self._resolution_combo.addItem(label, value)
-        _set_combo(self._resolution_combo,
-                   self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION]))
+        saved_resolution = self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION])
+        self._populate_resolution_combo(saved_aspect, saved_resolution)
         form.addRow("Resolution:", self._resolution_combo)
 
         self._quality_combo = QComboBox()
@@ -295,7 +321,25 @@ class RenderSettingsDialog(QDialog):
 
         layout.addWidget(group)
         layout.addStretch()
+
+        self._aspect_combo.currentIndexChanged.connect(self._on_aspect_changed)
         return tab
+
+    def _populate_resolution_combo(self, aspect: str, saved_resolution: str) -> None:
+        self._resolution_combo.clear()
+        for label, value in _ASPECT_RESOLUTIONS.get(aspect, _ASPECT_RESOLUTIONS["landscape"]):
+            self._resolution_combo.addItem(label, value)
+        _set_combo(self._resolution_combo, saved_resolution)
+        if self._resolution_combo.currentIndex() < 0:
+            self._resolution_combo.setCurrentIndex(0)
+
+    def _on_aspect_changed(self) -> None:
+        aspect = self._aspect_combo.currentData()
+        current_res = self._resolution_combo.currentData() or ""
+        self._populate_resolution_combo(aspect, current_res)
+        # If the previous resolution doesn't exist in the new aspect, default to first
+        if self._resolution_combo.currentIndex() < 0:
+            self._resolution_combo.setCurrentIndex(0)
 
     def _build_photos_tab(self) -> QWidget:
         tab, layout = _make_tab()
@@ -672,6 +716,7 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_PHOTO_PAUSE_MODE,    self._pause_combo.currentData())
         self._settings.setValue(KEY_PHOTO_PAUSE_DURATION, self._pause_spin.value())
         self._settings.setValue(KEY_ENGINE,              self._engine_combo.currentData())
+        self._settings.setValue(KEY_ASPECT_RATIO,        self._aspect_combo.currentData())
         self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
         self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
         self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())

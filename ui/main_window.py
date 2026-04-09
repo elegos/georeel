@@ -579,6 +579,7 @@ class MainWindow(QMainWindow):
                 exe,
                 self._pipeline.scene,
                 self._pipeline.camera_keyframes,
+                resolution=render_settings.get("render/resolution", "1080p"),
             )
         except Exception as e:
             QMessageBox.critical(self, "Open in Blender failed", str(e))

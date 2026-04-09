@@ -54,6 +54,17 @@ def main() -> None:
         sys.exit(1)
 
     keyframes_path, output_path = argv[0], argv[1]
+    resolution = argv[2] if len(argv) > 2 else "1080p"
+
+    _RESOLUTIONS = {
+        "720p":  (1280,  720), "1080p": (1920, 1080),
+        "1440p": (2560, 1440), "4k":    (3840, 2160),
+        "portrait_720p":  ( 720, 1280), "portrait_1080p": (1080, 1920),
+        "portrait_1440p": (1440, 2560), "portrait_4k":    (2160, 3840),
+        "square_720":  ( 720,  720), "square_1080": (1080, 1080),
+        "square_1440": (1440, 1440), "square_2160": (2160, 2160),
+    }
+    render_w, render_h = _RESOLUTIONS.get(resolution, (1920, 1080))
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
@@ -117,6 +128,13 @@ def main() -> None:
         for fc in cam_obj.animation_data.action.fcurves:
             for kp in fc.keyframe_points:
                 kp.interpolation = 'LINEAR'
+
+    # ------------------------------------------------------------------ #
+    # Apply render resolution so the camera aspect ratio is correct       #
+    # ------------------------------------------------------------------ #
+    scene.render.resolution_x          = render_w
+    scene.render.resolution_y          = render_h
+    scene.render.resolution_percentage = 100
 
     # ------------------------------------------------------------------ #
     # Position timeline at first frame and save                           #
