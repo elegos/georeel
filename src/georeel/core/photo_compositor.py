@@ -70,7 +70,9 @@ def composite_photos(
 
     out_w, out_h = _RESOLUTIONS.get(resolution, (1920, 1080))
 
-    out_dir = Path(tempfile.mkdtemp(prefix="georeel_comp_")) / "frames"
+    comp_work_dir = Path(tempfile.mkdtemp(prefix="georeel_comp_"))
+    pipeline._temp_dirs.append(comp_work_dir)
+    out_dir = comp_work_dir / "frames"
     out_dir.mkdir()
 
     # Build frame-number → keyframe map

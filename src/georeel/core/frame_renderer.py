@@ -53,6 +53,7 @@ def render_frames(
     quality    = settings.get("render/quality",    "medium")
 
     work_dir = Path(tempfile.mkdtemp(prefix="georeel_frames_"))
+    pipeline._temp_dirs.append(work_dir)
     kf_path  = work_dir / "keyframes.json"
     out_dir  = work_dir / "frames"
     out_dir.mkdir()

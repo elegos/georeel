@@ -1,4 +1,6 @@
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .bounding_box import BoundingBox
 from .camera_keyframe import CameraKeyframe
@@ -63,3 +65,16 @@ class Pipeline:
     # Stage 9 — Video Assembler
     # ------------------------------------------------------------------ #
     output_video_path: str | None = None
+
+    # ------------------------------------------------------------------ #
+    # Temporary directory tracking
+    # Large intermediate dirs (frame sequences) are registered here so
+    # they can be removed as soon as the job finishes or is cancelled.
+    # ------------------------------------------------------------------ #
+    _temp_dirs: list[Path] = field(default_factory=list, repr=False)
+
+    def cleanup(self) -> None:
+        """Delete all registered temporary directories."""
+        for d in list(self._temp_dirs):
+            shutil.rmtree(d, ignore_errors=True)
+        self._temp_dirs.clear()

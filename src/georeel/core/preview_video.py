@@ -128,5 +128,7 @@ def render_preview_video(
         )
     except VideoAssembleError as e:
         raise PreviewVideoError(f"Video assembly failed: {e}") from e
+    finally:
+        preview_pipeline.cleanup()
 
     return output_path

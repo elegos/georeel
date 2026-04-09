@@ -1,7 +1,9 @@
+import atexit
 import json
 import logging
 import math
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -52,6 +54,7 @@ def build_scene(
         )
 
     work_dir = Path(tempfile.mkdtemp(prefix="georeel_scene_"))
+    atexit.register(shutil.rmtree, work_dir, True)
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
     tex_path = _write_texture(
         pipeline.satellite_texture, pipeline.elevation_grid, work_dir

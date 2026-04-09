@@ -621,6 +621,7 @@ class MainWindow(QMainWindow):
         # Preserve the background-built pipeline if it is fresh (not stale).
         # Otherwise start a clean pipeline so all stages run from scratch.
         if self._scene_stale or self._pipeline.scene is None:
+            self._pipeline.cleanup()
             self._pipeline = Pipeline()
 
         # Stages 1–5: skip entirely if the background worker already built
@@ -805,6 +806,7 @@ class MainWindow(QMainWindow):
             blender_exe=blender_exe, parent=self,
         )
         if dlg.exec() != RenderProgressDialog.Accepted:
+            self._pipeline.cleanup()
             self._status_show("Pipeline stopped: rendering cancelled or failed.")
             return
         self._pipeline.rendered_frames_dir = dlg.frames_dir()
@@ -815,6 +817,7 @@ class MainWindow(QMainWindow):
         # Stage 8 — Photo Overlay Compositor
         dlg = CompositorProgressDialog(self._pipeline, render_settings, parent=self)
         if dlg.exec() != CompositorProgressDialog.Accepted:
+            self._pipeline.cleanup()
             self._status_show("Pipeline stopped: compositing cancelled or failed.")
             return
         self._pipeline.composited_frames_dir = dlg.composited_frames_dir()
@@ -834,9 +837,11 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         if dlg.exec() != VideoProgressDialog.Accepted:
+            self._pipeline.cleanup()
             self._status_show("Pipeline stopped: video encoding cancelled or failed.")
             return
         self._pipeline.output_video_path = output_path
+        self._pipeline.cleanup()
         self._status_show(f"Done! Video saved: {output_path}")
 
     # ------------------------------------------------------------------
