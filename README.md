@@ -1,0 +1,181 @@
+# GeoReel
+
+GeoReel is an open-source desktop application that turns a GPX track and a set of geotagged photos into a cinematic fly-through video of the route rendered on 3D terrain with satellite imagery — a self-hosted alternative to services like Relive.
+
+Built with Python and Blender, it uses only open data sources (SRTM elevation, ESRI/MapTiler satellite tiles) and open-source tools, with no cloud dependency.
+
+---
+
+## Features
+
+- **3D terrain rendering** from SRTM elevation data (90 m resolution), textured with real satellite imagery
+- **Fly-through camera** that follows the GPX track with a configurable height, speed, tilt, and look-ahead
+- **Photo waypoints** — geotagged photos are placed along the track and shown as full-screen overlays when the camera reaches their position
+- **Flexible photo matching** — by GPS coordinates, by EXIF timestamp, or both
+- **Customisable rendering** — resolution (landscape, portrait, square), frame rate, engine (EEVEE or Cycles), quality
+- **Hardware encoder support** — NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox, and software fallbacks
+- **Project files** — save and reload work as `.georeel` archives; DEM and satellite data are cached inside
+- **Preview tools** — top-down map preview and short video preview before committing to a full render
+- **Open in Blender** — inspect or manually edit the generated scene before rendering
+
+---
+
+## Requirements
+
+### System dependencies
+
+| Tool | Version | Notes |
+|---|---|---|
+| [Blender](https://www.blender.org/download/) | 4.2 LTS, 4.4, or 4.5 LTS | Can be auto-downloaded from *Options → Blender* |
+| [FFmpeg](https://ffmpeg.org/download.html) | Any recent version | Must be on `PATH` |
+
+Install FFmpeg via your package manager:
+
+```bash
+# Debian/Ubuntu
+sudo apt install ffmpeg
+
+# macOS
+brew install ffmpeg
+
+# Windows (winget)
+winget install ffmpeg
+```
+
+### Python
+
+Python 3.14 and [uv](https://docs.astral.sh/uv/) are required.
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/elegos/georeel.git
+cd georeel
+uv sync
+```
+
+---
+
+## Running
+
+```bash
+uv run main.py
+```
+
+---
+
+## Usage
+
+### 1. Load a GPX track
+
+Drag and drop a `.gpx` file onto the track area, or click to browse. The panel shows distance, elevation gain/loss, duration, and speed.
+
+### 2. Add photos (optional)
+
+Drag and drop geotagged photos onto the photo panel. GeoReel reads EXIF GPS coordinates and timestamps to place each photo at the correct position along the track.
+
+**Matching mode** (set via *Options → Render Settings → Photos*):
+
+| Mode | Behaviour |
+|---|---|
+| GPS | Matches by geographic proximity to the nearest trackpoint |
+| Timestamp | Matches by EXIF date/time against GPX timestamps |
+| Both (default) | Uses GPS as primary; falls back to timestamp when GPS data is missing; warns if the two methods disagree by more than 100 m |
+
+If your camera clock was set to a different timezone, adjust the offset under *Render Settings → Playback*.
+
+### 3. Configure render settings
+
+Open *Options → Render Settings* to adjust:
+
+- **Playback** — frame rate (24/30/60 fps) and camera speed (m/s)
+- **Camera** — path smoothing, height above terrain, orientation (tangent or look-at), downward tilt, look-ahead, photo pause duration
+- **Rendering** — engine (EEVEE/Cycles), aspect ratio (landscape/portrait/square), resolution, quality
+- **Photos** — transition style (fade or cut), letterbox fill (blurred or black), fade duration
+- **Map** — satellite imagery provider and detail level
+- **Pins** — colour of the track marker and photo waypoint pins
+- **Output** — container (MKV/MP4), codec (H.264/H.265/AV1), encoder, quality (CQ/CRF), preset
+
+### 4. Preview
+
+- **Preview Map** — renders a single top-down PNG of the terrain with the track and photo pins; fast and useful for checking photo placement
+- **Preview Video** — renders the first 2 % of the video at reduced resolution so you can check the camera path and photo overlays before the full render
+- **Open in Blender** — injects the camera path into the scene and opens Blender interactively; useful for inspecting the 3D scene or tweaking materials
+
+### 5. Render
+
+Click **Start** to run the full pipeline:
+
+1. Parse GPX and match photos
+2. Download SRTM elevation tiles
+3. Fetch satellite imagery tiles
+4. Build the 3D Blender scene (terrain mesh + texture + track ribbon + pins)
+5. Compute the fly-through camera path
+6. Render frames via Blender (EEVEE or Cycles)
+7. Composite photo overlays using Pillow
+8. Encode the final video with FFmpeg
+
+Progress is shown frame-by-frame. You can cancel at any time.
+
+### 6. Save/load projects
+
+Use *File → Save Project* to write a `.georeel` file. It bundles the GPX path, photo references, elevation grid, satellite texture, and render settings so you can resume work later without re-downloading data.
+
+---
+
+## Satellite imagery providers
+
+| Provider | Key required | Max zoom | Notes |
+|---|---|---|---|
+| ESRI World Imagery | No | 19 | Default |
+| ESRI Clarity | No | 19 | Beta; higher detail in some regions |
+| MapTiler Satellite | Yes (free tier) | 20 | Highest detail |
+| Custom XYZ | — | — | Any `{z}/{x}/{y}` tile URL |
+
+---
+
+## Resolution presets
+
+| Aspect ratio | Options |
+|---|---|
+| Landscape 16:9 | 1280×720, 1920×1080, 2560×1440, 3840×2160 |
+| Portrait 9:16 | 720×1280, 1080×1920 (Instagram reel), 1440×2560, 2160×3840 |
+| Square 1:1 | 720×720, 1080×1080, 1440×1440, 2160×2160 |
+
+---
+
+## Project structure
+
+```
+georeel/
+├── main.py                        # Entry point
+├── ui/                            # PySide6 GUI
+│   ├── main_window.py
+│   ├── render_settings_dialog.py
+│   └── ...
+├── core/                          # Pipeline stages
+│   ├── gpx_parser.py              # Stage 1 — GPX parsing
+│   ├── photo_matcher.py           # Stage 2 — Photo matching
+│   ├── dem_fetcher.py             # Stage 3 — Elevation download
+│   ├── satellite/                 # Stage 4 — Satellite imagery
+│   ├── scene_builder.py           # Stage 5 — Blender scene
+│   ├── camera_path.py             # Stage 6 — Camera keyframes
+│   ├── frame_renderer.py          # Stage 7 — Frame rendering
+│   ├── photo_compositor.py        # Stage 8 — Photo overlays
+│   ├── video_assembler.py         # Stage 9 — FFmpeg encoding
+│   └── blender_scripts/           # Scripts run inside Blender
+│       ├── build_scene.py
+│       ├── inject_camera.py
+│       └── render_frames.py
+└── assets/
+    ├── icon.svg
+    └── build_icon.py              # Embeds Earth photo into icon SVG
+```
+
+---
+
+## License
+
+MIT
