@@ -157,27 +157,51 @@ def main() -> None:
     scene.camera = cam_obj
 
     # ------------------------------------------------------------------ #
-    # Render frame by frame                                                #
+    # Insert camera animation keyframes                                    #
+    #                                                                     #
+    # We use 0-based frame numbers (seq_idx = kf["frame"] - 1) so the    #
+    # output filenames produced by Blender's animation renderer match      #
+    # the 000000.png … {N-1:06d}.png pattern the compositor expects.      #
     # ------------------------------------------------------------------ #
 
     for seq_idx, kf in enumerate(keyframes_data):
-        frame   = kf["frame"]
         pos     = Vector((kf["x"],        kf["y"],        kf["z"]))
         look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
 
         rot_quat = _zero_roll_quat(pos, look_at, Vector, Matrix, Quaternion)
 
-        cam_obj.location       = pos
-        cam_obj.rotation_mode  = "QUATERNION"
+        cam_obj.location            = pos
+        cam_obj.rotation_mode       = "QUATERNION"
         cam_obj.rotation_quaternion = rot_quat
 
-        scene.frame_set(frame)
-        scene.render.filepath = f"{output_dir}/{seq_idx:06d}"
-        bpy.ops.render.render(write_still=True)
+        cam_obj.keyframe_insert(data_path="location",            frame=seq_idx)
+        cam_obj.keyframe_insert(data_path="rotation_quaternion", frame=seq_idx)
 
-        # Report sequential index (not timeline frame number) so the host
-        # progress bar stays in [0, total-1].
-        print(f"Fra:{seq_idx}/{total - 1}", flush=True)
+    # CONSTANT interpolation: positions are pre-computed; Blender must not
+    # blend between them.  CONSTANT extrapolation beyond the first/last KF
+    # keeps the camera fixed (matches the existing per-frame behaviour).
+    if cam_obj.animation_data and cam_obj.animation_data.action:
+        for fcurve in cam_obj.animation_data.action.fcurves:
+            fcurve.extrapolation = "CONSTANT"
+            for kp in fcurve.keyframe_points:
+                kp.interpolation = "CONSTANT"
+
+    # ------------------------------------------------------------------ #
+    # Render the full animation in a single pass                           #
+    #                                                                     #
+    # animation=True keeps the render engine (and GPU) alive across every  #
+    # frame, eliminating the per-frame init / teardown that causes the     #
+    # GPU idle cycles visible in hardware monitoring tools.                #
+    # Blender prints "Fra:N Mem:…" to stdout for each frame; the host     #
+    # process parses those lines for progress updates.                     #
+    # "######" in the filepath → 6-digit zero-padded frame number.        #
+    # ------------------------------------------------------------------ #
+
+    scene.frame_start = 0
+    scene.frame_end   = total - 1
+    scene.render.filepath = f"{output_dir}/######"
+
+    bpy.ops.render.render(animation=True)
 
     print(f"[georeel] Rendered {total} frames to {output_dir}")
 

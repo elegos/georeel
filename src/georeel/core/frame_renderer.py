@@ -83,15 +83,20 @@ def render_frames(
             shell=True,
         )
 
+        # Blender's animation renderer prints "Fra:N Mem:…" once per render
+        # pass per frame (rendering, compositing, saving).  We deduplicate
+        # by frame number so the progress bar advances once per frame.
+        last_reported_fra = -1
         for line in proc.stdout:
             line = line.rstrip()
             if line.startswith("Fra:"):
-                # Format: Fra:<current>/<total-1>
+                # Format: "Fra:N Mem:… | Time:… | …"
                 try:
-                    parts = line[4:].split("/")
-                    current = int(parts[0]) + 1   # 0-based → 1-based count
-                    if progress_cb:
-                        progress_cb(current, total)
+                    fra_num = int(line[4:].split()[0])
+                    if fra_num != last_reported_fra:
+                        last_reported_fra = fra_num
+                        if progress_cb:
+                            progress_cb(fra_num + 1, total)  # 0-based → 1-based count
                 except (ValueError, IndexError):
                     pass
 
