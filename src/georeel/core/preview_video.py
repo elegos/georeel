@@ -18,6 +18,7 @@ from typing import Callable
 
 from .camera_keyframe import CameraKeyframe
 from .frame_renderer import FrameRenderError, render_frames
+from .photo_compositor import CompositorError, composite_photos
 from .pipeline import Pipeline
 from .video_assembler import VideoAssembleError, assemble_video
 
@@ -69,6 +70,7 @@ def render_preview_video(
     preview_pipeline = Pipeline()
     preview_pipeline.scene = pipeline.scene
     preview_pipeline.camera_keyframes = preview_kfs
+    preview_pipeline.match_results = pipeline.match_results
 
     # Fast, low-res settings
     preview_settings = dict(settings)
@@ -87,6 +89,21 @@ def render_preview_video(
         )
     except FrameRenderError as e:
         raise PreviewVideoError(f"Frame render failed: {e}") from e
+
+    if cancel_check and cancel_check():
+        return ""
+
+    # ------------------------------------------------------------------ #
+    # Stage 8: composite photo overlays                                    #
+    # ------------------------------------------------------------------ #
+    preview_pipeline.rendered_frames_dir = frames_dir
+    try:
+        frames_dir = composite_photos(
+            preview_pipeline, preview_settings,
+            cancel_check=cancel_check,
+        )
+    except CompositorError as e:
+        raise PreviewVideoError(f"Photo compositing failed: {e}") from e
 
     if cancel_check and cancel_check():
         return ""
