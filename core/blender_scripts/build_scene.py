@@ -448,69 +448,41 @@ def _build_marker(bpy, track_data: list[dict],
                   marker_color: str = "#ADD8E6") -> None:
     """Create an animated position marker that travels along the track.
 
-    Strategy:
-      1. Build a NURBS path object through the ribbon centreline.
-      2. Give the marker a Follow Path constraint on that curve.
-      3. Keyframe offset_factor 0→1 over the path duration so the marker
-         moves in sync with the camera (same speed_mps, same fps).
+    Strategy: keyframe the marker's world *location* at each track point,
+    using the identical timing formula as the ribbon Build modifier.  Between
+    keyframes Blender's LINEAR interpolation moves the marker in a straight
+    line from one track point to the next — exactly matching the piecewise-
+    linear ribbon segment that was just revealed.  This avoids the NURBS
+    curve parameterisation warp that caused the marker to run ahead/behind on
+    bends when using a FOLLOW_PATH constraint.
     """
     n = len(track_data)
-    ribbon_spacing_m = 5.0
-    frames_per_point = max(1.0, ribbon_spacing_m * fps / speed_mps)
-    fly_total        = (pause_schedule or {}).get("fly_total_frames",
-                                                   int((n - 1) * frames_per_point))
-    total_scene      = (pause_schedule or {}).get("total_scene_frames", fly_total)
-    pauses           = (pause_schedule or {}).get("pauses", [])
-    pre_total        = (pause_schedule or {}).get("pre_total_frames", 0)
-    total_path_frames = max(2, fly_total)
+    if n < 1:
+        return
 
-    scale = height_offset / 200.0
+    ribbon_spacing_m  = 5.0
+    frames_per_point  = max(1.0, ribbon_spacing_m * fps / speed_mps)
+    pauses            = (pause_schedule or {}).get("pauses", [])
+    pre_total         = (pause_schedule or {}).get("pre_total_frames", 0)
+
+    scale        = height_offset / 200.0
     marker_radius = max(1.5, 4.0 * scale)
 
     # ------------------------------------------------------------------ #
-    # NURBS path through track centreline                                  #
+    # Marker mesh: map-pin teardrop                                        #
     # ------------------------------------------------------------------ #
-    curve_data = bpy.data.curves.new("TrackCurve", type='CURVE')
-    curve_data.dimensions = '3D'
-    curve_data.path_duration = max(2, total_scene)
-
-    spline = curve_data.splines.new('NURBS')
-    spline.points.add(n - 1)          # spline starts with 1 point
-    spline.use_endpoint_u = True      # curve passes through end points
-    spline.order_u = min(4, n)
-
-    for i, pt in enumerate(track_data):
-        spline.points[i].co = (pt["x"], pt["y"], pt["z"] + z_offset, 1.0)
-
-    path_obj = bpy.data.objects.new("TrackCurve", curve_data)
-    bpy.context.scene.collection.objects.link(path_obj)
-
-    # ------------------------------------------------------------------ #
-    # Marker mesh: map-pin shape                                           #
-    #                                                                      #
-    # Geometry lives in the local XZ plane (Y = 0).  A LOCKED_TRACK       #
-    # constraint (TRACK_Y, LOCK_Z) rotates the object so its local +Y     #
-    # axis always points toward the camera, making the pin face the        #
-    # viewer while staying upright.                                        #
-    #                                                                      #
-    # Shape: outer teardrop (tip at origin, circular head above) + inner  #
-    # disc (child, floated just in front to form the "hole" in the pin).  #
-    # ------------------------------------------------------------------ #
-    r_head      = marker_radius * 0.8          # head-circle radius
-    z_c         = r_head * 1.7                 # head-circle centre height
+    r_head      = marker_radius * 0.8
+    z_c         = r_head * 1.7
     solidify_th = max(1.0, marker_radius * 0.3)
 
-    # -- Outer pin polygon --
-    # Tangent angle: where line from tip (0,0) is tangent to circle → sin θ = −r/z_c
-    theta_r = -math.asin(r_head / z_c)         # right tangent point angle
-    theta_l =  math.pi + math.asin(r_head / z_c)  # left tangent point angle
+    theta_r = -math.asin(r_head / z_c)
+    theta_l =  math.pi + math.asin(r_head / z_c)
     n_arc   = 24
     arc_verts = []
     for i in range(n_arc + 1):
         t = theta_r + (theta_l - theta_r) * i / n_arc
         arc_verts.append((r_head * math.cos(t), 0.0, z_c + r_head * math.sin(t)))
 
-    # Vertices: tip at origin, then CCW arc (yields +Y normal → camera-facing face)
     outer_verts = [(0.0, 0.0, 0.0)] + arc_verts
     outer_face  = list(range(len(outer_verts)))
 
@@ -531,15 +503,19 @@ def _build_marker(bpy, track_data: list[dict],
     links.new(emit.outputs["Emission"], out.inputs["Surface"])
     outer_mesh.materials.append(mat_outer)
 
+    x0 = track_data[0]["x"]
+    y0 = track_data[0]["y"]
+    z0 = track_data[0]["z"] + z_offset
+
     marker_obj = bpy.data.objects.new("TrackMarker", outer_mesh)
-    marker_obj.location = (0, 0, 0)
+    marker_obj.location = (x0, y0, z0)
     bpy.context.scene.collection.objects.link(marker_obj)
 
     sol = marker_obj.modifiers.new("Solidify", 'SOLIDIFY')
     sol.thickness = solidify_th
-    sol.offset    = 0.0   # symmetric → front face at Y = +solidify_th/2
+    sol.offset    = 0.0
 
-    # -- Inner circle ("hole") as a child of marker_obj --
+    # -- Inner "hole" disc, parented so it inherits LOCKED_TRACK rotation --
     n_inner = 20
     r_inner = r_head * 0.52
     inner_verts = [
@@ -566,20 +542,11 @@ def _build_marker(bpy, track_data: list[dict],
 
     hole_obj = bpy.data.objects.new("TrackMarkerHole", inner_mesh)
     bpy.context.scene.collection.objects.link(hole_obj)
-    hole_obj.parent = marker_obj  # inherits FOLLOW_PATH + LOCKED_TRACK from parent
+    hole_obj.parent = marker_obj
     hole_obj.matrix_parent_inverse.identity()
-    # Sit just in front of the outer solidified face so the camera sees the hole
     hole_obj.location = (0.0, solidify_th / 2.0 + 0.05 * scale, 0.0)
 
-    # ------------------------------------------------------------------ #
-    # Follow Path constraint                                               #
-    # ------------------------------------------------------------------ #
-    con = marker_obj.constraints.new(type='FOLLOW_PATH')
-    con.target = path_obj
-    con.use_fixed_location = True
-    con.use_curve_follow = False
-
-    # Face camera: local +Y toward camera, Z stays world-up
+    # LOCKED_TRACK: keep face toward camera, Z stays world-up
     cam_obj = next((o for o in bpy.data.objects if o.type == 'CAMERA'), None)
     locked = marker_obj.constraints.new(type='LOCKED_TRACK')
     locked.track_axis = 'TRACK_Y'
@@ -587,46 +554,59 @@ def _build_marker(bpy, track_data: list[dict],
     if cam_obj:
         locked.target = cam_obj
 
-    # Keyframe offset_factor with pause-aware timing:
-    #   - CONSTANT during pre-track pause (frame 1 → pre_total): marker holds at 0
-    #   - LINEAR between in-track pauses (camera moves → marker moves)
-    #   - CONSTANT during in-track pauses (camera holds → marker holds)
-    last_frame = max(2, total_scene)
-    con.offset_factor = 0.0
-    con.keyframe_insert("offset_factor", frame=1)
+    # ------------------------------------------------------------------ #
+    # Keyframe world location directly, mirroring the ribbon timing        #
+    #                                                                      #
+    # The ribbon Build modifier reveals one face (= one track segment) per #
+    # frames_per_point fly-frames.  We insert a LINEAR keyframe at the     #
+    # exact scene frame when the ribbon head reaches each track point.      #
+    # CONSTANT keyframes bracket each photo pause so the marker holds.     #
+    # ------------------------------------------------------------------ #
+
+    # Build a set of pause scene-start frames and a dict for fast lookup:
+    #   fly_frame (= scene_start - cumulative_before - pre_total - 1) → pause
+    pauses_by_fly: dict[int, dict] = {}
+    for p in pauses:
+        fly_f = p["scene_start"] - p["cumulative_before"] - pre_total - 1
+        pauses_by_fly[fly_f] = p
 
     pause_starts: set[int] = set()
+    cumulative_pause_frames = 0
 
+    # Pre-track hold: marker sits at track start during pre-photo slideshow
     if pre_total > 0:
-        # Hold marker at track start during pre-track photo slideshow.
-        # frame=1 becomes CONSTANT (added to pause_starts below) so the marker
-        # doesn't drift, then a LINEAR keyframe at pre_total+1 starts movement.
         pause_starts.add(1)
-        con.offset_factor = 0.0
-        con.keyframe_insert("offset_factor", frame=pre_total + 1)
+        marker_obj.location = (x0, y0, z0)
+        marker_obj.keyframe_insert("location", frame=1)
+        marker_obj.keyframe_insert("location", frame=pre_total + 1)
 
-    for pause in pauses:
-        ps = pause["scene_start"]
-        pd = pause["duration"]
-        cb = pause["cumulative_before"]
-        # fly frames elapsed just before this pause (ps includes pre_total offset)
-        fly_before = ps - cb - 1 - pre_total
-        # At pause start: hold at fly_before/fly_total (CONSTANT)
-        con.offset_factor = fly_before / fly_total if fly_total > 0 else 0.0
-        con.keyframe_insert("offset_factor", frame=ps)
-        pause_starts.add(ps)
-        # At pause end: resume from (fly_before+1)/fly_total (LINEAR)
-        con.offset_factor = (fly_before + 1) / fly_total if fly_total > 0 else 0.0
-        con.keyframe_insert("offset_factor", frame=ps + pd)
+    for i in range(n):
+        fly_frame_i = round(i * frames_per_point)
+        xi = track_data[i]["x"]
+        yi = track_data[i]["y"]
+        zi = track_data[i]["z"] + z_offset
 
-    con.offset_factor = 1.0
-    con.keyframe_insert("offset_factor", frame=last_frame)
+        if fly_frame_i in pauses_by_fly:
+            # A photo pause begins when the ribbon head reaches this track point.
+            # Insert CONSTANT (hold) at pause start, LINEAR (resume) at pause end.
+            p   = pauses_by_fly[fly_frame_i]
+            ps  = p["scene_start"]
+            pd  = p["duration"]
+            marker_obj.location = (xi, yi, zi)
+            marker_obj.keyframe_insert("location", frame=ps)
+            pause_starts.add(ps)
+            marker_obj.keyframe_insert("location", frame=ps + pd)
+            cumulative_pause_frames += pd
+        else:
+            scene_frame_i = pre_total + fly_frame_i + cumulative_pause_frames + 1
+            marker_obj.location = (xi, yi, zi)
+            marker_obj.keyframe_insert("location", frame=scene_frame_i)
 
-    # Apply interpolation: CONSTANT at pause-start KFs, LINEAR everywhere else
-    action = marker_obj.animation_data.action
+    # Apply interpolation: CONSTANT at pause-start frames, LINEAR everywhere else
+    action = marker_obj.animation_data.action if marker_obj.animation_data else None
     if action:
         for fcurve in action.fcurves:
-            if fcurve.data_path.endswith("offset_factor"):
+            if fcurve.data_path == "location":
                 for kp in fcurve.keyframe_points:
                     kp.interpolation = (
                         'CONSTANT' if int(round(kp.co.x)) in pause_starts
