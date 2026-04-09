@@ -68,11 +68,17 @@ def main() -> None:
         raw = f.read()
 
     # float32, row-major; row 0 = max_lat (north)
-    elev = struct.unpack(f"{rows * cols}f", raw)
+    elev_raw = struct.unpack(f"{rows * cols}f", raw)
+
+    # Identify and report invalid / NoData cells before clamping
+    _report_dem_quality(elev_raw, rows, cols, min_lat, max_lat, min_lon, max_lon)
 
     # Replace NaN / extreme values (ocean / missing SRTM tiles) with 0
     elev = [0.0 if (not math.isfinite(v) or v < -500 or v > 9000) else v
-            for v in elev]
+            for v in elev_raw]
+
+    # Smooth local outliers (SRTM artifacts / void-fill spikes)
+    elev = _smooth_dem_outliers(elev, rows, cols)
 
     # ------------------------------------------------------------------ #
     # Compute physical dimensions (metres)                                #
@@ -104,11 +110,12 @@ def main() -> None:
     faces = []
     for r in range(rows - 1):
         for c in range(cols - 1):
-            v0 = r * cols + c
-            v1 = r * cols + (c + 1)
-            v2 = (r + 1) * cols + (c + 1)
-            v3 = (r + 1) * cols + c
-            faces.append((v0, v1, v2, v3))
+            v0 = r * cols + c            # NW
+            v1 = r * cols + (c + 1)     # NE
+            v2 = (r + 1) * cols + (c + 1)  # SE
+            v3 = (r + 1) * cols + c     # SW
+            # CCW winding from above → face normal points +Z (upward)
+            faces.append((v0, v3, v2, v1))
 
     # ------------------------------------------------------------------ #
     # Start a clean Blender scene                                          #
@@ -257,6 +264,12 @@ def main() -> None:
         if pins_data:
             _build_pins(bpy, pins_data, pin_color, height_offset)
 
+    # ------------------------------------------------------------------ #
+    # Per-object vertex bounds diagnostic                                  #
+    # Helps identify which object contains spike / out-of-range vertices. #
+    # ------------------------------------------------------------------ #
+    _report_scene_bounds(bpy)
+
     # Pack the texture so the .blend is self-contained
     bpy.ops.file.pack_all()
 
@@ -267,6 +280,237 @@ def main() -> None:
     bpy.ops.wm.save_as_mainfile(filepath=output_path)
     print(f"[georeel] Scene saved: {output_path} "
           f"({rows}×{cols} vertices, {len(faces)} quads)")
+
+
+def _smooth_dem_outliers(elev: list[float], rows: int, cols: int,
+                         sigma: float = 3.0) -> list[float]:
+    """Two-phase DEM artifact removal.
+
+    Phase 1 — local σ-filter (3×3):
+        Replaces isolated spike cells (single bad pixels) that differ from
+        their immediate neighbours by >sigma*std or >100 m.  Runs until
+        convergence (up to 10 passes).
+
+    Phase 2 — inpainting (larger-radius detection + flood-fill):
+        Catches interior cells of bad patches that Phase 1 misses because
+        all their 3×3 neighbours are also bad (local median == cell → no
+        outlier signal).  Uses a 5-cell radius neighbourhood to detect cells
+        that are far from the wider context, then flood-fills from the
+        surrounding good cells inward.
+    """
+    import statistics
+
+    def _nbrs_3x3(buf: list[float], r: int, c: int) -> list[float]:
+        vals = []
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    vals.append(buf[nr * cols + nc])
+        return vals
+
+    def _nbrs_radius(buf: list[float], r: int, c: int, radius: int) -> list[float]:
+        vals = []
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    vals.append(buf[nr * cols + nc])
+        return vals
+
+    result = list(elev)
+
+    # ---- Phase 1: local 3×3 σ-filter ------------------------------------ #
+    for pass_num in range(10):
+        replacements = 0
+        for r in range(rows):
+            for c in range(cols):
+                idx = r * cols + c
+                nbrs = _nbrs_3x3(result, r, c)
+                if len(nbrs) < 3:
+                    continue
+                med = statistics.median(nbrs)
+                try:
+                    std = statistics.stdev(nbrs)
+                except statistics.StatisticsError:
+                    std = 0.0
+                abs_diff = abs(result[idx] - med)
+                if abs_diff > max(sigma * std, 100.0):
+                    result[idx] = med
+                    replacements += 1
+        if replacements == 0:
+            break
+        print(f"[georeel] DEM outlier pass {pass_num + 1}: replaced {replacements} cells",
+              flush=True)
+
+    # ---- Phase 2: larger-radius detection + flood-fill inpainting -------- #
+    # Flag cells that deviate > 200 m from the median of their 5-cell radius
+    # neighbourhood (catches interior cells of bad patches).
+    INPAINT_RADIUS   = 5
+    INPAINT_THRESHOLD = 200.0   # metres
+
+    bad: set[int] = set()
+    for r in range(rows):
+        for c in range(cols):
+            nbrs = _nbrs_radius(result, r, c, INPAINT_RADIUS)
+            if not nbrs:
+                continue
+            med = statistics.median(nbrs)
+            if abs(result[r * cols + c] - med) > INPAINT_THRESHOLD:
+                bad.add(r * cols + c)
+
+    if bad:
+        print(f"[georeel] DEM inpainting: {len(bad)} cells flagged for flood-fill",
+              flush=True)
+        # Iteratively replace bad cells that have at least one good neighbour
+        # with the mean of those good neighbours.  Runs outward from the
+        # boundary of the bad patch until all cells are filled.
+        for fill_pass in range(rows * cols):   # upper bound
+            newly_filled: list[tuple[int, float]] = []
+            for idx in bad:
+                r, c = idx // cols, idx % cols
+                good_vals = []
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        nidx = nr * cols + nc
+                        if 0 <= nr < rows and 0 <= nc < cols and nidx not in bad:
+                            good_vals.append(result[nidx])
+                if good_vals:
+                    newly_filled.append((idx, sum(good_vals) / len(good_vals)))
+            if not newly_filled:
+                break
+            for idx, val in newly_filled:
+                result[idx] = val
+                bad.discard(idx)
+        if bad:
+            print(f"[georeel] DEM inpainting: {len(bad)} cells could not be filled "
+                  f"(fully enclosed — using global median fallback)",
+                  flush=True)
+            global_median = statistics.median(result)
+            for idx in bad:
+                result[idx] = global_median
+
+    return result
+
+
+def _report_scene_bounds(bpy) -> None:
+    """Print world-space vertex bounds for every mesh object in the scene.
+
+    Flags any object whose vertex coordinates fall outside the terrain
+    bounding box — those are the objects that contain the spike vertices
+    visible as holes in the wireframe.
+    """
+    # Collect terrain bounds first (the reference)
+    terrain = bpy.data.objects.get("Terrain")
+    if terrain and terrain.type == 'MESH':
+        zs = [v.co.z for v in terrain.data.vertices]
+        z_lo, z_hi = min(zs), max(zs)
+        xs = [v.co.x for v in terrain.data.vertices]
+        ys = [v.co.y for v in terrain.data.vertices]
+        x_lo, x_hi = min(xs), max(xs)
+        y_lo, y_hi = min(ys), max(ys)
+        print(f"[georeel] Terrain bounds  x=[{x_lo:.1f}, {x_hi:.1f}] "
+              f"y=[{y_lo:.1f}, {y_hi:.1f}]  z=[{z_lo:.1f}, {z_hi:.1f}]",
+              flush=True)
+    else:
+        x_lo, x_hi, y_lo, y_hi, z_lo, z_hi = 0, 1e9, 0, 1e9, -1e9, 1e9
+
+    z_range = max(z_hi - z_lo, 1.0)
+
+    print("[georeel] Per-object vertex bounds:", flush=True)
+    for obj in sorted(bpy.data.objects, key=lambda o: o.name):
+        if obj.type != 'MESH' or obj.name == "Terrain":
+            continue
+        verts = obj.data.vertices
+        if not verts:
+            continue
+        oxs = [v.co.x for v in verts]
+        oys = [v.co.y for v in verts]
+        ozs = [v.co.z for v in verts]
+        ox_lo, ox_hi = min(oxs), max(oxs)
+        oy_lo, oy_hi = min(oys), max(oys)
+        oz_lo, oz_hi = min(ozs), max(ozs)
+        # Flag objects with Z values far outside terrain range
+        z_outliers = [v.co.z for v in verts
+                      if v.co.z < z_lo - z_range or v.co.z > z_hi + z_range]
+        flag = f"  *** {len(z_outliers)} Z-outlier(s)!" if z_outliers else ""
+        print(f"[georeel]   {obj.name:30s}  "
+              f"x=[{ox_lo:8.1f}, {ox_hi:8.1f}]  "
+              f"y=[{oy_lo:8.1f}, {oy_hi:8.1f}]  "
+              f"z=[{oz_lo:8.1f}, {oz_hi:8.1f}]{flag}",
+              flush=True)
+        if z_outliers:
+            for v in verts:
+                if v.co.z < z_lo - z_range or v.co.z > z_hi + z_range:
+                    print(f"[georeel]     outlier vertex idx={v.index} "
+                          f"xyz=({v.co.x:.2f}, {v.co.y:.2f}, {v.co.z:.2f})",
+                          flush=True)
+
+
+def _report_dem_quality(elev_raw, rows: int, cols: int,
+                        min_lat: float, max_lat: float,
+                        min_lon: float, max_lon: float) -> None:
+    """Print a diagnostic summary of DEM quality to stdout.
+
+    Reports:
+      • total cell count and grid dimensions
+      • number / percentage of invalid (NaN / out-of-range) cells
+      • lat/lon bounding box of the invalid cells (useful for cross-checking
+        against known data-gap areas or ocean tiles)
+      • elevation statistics for the valid cells
+    """
+    total    = rows * cols
+    invalid_coords: list[tuple[float, float, float]] = []  # (lat, lon, raw_value)
+    valid_vals: list[float] = []
+
+    for idx, v in enumerate(elev_raw):
+        r = idx // cols
+        c = idx  % cols
+        lat = max_lat - r * (max_lat - min_lat) / max(rows - 1, 1)
+        lon = min_lon + c * (max_lon - min_lon) / max(cols - 1, 1)
+        if not math.isfinite(v) or v < -500 or v > 9000:
+            invalid_coords.append((lat, lon, v))
+        else:
+            valid_vals.append(v)
+
+    n_bad = len(invalid_coords)
+    print(f"[georeel] DEM grid: {rows}×{cols} = {total} cells", flush=True)
+
+    if n_bad == 0:
+        print("[georeel] DEM quality: all cells valid — no holes expected from NoData",
+              flush=True)
+    else:
+        pct = 100.0 * n_bad / total
+        print(f"[georeel] DEM quality: {n_bad} invalid cells ({pct:.2f}%) "
+              f"— these are clamped to 0 m and will appear as pits/holes",
+              flush=True)
+        bad_lats  = [c[0] for c in invalid_coords]
+        bad_lons  = [c[1] for c in invalid_coords]
+        print(f"[georeel]   invalid cell lat range : {min(bad_lats):.5f} … {max(bad_lats):.5f}",
+              flush=True)
+        print(f"[georeel]   invalid cell lon range : {min(bad_lons):.5f} … {max(bad_lons):.5f}",
+              flush=True)
+        # Print up to 20 worst offenders (most extreme raw values)
+        worst = sorted(invalid_coords, key=lambda x: abs(x[2]) if math.isfinite(x[2]) else 1e9,
+                       reverse=True)[:20]
+        print("[georeel]   sample invalid cells (lat, lon, raw_value):", flush=True)
+        for lat, lon, val in worst:
+            val_str = f"{val:.1f}" if math.isfinite(val) else str(val)
+            print(f"[georeel]     ({lat:.5f}, {lon:.5f})  raw={val_str}", flush=True)
+
+    if valid_vals:
+        v_min = min(valid_vals)
+        v_max = max(valid_vals)
+        v_mean = sum(valid_vals) / len(valid_vals)
+        print(f"[georeel]   valid elevation: min={v_min:.1f} m  "
+              f"max={v_max:.1f} m  mean={v_mean:.1f} m", flush=True)
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
