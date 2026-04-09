@@ -330,7 +330,10 @@ def _compute_pause_schedule(
     Returns a dict suitable for JSON serialisation:
       fly_total_frames  — non-pause frames (ribbon travel only)
       total_scene_frames — fly + all pause frames
-      pauses — list of {scene_start, duration, cumulative_before}
+      pauses — list of {scene_start, duration, cumulative_before}, one entry
+               per distinct waypoint; carousels (multiple photos at the same
+               location) are merged into a single entry whose duration covers
+               all photos in the cluster
     """
     fps = float(settings.get("render/fps", 30))
     speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
@@ -383,18 +386,28 @@ def _compute_pause_schedule(
 
         waypoints.sort(key=lambda w: w[0])
 
+        # Group photos that map to the same fly_frame (carousel / cluster).
+        # Merging them into one pause entry with combined duration means the
+        # schedule has exactly one entry per waypoint, which lets _build_marker
+        # and _build_ribbon share the same timing data without key collisions.
         cumulative_pause = 0
-        for fly_frame, _ in waypoints:
-            # scene_start is offset by pre_total so it falls in the fly section
+        i = 0
+        while i < len(waypoints):
+            fly_frame = waypoints[i][0]
+            j = i + 1
+            while j < len(waypoints) and waypoints[j][0] == fly_frame:
+                j += 1
+            total_duration = pause_frames * (j - i)
             scene_start = pre_total + fly_frame + cumulative_pause + 1
             pauses.append(
                 {
                     "scene_start": scene_start,
-                    "duration": pause_frames,
+                    "duration": total_duration,
                     "cumulative_before": cumulative_pause,
                 }
             )
-            cumulative_pause += pause_frames
+            cumulative_pause += total_duration
+            i = j
 
     total_scene_frames = (
         pre_total + fly_total + sum(p["duration"] for p in pauses) + post_total
