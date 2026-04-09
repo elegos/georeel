@@ -15,6 +15,7 @@ from typing import Sequence
 
 import numpy as np
 from scipy.interpolate import splev, splprep
+from scipy.ndimage import gaussian_filter1d
 
 from .bounding_box import BoundingBox
 from .camera_keyframe import CameraKeyframe
@@ -154,17 +155,44 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     horiz_back = height_offset * math.cos(tilt_rad)
     height_above = height_offset * math.sin(tilt_rad)
 
+    # Smooth the forward direction components with a 2-second window before
+    # computing camera offsets.  This removes end-of-track rotation jumps
+    # (where the lookahead window shrinks to 0 frames and the direction
+    # collapses to a single-point estimate) and any mid-track oscillations.
+    nxs = np.array([forward_dirs[i][0] for i in range(n_frames)])
+    nys = np.array([forward_dirs[i][1] for i in range(n_frames)])
+    sigma_dir = max(1.0, fps * 2)
+    nxs = gaussian_filter1d(nxs, sigma=sigma_dir, mode="nearest")
+    nys = gaussian_filter1d(nys, sigma=sigma_dir, mode="nearest")
+    mags = np.hypot(nxs, nys)
+    mags = np.where(mags > 1e-10, mags, 1.0)
+    nxs /= mags
+    nys /= mags
+
+    cam_xs_raw = xs - nxs * horiz_back
+    cam_ys_raw = ys - nys * horiz_back
+    cam_zs_raw = terrain_zs + height_above
+
+    # Light positional smoothing to remove any remaining jitter from DEM noise.
+    sigma = max(1.0, fps / 2)
+    cam_xs = gaussian_filter1d(cam_xs_raw, sigma=sigma, mode="nearest")
+    cam_ys = gaussian_filter1d(cam_ys_raw, sigma=sigma, mode="nearest")
+    cam_zs = gaussian_filter1d(cam_zs_raw, sigma=sigma, mode="nearest")
+
+    # Also smooth look-at Z to suppress DEM noise (look-at XY stays on the spline)
+    look_at_zs = gaussian_filter1d(terrain_zs, sigma=sigma, mode="nearest")
+
     # Frame numbers start at 1 to match Blender's default timeline origin and
     # the Build modifier's frame_start=1 in build_scene.py.
     keyframes: list[CameraKeyframe] = [
         CameraKeyframe(
             frame=i + 1,
-            x=float(xs[i]) - forward_dirs[i][0] * horiz_back,
-            y=float(ys[i]) - forward_dirs[i][1] * horiz_back,
-            z=float(terrain_zs[i]) + height_above,
+            x=float(cam_xs[i]),
+            y=float(cam_ys[i]),
+            z=float(cam_zs[i]),
             look_at_x=float(xs[i]),
             look_at_y=float(ys[i]),
-            look_at_z=float(terrain_zs[i]),
+            look_at_z=float(look_at_zs[i]),
         )
         for i in range(n_frames)
     ]
@@ -331,6 +359,22 @@ def _compute_forward_dirs_spline(
 # Photo pause insertion
 # ------------------------------------------------------------------
 
+def _make_pause_block(ref: CameraKeyframe, photo_path: str,
+                      pause_frames: int) -> list[CameraKeyframe]:
+    return [
+        CameraKeyframe(
+            frame=0,
+            x=ref.x, y=ref.y, z=ref.z,
+            look_at_x=ref.look_at_x,
+            look_at_y=ref.look_at_y,
+            look_at_z=ref.look_at_z,
+            is_pause=True,
+            photo_path=photo_path,
+        )
+        for _ in range(pause_frames)
+    ]
+
+
 def _insert_pauses(
     keyframes: list[CameraKeyframe],
     pipeline: Pipeline,
@@ -342,56 +386,67 @@ def _insert_pauses(
 ) -> list[CameraKeyframe]:
     pause_frames = max(1, round(pause_duration * fps))
 
-    # Collect scene-space positions of successfully matched photo waypoints
-    waypoints: list[tuple[float, float, str]] = []
+    waypoints_pre:   list[tuple[float, str]] = []  # (sort_key, photo_path)
+    waypoints_track: list[tuple[float, float, str]] = []  # (wx, wy, photo_path)
+    waypoints_post:  list[tuple[float, str]] = []  # (sort_key, photo_path)
+
     for r in pipeline.match_results:
-        if r.ok and r.trackpoint_index is not None:
+        if not (r.ok and r.trackpoint_index is not None):
+            continue
+        pos = r.position
+        if pos == "pre":
+            waypoints_pre.append((r.sort_key, r.photo_path))
+        elif pos == "post":
+            waypoints_post.append((r.sort_key, r.photo_path))
+        else:
             tp = pipeline.trackpoints[r.trackpoint_index]
             wx, wy = _tp_to_xy(tp, bbox, lat_m, lon_m)
-            waypoints.append((float(wx), float(wy), r.photo_path))
+            waypoints_track.append((float(wx), float(wy), r.photo_path))
 
-    if not waypoints:
+    if not waypoints_pre and not waypoints_track and not waypoints_post:
         return keyframes
 
-    # Match against look-at positions (= track marker positions), not camera
-    # positions, so the pause is inserted at the frame where the camera is
-    # looking at the waypoint — not when it physically passes through it.
-    kf_xy = np.array([(kf.look_at_x, kf.look_at_y) for kf in keyframes])
+    # ── Pre-track: camera holds at the first fly frame ──────────────────
+    pre_block: list[CameraKeyframe] = []
+    if waypoints_pre and keyframes:
+        waypoints_pre.sort(key=lambda w: w[0])   # chronological (most negative first)
+        ref = keyframes[0]
+        for _, photo_path in waypoints_pre:
+            pre_block.extend(_make_pause_block(ref, photo_path, pause_frames))
 
-    # Compute insertion indices — sort descending so earlier insertions
-    # don't invalidate later indices
-    insertions: list[tuple[int, CameraKeyframe]] = []
-    for (wx, wy, photo_path) in waypoints:
-        dists = np.sqrt((kf_xy[:, 0] - wx)**2 + (kf_xy[:, 1] - wy)**2)
-        idx   = int(np.argmin(dists))
-        ref   = keyframes[idx]
-        pause_kf = CameraKeyframe(
-            frame=0,   # renumbered below
-            x=ref.x, y=ref.y, z=ref.z,
-            look_at_x=ref.look_at_x,
-            look_at_y=ref.look_at_y,
-            look_at_z=ref.look_at_z,
-            is_pause=True,
-            photo_path=photo_path,
-        )
-        insertions.append((idx, pause_kf))
-
-    insertions.sort(key=lambda e: e[0], reverse=True)
-
-    for idx, pause_kf in insertions:
-        block = [
-            CameraKeyframe(
+    # ── In-track: insert after the nearest look-at keyframe ─────────────
+    if waypoints_track:
+        kf_xy = np.array([(kf.look_at_x, kf.look_at_y) for kf in keyframes])
+        insertions: list[tuple[int, CameraKeyframe]] = []
+        for (wx, wy, photo_path) in waypoints_track:
+            dists = np.sqrt((kf_xy[:, 0] - wx)**2 + (kf_xy[:, 1] - wy)**2)
+            idx   = int(np.argmin(dists))
+            ref   = keyframes[idx]
+            insertions.append((idx, CameraKeyframe(
                 frame=0,
-                x=pause_kf.x, y=pause_kf.y, z=pause_kf.z,
-                look_at_x=pause_kf.look_at_x,
-                look_at_y=pause_kf.look_at_y,
-                look_at_z=pause_kf.look_at_z,
+                x=ref.x, y=ref.y, z=ref.z,
+                look_at_x=ref.look_at_x,
+                look_at_y=ref.look_at_y,
+                look_at_z=ref.look_at_z,
                 is_pause=True,
-                photo_path=pause_kf.photo_path,
-            )
-            for _ in range(pause_frames)
-        ]
-        keyframes = keyframes[: idx + 1] + block + keyframes[idx + 1:]
+                photo_path=photo_path,
+            )))
+        # Insert from last to first so earlier indices stay valid
+        insertions.sort(key=lambda e: e[0], reverse=True)
+        for idx, pause_kf in insertions:
+            keyframes = (keyframes[: idx + 1]
+                         + _make_pause_block(pause_kf, pause_kf.photo_path, pause_frames)
+                         + keyframes[idx + 1:])
+
+    # ── Post-track: camera holds at the last fly frame ───────────────────
+    post_block: list[CameraKeyframe] = []
+    if waypoints_post and keyframes:
+        waypoints_post.sort(key=lambda w: w[0])   # chronological
+        ref = keyframes[-1]
+        for _, photo_path in waypoints_post:
+            post_block.extend(_make_pause_block(ref, photo_path, pause_frames))
+
+    keyframes = pre_block + keyframes + post_block
 
     # Renumber frames sequentially starting at 1 (Blender timeline origin)
     for i, kf in enumerate(keyframes):

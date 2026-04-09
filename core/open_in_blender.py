@@ -14,7 +14,8 @@ from pathlib import Path
 from .blender_runtime import find_blender
 from .camera_keyframe import CameraKeyframe
 
-_INJECT_SCRIPT = Path(__file__).parent / "blender_scripts" / "inject_camera.py"
+_INJECT_SCRIPT        = Path(__file__).parent / "blender_scripts" / "inject_camera.py"
+_SETUP_VIEWPORT_SCRIPT = Path(__file__).parent / "blender_scripts" / "setup_viewport.py"
 _TIMEOUT_SECONDS = 120
 
 
@@ -81,5 +82,11 @@ def inject_camera_and_open(
             f"Camera injection failed (exit {result.returncode}).\n{tail}"
         )
 
-    # Open the result interactively (non-blocking)
-    subprocess.Popen([blender_exe, str(out_blend)])
+    # Open the result interactively (non-blocking).
+    # setup_viewport.py fires via a timer once the UI event loop is ready,
+    # switching every 3D viewport to Material Preview / camera view and
+    # pre-selecting FlyCamera in the scene collection.
+    subprocess.Popen([
+        blender_exe, str(out_blend),
+        "--python", str(_SETUP_VIEWPORT_SCRIPT),
+    ])

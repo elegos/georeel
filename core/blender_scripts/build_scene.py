@@ -36,6 +36,7 @@ def main() -> None:
     fps           = float(argv[8]) if len(argv) > 8  else 30.0
     speed_mps     = float(argv[9]) if len(argv) > 9  else 80.0
     pauses_path   = argv[10]       if len(argv) > 10 else None
+    marker_color  = argv[11]       if len(argv) > 11 else "#ADD8E6"
 
     pause_schedule: dict = {}
     if pauses_path and os.path.isfile(pauses_path):
@@ -43,9 +44,9 @@ def main() -> None:
             pause_schedule = json.load(_f)
 
     sun_vec = None
-    if len(argv) >= 14:
+    if len(argv) >= 15:
         try:
-            sun_vec = (float(argv[11]), float(argv[12]), float(argv[13]))
+            sun_vec = (float(argv[12]), float(argv[13]), float(argv[14]))
         except ValueError:
             pass
 
@@ -218,6 +219,20 @@ def main() -> None:
         wlinks.new(bg_node.outputs["Background"], world_out.inputs["Surface"])
 
     # ------------------------------------------------------------------ #
+    # Placeholder FlyCamera                                                #
+    # Create it now so LOCKED_TRACK constraints in _build_marker /        #
+    # _build_pins can target it.  inject_camera.py will reuse this same   #
+    # object (by name) and add the fly-through keyframes to it.           #
+    # ------------------------------------------------------------------ #
+    cam_data_placeholder = bpy.data.cameras.new("FlyCamera")
+    cam_data_placeholder.lens       = 35
+    cam_data_placeholder.clip_start = 1.0
+    cam_data_placeholder.clip_end   = 100_000.0
+    cam_placeholder = bpy.data.objects.new("FlyCamera", cam_data_placeholder)
+    bpy.context.scene.collection.objects.link(cam_placeholder)
+    bpy.context.scene.camera = cam_placeholder
+
+    # ------------------------------------------------------------------ #
     # GPX path ribbon                                                      #
     # ------------------------------------------------------------------ #
 
@@ -229,7 +244,8 @@ def main() -> None:
                           pause_schedule=pause_schedule)
             _build_marker(bpy, track_data, height_offset=height_offset,
                           fps=fps, speed_mps=speed_mps,
-                          pause_schedule=pause_schedule)
+                          pause_schedule=pause_schedule,
+                          marker_color=marker_color)
 
     # ------------------------------------------------------------------ #
     # Photo waypoint pins (billboards)                                     #
@@ -263,25 +279,45 @@ def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
 
 def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
                 height_offset: float = 200.0) -> None:
-    """Build one billboard pin per waypoint.
+    """Build one map-pin marker per photo waypoint.
 
-    Each pin is a circular disc in the local XZ plane, extruded via a Solidify
-    modifier to give it physical depth.  Pin dimensions and thickness scale with
-    *height_offset* so the pins appear consistent at different camera altitudes.
-    A Locked Track constraint keeps each pin always facing the camera.
+    Shape mirrors _build_marker: teardrop outer body (in the local XZ plane) +
+    inner disc (photo thumbnail or dark hole), parented to the body so all
+    children inherit its LOCKED_TRACK constraint and track the camera every frame.
+
+    Geometry sits in the local XZ plane (Y = 0).  LOCKED_TRACK (TRACK_Y, LOCK_Z)
+    rotates the body so local +Y always points toward the FlyCamera, making the
+    front face visible throughout the animation.  The inner disc is offset to
+    local Y = +solidify_th/2 + margin so it sits just in front of the solidified
+    outer face.
     """
-    # Scale all dimensions proportionally to camera height so the pins
-    # appear the same angular size regardless of altitude.
-    scale      = height_offset / 200.0
-    pin_width  = 24.0 * scale
-    thickness  = max(2.0, pin_width * 0.3)   # 30% of width, minimum 2 m
-    z_offset   = 3.0 * scale
-    border     = 1.5 * scale
-    _N_CIRCLE  = 20   # polygon segments for the disc
+    scale       = height_offset / 200.0
+    marker_r    = max(1.5, 4.0 * scale)
+    r_head      = marker_r * 0.8
+    z_c         = r_head * 1.7
+    solidify_th = max(1.0, marker_r * 0.3)
+    z_offset    = 3.0 * scale
+    r_inner     = r_head * 0.52
+    n_inner     = 20
+    n_arc       = 24
 
-    # Photo face sits just in front of the solidified front face
-    # (LOCKED_TRACK → Y toward camera → negative Y = toward camera)
-    photo_front_y = -(thickness / 2.0 + 0.2 * scale)
+    # Teardrop: tip at origin, CCW arc from right-tangent to left-tangent
+    theta_r = -math.asin(r_head / z_c)
+    theta_l =  math.pi + math.asin(r_head / z_c)
+    arc_verts = []
+    for k in range(n_arc + 1):
+        t = theta_r + (theta_l - theta_r) * k / n_arc
+        arc_verts.append((r_head * math.cos(t), 0.0, z_c + r_head * math.sin(t)))
+    teardrop_verts = [(0.0, 0.0, 0.0)] + arc_verts
+    teardrop_face  = list(range(len(teardrop_verts)))
+
+    # Inner disc vertices template (local XZ plane, centred on head circle)
+    inner_verts_tmpl = [
+        (r_inner * math.cos(2 * math.pi * k / n_inner),
+         0.0,
+         z_c + r_inner * math.sin(2 * math.pi * k / n_inner))
+        for k in range(n_inner)
+    ]
 
     pin_r, pin_g, pin_b = _hex_to_rgb(pin_color_hex)
     cam_obj = next((o for o in bpy.data.objects if o.type == 'CAMERA'), None)
@@ -291,28 +327,12 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
         base_y = pin["y"]
         base_z = pin["z"] + z_offset
 
-        radius   = pin_width / 2.0
-        center_z = radius   # circle bottom at z=0, top at z=2*radius
-
         # ---------------------------------------------------------------- #
-        # Circular disc in local XZ plane (Y=0); Solidify adds depth       #
+        # Outer teardrop body                                               #
         # ---------------------------------------------------------------- #
-        circle_verts = [
-            (radius * math.cos(2 * math.pi * k / _N_CIRCLE),
-             0.0,
-             center_z + radius * math.sin(2 * math.pi * k / _N_CIRCLE))
-            for k in range(_N_CIRCLE)
-        ]
-        circle_face = list(range(_N_CIRCLE))
-
-        pin_mesh = bpy.data.meshes.new(f"Pin_{i}")
-        pin_mesh.from_pydata(circle_verts, [], [circle_face])
-        pin_mesh.update()
-
-        # Convenience bounds for photo face (inscribed square)
-        hw       = radius * 0.9
-        body_bot = center_z - radius * 0.9
-        body_top = center_z + radius * 0.9
+        body_mesh = bpy.data.meshes.new(f"Pin_{i}")
+        body_mesh.from_pydata(teardrop_verts, [], [teardrop_face])
+        body_mesh.update()
 
         body_mat = bpy.data.materials.new(f"PinBody_{i}")
         body_mat.use_nodes = True
@@ -324,139 +344,79 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
         emit.inputs["Strength"].default_value = 2.0
         bout = bnodes.new("ShaderNodeOutputMaterial")
         blinks.new(emit.outputs["Emission"], bout.inputs["Surface"])
-        pin_mesh.materials.append(body_mat)
+        body_mesh.materials.append(body_mat)
 
-        pin_obj = bpy.data.objects.new(f"Pin_{i}", pin_mesh)
+        pin_obj = bpy.data.objects.new(f"Pin_{i}", body_mesh)
         pin_obj.location = (base_x, base_y, base_z)
         bpy.context.scene.collection.objects.link(pin_obj)
 
-        # Solidify: symmetric extrusion → front face at -thickness/2, back at +thickness/2
-        mod = pin_obj.modifiers.new(name="Solidify", type='SOLIDIFY')
-        mod.thickness = thickness
-        mod.offset = 0.0
+        sol = pin_obj.modifiers.new("Solidify", 'SOLIDIFY')
+        sol.thickness = solidify_th
+        sol.offset    = 0.0   # symmetric: front face at local Y = +solidify_th/2
+
+        # LOCKED_TRACK on the body — the single source of camera-facing rotation
+        locked = pin_obj.constraints.new(type='LOCKED_TRACK')
+        locked.track_axis = 'TRACK_Y'
+        locked.lock_axis  = 'LOCK_Z'
+        if cam_obj:
+            locked.target = cam_obj
 
         # ---------------------------------------------------------------- #
-        # Photo thumbnail (sits in front of the solidified front face)     #
+        # Inner disc: photo thumbnail or dark hole                          #
+        # Parented to body → inherits camera-facing rotation automatically  #
+        # Local Y offset places it just in front of the solidified face     #
         # ---------------------------------------------------------------- #
+        inner_mesh = bpy.data.meshes.new(f"PinInner_{i}")
+        inner_mesh.from_pydata(inner_verts_tmpl, [], [list(range(n_inner))])
+        inner_mesh.update()
+
         photo_path = pin.get("photo_path", "")
         if photo_path and os.path.isfile(photo_path):
-            _add_photo_face(bpy, pin_obj, i, photo_path,
-                            hw, body_bot, body_top, border, photo_front_y)
+            # UV: map each loop vertex's angle to UV space
+            uv_layer = inner_mesh.uv_layers.new(name="UVMap")
+            for loop_idx in range(n_inner):
+                u = 0.5 + 0.5 * math.cos(2 * math.pi * loop_idx / n_inner)
+                v = 0.5 + 0.5 * math.sin(2 * math.pi * loop_idx / n_inner)
+                uv_layer.data[loop_idx].uv = (u, v)
 
-        # ---------------------------------------------------------------- #
-        # Always-face-camera constraint                                     #
-        # ---------------------------------------------------------------- #
-        con = pin_obj.constraints.new(type='LOCKED_TRACK')
-        con.track_axis = 'TRACK_Y'
-        con.lock_axis  = 'LOCK_Z'
-        if cam_obj:
-            con.target = cam_obj
+            inner_mat = bpy.data.materials.new(f"PinPhoto_{i}")
+            inner_mat.use_nodes = True
+            inodes = inner_mat.node_tree.nodes
+            ilinks = inner_mat.node_tree.links
+            inodes.clear()
+            tex_nd = inodes.new("ShaderNodeTexImage")
+            try:
+                tex_nd.image = bpy.data.images.load(photo_path)
+            except Exception:
+                pass
+            tex_nd.location = (-300, 0)
+            iemit = inodes.new("ShaderNodeEmission")
+            iemit.inputs["Strength"].default_value = 2.0
+            iemit.location = (0, 0)
+            iout = inodes.new("ShaderNodeOutputMaterial")
+            iout.location = (300, 0)
+            ilinks.new(tex_nd.outputs["Color"], iemit.inputs["Color"])
+            ilinks.new(iemit.outputs["Emission"], iout.inputs["Surface"])
+        else:
+            inner_mat = bpy.data.materials.new(f"PinHole_{i}")
+            inner_mat.use_nodes = True
+            inodes = inner_mat.node_tree.nodes
+            ilinks = inner_mat.node_tree.links
+            inodes.clear()
+            iemit = inodes.new("ShaderNodeEmission")
+            iemit.inputs["Color"].default_value = (0.02, 0.02, 0.02, 1.0)
+            iemit.inputs["Strength"].default_value = 3.0
+            iout = inodes.new("ShaderNodeOutputMaterial")
+            ilinks.new(iemit.outputs["Emission"], iout.inputs["Surface"])
 
-        # ---------------------------------------------------------------- #
-        # Dark border outline (slightly larger circle, same thickness)     #
-        # ---------------------------------------------------------------- #
-        out_r = radius + border
-        outline_verts = [
-            (out_r * math.cos(2 * math.pi * k / _N_CIRCLE),
-             0.0,
-             center_z + out_r * math.sin(2 * math.pi * k / _N_CIRCLE))
-            for k in range(_N_CIRCLE)
-        ]
-        outline_faces = [list(range(_N_CIRCLE))]
-        out_mesh = bpy.data.meshes.new(f"PinOutline_{i}")
-        out_mesh.from_pydata(outline_verts, [], outline_faces)
-        out_mesh.update()
+        inner_mesh.materials.append(inner_mat)
 
-        out_mat = bpy.data.materials.new(f"PinOutline_{i}")
-        out_mat.use_nodes = True
-        onodes = out_mat.node_tree.nodes
-        olinks = out_mat.node_tree.links
-        onodes.clear()
-        oemit = onodes.new("ShaderNodeEmission")
-        oemit.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
-        oemit.inputs["Strength"].default_value = 2.0
-        oout = onodes.new("ShaderNodeOutputMaterial")
-        olinks.new(oemit.outputs["Emission"], oout.inputs["Surface"])
-        out_mesh.materials.append(out_mat)
-
-        out_obj = bpy.data.objects.new(f"PinOutline_{i}", out_mesh)
-        out_obj.location = (base_x, base_y, base_z)
-        bpy.context.scene.collection.objects.link(out_obj)
-
-        out_mod = out_obj.modifiers.new(name="Solidify", type='SOLIDIFY')
-        out_mod.thickness = thickness + 0.2 * scale
-        out_mod.offset = 0.0
-
-        con2 = out_obj.constraints.new(type='LOCKED_TRACK')
-        con2.track_axis = 'TRACK_Y'
-        con2.lock_axis  = 'LOCK_Z'
-        if cam_obj:
-            con2.target = cam_obj
-
-
-def _add_photo_face(bpy, pin_obj, index: int, photo_path: str,
-                    hw: float, body_bot: float, body_top: float,
-                    border: float, front_y: float) -> None:
-    """Add a textured quad showing the photo thumbnail inside the pin body.
-
-    *front_y* is the local Y coordinate of the front face of the solidified
-    pin, so the photo sits just in front of it (more negative Y = toward camera).
-    """
-    pad = border * 1.5
-    x0, x1 = -hw + pad,  hw - pad
-    z0, z1 = body_bot + pad, body_top - pad
-
-    photo_verts = [
-        (x0, front_y, z0),
-        (x1, front_y, z0),
-        (x1, front_y, z1),
-        (x0, front_y, z1),
-    ]
-    photo_mesh = bpy.data.meshes.new(f"PinPhoto_{index}")
-    photo_mesh.from_pydata(photo_verts, [], [(0, 1, 2, 3)])
-    photo_mesh.update()
-
-    uv = photo_mesh.uv_layers.new(name="UVMap")
-    uv.data[0].uv = (0, 0)
-    uv.data[1].uv = (1, 0)
-    uv.data[2].uv = (1, 1)
-    uv.data[3].uv = (0, 1)
-
-    mat = bpy.data.materials.new(f"PinPhoto_{index}")
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    nodes.clear()
-
-    tex_node = nodes.new("ShaderNodeTexImage")
-    try:
-        tex_node.image = bpy.data.images.load(photo_path)
-    except Exception:
-        pass
-    tex_node.location = (-300, 0)
-
-    emit_node = nodes.new("ShaderNodeEmission")
-    emit_node.inputs["Strength"].default_value = 2.0
-    emit_node.location = (0, 0)
-
-    out_node = nodes.new("ShaderNodeOutputMaterial")
-    out_node.location = (300, 0)
-
-    links.new(tex_node.outputs["Color"], emit_node.inputs["Color"])
-    links.new(emit_node.outputs["Emission"], out_node.inputs["Surface"])
-
-    photo_mesh.materials.append(mat)
-
-    photo_obj = bpy.data.objects.new(f"PinPhoto_{index}", photo_mesh)
-    photo_obj.location = pin_obj.location
-    bpy.context.scene.collection.objects.link(photo_obj)
-
-    con = photo_obj.constraints.new(type='LOCKED_TRACK')
-    con.track_axis = 'TRACK_Y'
-    con.lock_axis  = 'LOCK_Z'
-    cam_obj = next((o for o in bpy.data.objects if o.type == 'CAMERA'), None)
-    if cam_obj:
-        con.target = cam_obj
+        inner_obj = bpy.data.objects.new(f"PinInner_{i}", inner_mesh)
+        bpy.context.scene.collection.objects.link(inner_obj)
+        inner_obj.parent = pin_obj  # inherits LOCKED_TRACK via parent world transform
+        inner_obj.matrix_parent_inverse.identity()
+        # Local +Y offset: sit just in front of the solidified outer face
+        inner_obj.location = (0.0, solidify_th / 2.0 + 0.05 * scale, 0.0)
 
 
 def _slope_color(slope: float) -> tuple[float, float, float]:
@@ -484,7 +444,8 @@ def _build_marker(bpy, track_data: list[dict],
                   height_offset: float = 200.0,
                   fps: float = 30.0, speed_mps: float = 80.0,
                   z_offset: float = 4.0,
-                  pause_schedule: dict | None = None) -> None:
+                  pause_schedule: dict | None = None,
+                  marker_color: str = "#ADD8E6") -> None:
     """Create an animated position marker that travels along the track.
 
     Strategy:
@@ -500,10 +461,11 @@ def _build_marker(bpy, track_data: list[dict],
                                                    int((n - 1) * frames_per_point))
     total_scene      = (pause_schedule or {}).get("total_scene_frames", fly_total)
     pauses           = (pause_schedule or {}).get("pauses", [])
+    pre_total        = (pause_schedule or {}).get("pre_total_frames", 0)
     total_path_frames = max(2, fly_total)
 
     scale = height_offset / 200.0
-    marker_radius = max(3.0, 8.0 * scale)
+    marker_radius = max(1.5, 4.0 * scale)
 
     # ------------------------------------------------------------------ #
     # NURBS path through track centreline                                  #
@@ -524,25 +486,90 @@ def _build_marker(bpy, track_data: list[dict],
     bpy.context.scene.collection.objects.link(path_obj)
 
     # ------------------------------------------------------------------ #
-    # Marker mesh: flat disc                                               #
+    # Marker mesh: map-pin shape                                           #
+    #                                                                      #
+    # Geometry lives in the local XZ plane (Y = 0).  A LOCKED_TRACK       #
+    # constraint (TRACK_Y, LOCK_Z) rotates the object so its local +Y     #
+    # axis always points toward the camera, making the pin face the        #
+    # viewer while staying upright.                                        #
+    #                                                                      #
+    # Shape: outer teardrop (tip at origin, circular head above) + inner  #
+    # disc (child, floated just in front to form the "hole" in the pin).  #
     # ------------------------------------------------------------------ #
-    bpy.ops.mesh.primitive_circle_add(
-        vertices=16, radius=marker_radius, fill_type='NGON', location=(0, 0, 0)
-    )
-    marker_obj = bpy.context.object
-    marker_obj.name = "TrackMarker"
+    r_head      = marker_radius * 0.8          # head-circle radius
+    z_c         = r_head * 1.7                 # head-circle centre height
+    solidify_th = max(1.0, marker_radius * 0.3)
 
-    mat = bpy.data.materials.new("TrackMarker")
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
+    # -- Outer pin polygon --
+    # Tangent angle: where line from tip (0,0) is tangent to circle → sin θ = −r/z_c
+    theta_r = -math.asin(r_head / z_c)         # right tangent point angle
+    theta_l =  math.pi + math.asin(r_head / z_c)  # left tangent point angle
+    n_arc   = 24
+    arc_verts = []
+    for i in range(n_arc + 1):
+        t = theta_r + (theta_l - theta_r) * i / n_arc
+        arc_verts.append((r_head * math.cos(t), 0.0, z_c + r_head * math.sin(t)))
+
+    # Vertices: tip at origin, then CCW arc (yields +Y normal → camera-facing face)
+    outer_verts = [(0.0, 0.0, 0.0)] + arc_verts
+    outer_face  = list(range(len(outer_verts)))
+
+    outer_mesh = bpy.data.meshes.new("TrackMarker")
+    outer_mesh.from_pydata(outer_verts, [], [outer_face])
+    outer_mesh.update()
+
+    m_r, m_g, m_b = _hex_to_rgb(marker_color)
+    mat_outer = bpy.data.materials.new("TrackMarker")
+    mat_outer.use_nodes = True
+    nodes = mat_outer.node_tree.nodes
+    links = mat_outer.node_tree.links
     nodes.clear()
     emit = nodes.new("ShaderNodeEmission")
-    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    emit.inputs["Color"].default_value = (m_r, m_g, m_b, 1.0)
     emit.inputs["Strength"].default_value = 3.0
-    out = nodes.new("ShaderNodeOutputMaterial")
+    out  = nodes.new("ShaderNodeOutputMaterial")
     links.new(emit.outputs["Emission"], out.inputs["Surface"])
-    marker_obj.data.materials.append(mat)
+    outer_mesh.materials.append(mat_outer)
+
+    marker_obj = bpy.data.objects.new("TrackMarker", outer_mesh)
+    marker_obj.location = (0, 0, 0)
+    bpy.context.scene.collection.objects.link(marker_obj)
+
+    sol = marker_obj.modifiers.new("Solidify", 'SOLIDIFY')
+    sol.thickness = solidify_th
+    sol.offset    = 0.0   # symmetric → front face at Y = +solidify_th/2
+
+    # -- Inner circle ("hole") as a child of marker_obj --
+    n_inner = 20
+    r_inner = r_head * 0.52
+    inner_verts = [
+        (r_inner * math.cos(2 * math.pi * k / n_inner),
+         0.0,
+         z_c + r_inner * math.sin(2 * math.pi * k / n_inner))
+        for k in range(n_inner)
+    ]
+    inner_mesh = bpy.data.meshes.new("TrackMarkerHole")
+    inner_mesh.from_pydata(inner_verts, [], [list(range(n_inner))])
+    inner_mesh.update()
+
+    mat_inner = bpy.data.materials.new("TrackMarkerHole")
+    mat_inner.use_nodes = True
+    inodes = mat_inner.node_tree.nodes
+    ilinks = mat_inner.node_tree.links
+    inodes.clear()
+    iemit = inodes.new("ShaderNodeEmission")
+    iemit.inputs["Color"].default_value = (0.02, 0.02, 0.02, 1.0)
+    iemit.inputs["Strength"].default_value = 3.0
+    iout  = inodes.new("ShaderNodeOutputMaterial")
+    ilinks.new(iemit.outputs["Emission"], iout.inputs["Surface"])
+    inner_mesh.materials.append(mat_inner)
+
+    hole_obj = bpy.data.objects.new("TrackMarkerHole", inner_mesh)
+    bpy.context.scene.collection.objects.link(hole_obj)
+    hole_obj.parent = marker_obj  # inherits FOLLOW_PATH + LOCKED_TRACK from parent
+    hole_obj.matrix_parent_inverse.identity()
+    # Sit just in front of the outer solidified face so the camera sees the hole
+    hole_obj.location = (0.0, solidify_th / 2.0 + 0.05 * scale, 0.0)
 
     # ------------------------------------------------------------------ #
     # Follow Path constraint                                               #
@@ -552,20 +579,38 @@ def _build_marker(bpy, track_data: list[dict],
     con.use_fixed_location = True
     con.use_curve_follow = False
 
+    # Face camera: local +Y toward camera, Z stays world-up
+    cam_obj = next((o for o in bpy.data.objects if o.type == 'CAMERA'), None)
+    locked = marker_obj.constraints.new(type='LOCKED_TRACK')
+    locked.track_axis = 'TRACK_Y'
+    locked.lock_axis  = 'LOCK_Z'
+    if cam_obj:
+        locked.target = cam_obj
+
     # Keyframe offset_factor with pause-aware timing:
-    #   - LINEAR between pauses (camera moves → marker moves)
-    #   - CONSTANT during pauses (camera holds → marker holds)
+    #   - CONSTANT during pre-track pause (frame 1 → pre_total): marker holds at 0
+    #   - LINEAR between in-track pauses (camera moves → marker moves)
+    #   - CONSTANT during in-track pauses (camera holds → marker holds)
     last_frame = max(2, total_scene)
     con.offset_factor = 0.0
     con.keyframe_insert("offset_factor", frame=1)
 
     pause_starts: set[int] = set()
+
+    if pre_total > 0:
+        # Hold marker at track start during pre-track photo slideshow.
+        # frame=1 becomes CONSTANT (added to pause_starts below) so the marker
+        # doesn't drift, then a LINEAR keyframe at pre_total+1 starts movement.
+        pause_starts.add(1)
+        con.offset_factor = 0.0
+        con.keyframe_insert("offset_factor", frame=pre_total + 1)
+
     for pause in pauses:
         ps = pause["scene_start"]
         pd = pause["duration"]
         cb = pause["cumulative_before"]
-        # fly frames elapsed just before this pause
-        fly_before = ps - cb - 1
+        # fly frames elapsed just before this pause (ps includes pre_total offset)
+        fly_before = ps - cb - 1 - pre_total
         # At pause start: hold at fly_before/fly_total (CONSTANT)
         con.offset_factor = fly_before / fly_total if fly_total > 0 else 0.0
         con.keyframe_insert("offset_factor", frame=ps)
@@ -663,35 +708,39 @@ def _build_ribbon(bpy, track_data: list[dict],
     # Build modifier: reveal one quad per "fly frame" so the ribbon unfolds
     # in sync with the camera.  frame_duration covers only fly frames;
     # frame_start is keyframed to advance during pauses so the ribbon freezes.
+    # Pre-photo frames are handled by setting frame_start > 1 so the ribbon
+    # shows 0 faces while pre-track photos are displayed.
     ribbon_spacing_m = 5.0  # must match _RIBBON_SAMPLE_SPACING_M in scene_builder.py
     frames_per_face = max(1.0, ribbon_spacing_m * fps / speed_mps)
-    fly_total = (pause_schedule or {}).get("fly_total_frames",
-                                           int((n - 1) * frames_per_face))
+    sched      = pause_schedule or {}
+    pre_total  = sched.get("pre_total_frames", 0)
+    fly_total  = sched.get("fly_total_frames", int((n - 1) * frames_per_face))
 
     build_mod = obj.modifiers.new(name="Unfold", type='BUILD')
-    build_mod.frame_start = 1
+    build_mod.frame_start    = pre_total + 1
     build_mod.frame_duration = max(1, fly_total)
     build_mod.use_random_order = False
 
-    pauses = (pause_schedule or {}).get("pauses", [])
-    if pauses:
+    pauses = sched.get("pauses", [])
+    if pauses or pre_total:
         dp = f'modifiers["Unfold"].frame_start'
         if obj.animation_data is None:
             obj.animation_data_create()
-        # Initial KF: frame_start=1, CONSTANT (holds until first pause)
-        build_mod.frame_start = 1
+        # Initial KF at frame 1: frame_start = pre_total+1 → 0 faces during pre-photos
+        build_mod.frame_start = pre_total + 1
         obj.keyframe_insert(data_path=dp, frame=1)
         for pause in pauses:
-            ps = pause["scene_start"]
+            ps = pause["scene_start"]   # already offset by pre_total
             pd = pause["duration"]
             cb = pause["cumulative_before"]
-            # At pause start: frame_start = cb+1 (freeze: LINEAR to cb+pd+1 over pd frames)
-            build_mod.frame_start = cb + 1
+            # At pause start: freeze ribbon (frame_start advances with time)
+            build_mod.frame_start = pre_total + cb + 1
             obj.keyframe_insert(data_path=dp, frame=ps)
-            # At pause end: frame_start = cb+pd+1 (CONSTANT until next pause)
-            build_mod.frame_start = cb + pd + 1
+            # At pause end: resume (CONSTANT until next pause)
+            build_mod.frame_start = pre_total + cb + pd + 1
             obj.keyframe_insert(data_path=dp, frame=ps + pd)
-        # Set interpolation: LINEAR on pause-start KFs, CONSTANT elsewhere
+        # LINEAR interpolation on pause-start KFs so frame_start tracks current_frame;
+        # CONSTANT everywhere else so the ribbon holds its position.
         pause_starts = {p["scene_start"] for p in pauses}
         action = obj.animation_data.action
         if action:

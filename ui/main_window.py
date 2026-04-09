@@ -8,9 +8,11 @@ _log = logging.getLogger(__name__)
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -26,11 +28,13 @@ from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
     RenderSettingsDialog, get_render_settings,
     KEY_HEIGHT_OFFSET, KEY_TILT_DEG, KEY_PHOTO_TZ_OFFSET,
+    KEY_IMAGERY_PROVIDER, KEY_IMAGERY_QUALITY, KEY_IMAGERY_API_KEY, KEY_IMAGERY_CUSTOM_URL,
 )
 from .video_progress_dialog import VideoProgressDialog
 from .preview_map_dialog import PreviewMapDialog
 from .preview_video_dialog import open_preview_video
 from .preview_video_progress_dialog import PreviewVideoProgressDialog
+from .keyframe_calc_worker import KeyframeCalcWorker
 from .scene_prep_worker import ScenePrepWorker
 
 from core.dem_fetcher import DemFetchError, fetch_dem
@@ -48,6 +52,7 @@ from core.scene_builder import SceneBuildError, build_scene
 from core.preview_map import PreviewMapError, render_preview_map
 
 from .gpx_drop_area import GpxDropArea
+from .gpx_stats_widget import GpxStatsWidget
 from .output_file_selector import OutputFileSelector
 from .photo_list_area import PhotoListArea
 
@@ -69,7 +74,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GeoReel")
-        self.setMinimumSize(640, 560)
+        self.setMinimumSize(640, 780)
 
         self._gpx_path: str | None = None
         self._project_path: str | None = None
@@ -79,6 +84,7 @@ class MainWindow(QMainWindow):
         self._suppress_dirty = False
         self._scene_stale = True        # True → stage 5 must rerun in _start()
         self._scene_prep_worker: ScenePrepWorker | None = None
+        self._keyframe_calc_worker: KeyframeCalcWorker | None = None
         self._pipeline = Pipeline()
         self._pending_preview: str = "map"  # "map" or "video"
         self._store = PhotoStore.instance()
@@ -91,7 +97,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(16, 16, 16, 16)
 
         root.addWidget(self._build_gpx_group())
-        root.addWidget(self._build_photos_group())
+        root.addWidget(self._build_photos_group(), stretch=1)
         root.addWidget(self._build_match_group())
         root.addWidget(self._build_output_group())
         root.addLayout(self._build_action_buttons())
@@ -102,9 +108,11 @@ class MainWindow(QMainWindow):
 
         self._build_menu_bar()
 
+        self._photo_area.set_tz_offset(float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
         self._photo_area.photos_changed.connect(self._on_photos_changed)
         self._photo_area.photos_changed.connect(self._mark_dirty)
         self._photo_area.photos_changed.connect(self._invalidate_scene)
+        self._photo_area.calculate_keyframes_requested.connect(self._calculate_keyframes)
         self._match_group.buttonClicked.connect(self._mark_dirty)
         self._match_group.buttonClicked.connect(self._invalidate_scene)
         self._output_selector.path_changed.connect(self._mark_dirty)
@@ -125,15 +133,67 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_render_settings(self):
+        # Snapshot settings that affect DEM coverage and satellite texture
+        _dem_keys = (KEY_HEIGHT_OFFSET, KEY_TILT_DEG)
+        _sat_keys = (KEY_IMAGERY_PROVIDER, KEY_IMAGERY_QUALITY,
+                     KEY_IMAGERY_API_KEY, KEY_IMAGERY_CUSTOM_URL)
+        dem_before = {k: self._settings.value(k) for k in _dem_keys}
+        sat_before = {k: self._settings.value(k) for k in _sat_keys}
+
         dlg = RenderSettingsDialog(self._settings, parent=self)
         if dlg.exec():
+            if any(self._settings.value(k) != dem_before[k] for k in _dem_keys):
+                self._cached_elevation_grid = None
+            if any(self._settings.value(k) != sat_before[k] for k in _sat_keys):
+                self._cached_satellite_texture = None
             self._invalidate_scene()
+
+    def _calculate_keyframes(self):
+        if not self._gpx_path:
+            QMessageBox.warning(self, "No GPX", "Please load a GPX file first.")
+            return
+        if self._keyframe_calc_worker and self._keyframe_calc_worker.isRunning():
+            return
+
+        self._photo_area.set_calc_kf_running(True)
+        self._status_show("Calculating keyframes…")
+
+        render_settings = get_render_settings(self._settings)
+        tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+
+        worker = KeyframeCalcWorker(
+            gpx_path=self._gpx_path,
+            match_mode=self._match_mode(),
+            tz_offset_hours=tz_offset,
+            render_settings=render_settings,
+            cached_elevation_grid=self._cached_elevation_grid,
+        )
+        worker.status.connect(self._status_show)
+        worker.dem_fetched.connect(self._on_worker_dem_fetched)
+        worker.keyframes_ready.connect(self._on_keyframes_ready)
+        worker.error.connect(self._on_keyframe_calc_error)
+        self._keyframe_calc_worker = worker
+        worker.start()
+
+    def _on_keyframes_ready(self, keyframes, match_results, trackpoints):
+        self._photo_area.set_calc_kf_running(False)
+        self._photo_area.update_match_statuses(match_results)
+        self._photo_area.update_pipeline_info(trackpoints=trackpoints, keyframes=keyframes)
+        self._status_show(
+            f"Keyframes calculated: {len(keyframes)} frames total."
+        )
+
+    def _on_keyframe_calc_error(self, message: str):
+        self._photo_area.set_calc_kf_running(False)
+        self._status_show(f"Keyframe calculation failed: {message}", level=logging.ERROR)
 
     def _build_gpx_group(self) -> QGroupBox:
         group = QGroupBox("GPX Track")
         layout = QVBoxLayout(group)
         self._gpx_area = GpxDropArea(self._on_gpx_selected)
+        self._gpx_stats = GpxStatsWidget()
         layout.addWidget(self._gpx_area)
+        layout.addWidget(self._gpx_stats)
         return group
 
     def _build_photos_group(self) -> QGroupBox:
@@ -141,11 +201,17 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         self._photo_area = PhotoListArea()
         layout.addWidget(self._photo_area)
+        # Thumbnail rows are 52 px tall; keep at least 3 visible rows + header
+        _row_h = 52
+        _header_h = 26
+        group.setMinimumHeight(_header_h + _row_h * 3 + 60)  # 60 for group title + buttons
         return group
 
     def _build_match_group(self) -> QGroupBox:
         group = QGroupBox("Photo matching mode")
-        layout = QHBoxLayout(group)
+        outer = QVBoxLayout(group)
+
+        btn_row = QHBoxLayout()
         self._match_buttons: dict[str, QRadioButton] = {}
         self._match_group = QButtonGroup(self)
         for label, value in _MATCH_MODES:
@@ -153,10 +219,34 @@ class MainWindow(QMainWindow):
             rb.setProperty("match_value", value)
             self._match_group.addButton(rb)
             self._match_buttons[value] = rb
-            layout.addWidget(rb)
+            btn_row.addWidget(rb)
             if value == "timestamp":
                 rb.setChecked(True)
-        layout.addStretch()
+        btn_row.addStretch()
+        outer.addLayout(btn_row)
+
+        tz_row = QHBoxLayout()
+        tz_label = QLabel("Camera clock timezone:")
+        self._tz_offset_spin = QDoubleSpinBox()
+        self._tz_offset_spin.setRange(-14.0, 14.0)
+        self._tz_offset_spin.setSingleStep(0.5)
+        self._tz_offset_spin.setDecimals(1)
+        self._tz_offset_spin.setPrefix("UTC")
+        self._tz_offset_spin.setSuffix(" h")
+        self._tz_offset_spin.setToolTip(
+            "EXIF timestamps are local time (no timezone). "
+            "Set this to the UTC offset of the camera clock "
+            "(e.g. +2.0 for UTC+2 / CEST)."
+        )
+        self._tz_offset_spin.setValue(
+            float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+        )
+        self._tz_offset_spin.valueChanged.connect(self._on_tz_offset_changed)
+        tz_row.addWidget(tz_label)
+        tz_row.addWidget(self._tz_offset_spin)
+        tz_row.addStretch()
+        outer.addLayout(tz_row)
+
         return group
 
     def _build_output_group(self) -> QGroupBox:
@@ -274,6 +364,8 @@ class MainWindow(QMainWindow):
 
     def _on_worker_scene_ready(self, blend_path: str, pipeline):
         self._pipeline = pipeline
+        if pipeline.trackpoints:
+            self._photo_area.update_pipeline_info(trackpoints=pipeline.trackpoints)
         self._scene_stale = False
         self._open_blender_btn.setEnabled(True)
         self._preview_map_btn.setEnabled(True)
@@ -312,6 +404,12 @@ class MainWindow(QMainWindow):
         self._preview_map_btn.setEnabled(True)
         self._preview_video_btn.setEnabled(True)
         self._open_blender_btn.setEnabled(True)
+        try:
+            from core.gpx_parser import parse_gpx
+            trackpoints, _ = parse_gpx(path)
+            self._gpx_stats.update_stats(trackpoints)
+        except Exception:
+            self._gpx_stats.clear()
 
     def _on_photos_changed(self):
         ts_ok = self._store.all_have_timestamp
@@ -332,6 +430,12 @@ class MainWindow(QMainWindow):
                 self._match_group.setExclusive(False)
                 current.setChecked(False)
                 self._match_group.setExclusive(True)
+
+    def _on_tz_offset_changed(self, value: float):
+        self._settings.setValue(KEY_PHOTO_TZ_OFFSET, value)
+        self._photo_area.set_tz_offset(value)
+        self._mark_dirty()
+        self._invalidate_scene()
 
     def _match_mode(self) -> str:
         checked = self._match_group.checkedButton()
@@ -523,6 +627,7 @@ class MainWindow(QMainWindow):
 
         self._pipeline.trackpoints = trackpoints
         self._pipeline.bounding_box = bbox
+        self._photo_area.update_pipeline_info(trackpoints=trackpoints)
         self._status_show(
             f"GPX parsed: {len(trackpoints)} trackpoints, bounds: {bbox}"
         )
@@ -667,6 +772,7 @@ class MainWindow(QMainWindow):
             self._status_show("Pipeline stopped: camera path failed.")
             return
         self._pipeline.camera_keyframes = keyframes
+        self._photo_area.update_pipeline_info(keyframes=keyframes)
         fps = render_settings.get("render/fps", 30)
         duration_s = len(keyframes) / fps
         self._status_show(
@@ -799,6 +905,11 @@ class MainWindow(QMainWindow):
             if state.gpx_path:
                 self._gpx_path = state.gpx_path
                 self._gpx_area.set_file(state.gpx_path)
+                try:
+                    trackpoints, _ = parse_gpx(state.gpx_path)
+                    self._gpx_stats.update_stats(trackpoints)
+                except Exception:
+                    self._gpx_stats.clear()
             self._photo_area.set_photos(state.photos)
             if state.match_mode in self._match_buttons:
                 self._match_buttons[state.match_mode].setChecked(True)
@@ -812,6 +923,11 @@ class MainWindow(QMainWindow):
         if state.render_settings:
             for key, value in state.render_settings.items():
                 self._settings.setValue(key, value)
+            tz = float(state.render_settings.get(KEY_PHOTO_TZ_OFFSET, 0.0))
+            self._tz_offset_spin.blockSignals(True)
+            self._tz_offset_spin.setValue(tz)
+            self._tz_offset_spin.blockSignals(False)
+            self._photo_area.set_tz_offset(tz)
         self._save_last_project_dir(path)
         self._project_path = path
         self._suggest_output_from_project(path)
@@ -827,6 +943,7 @@ class MainWindow(QMainWindow):
         try:
             self._gpx_path = None
             self._gpx_area.clear()
+            self._gpx_stats.clear()
             self._photo_area.clear()
             self._output_selector.clear()
             for btn in self._match_buttons.values():
@@ -845,6 +962,8 @@ class MainWindow(QMainWindow):
         self._preview_video_btn.setEnabled(False)
         if self._scene_prep_worker and self._scene_prep_worker.isRunning():
             self._scene_prep_worker.quit()
+        if self._keyframe_calc_worker and self._keyframe_calc_worker.isRunning():
+            self._keyframe_calc_worker.quit()
         self._dirty = False
         self._status_show("Cleared.")
 

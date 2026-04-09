@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 import srtm
 
 from .bounding_box import BoundingBox
@@ -11,9 +12,44 @@ from .elevation_grid import ElevationGrid
 _TARGET_SPACING_M = 90.0
 _M_PER_DEG_LAT = 111_320.0
 
+# SRTM void sentinel values and plausible elevation range.
+_SRTM_VOID    = -32768.0
+_ELEV_MIN_M   =  -500.0   # Dead Sea ~-430 m
+_ELEV_MAX_M   = 9_000.0   # Everest  ~8849 m
+
 
 class DemFetchError(Exception):
     pass
+
+
+def _fill_voids(grid: np.ndarray) -> np.ndarray:
+    """Replace void / out-of-range cells with nearest-neighbour interpolation.
+
+    SRTM tiles have data voids (radar shadow, water) stored as -32768 or
+    returned as None (→ 0.0 by the fetcher).  Rather than leaving flat
+    patches at sea level, we propagate the nearest valid elevation value.
+    """
+    valid = (
+        np.isfinite(grid)
+        & (grid > _ELEV_MIN_M)
+        & (grid < _ELEV_MAX_M)
+        & (grid != _SRTM_VOID)
+    )
+
+    if valid.all():
+        return grid   # nothing to fix
+
+    if not valid.any():
+        # Entire grid is void — return a flat 0 m surface
+        return np.zeros_like(grid)
+
+    # distance_transform_edt returns, for each void cell, the index of the
+    # nearest valid cell — cheapest correct nearest-neighbour fill.
+    _, nearest = distance_transform_edt(~valid, return_distances=True,
+                                        return_indices=True)
+    filled = grid.copy()
+    filled[~valid] = grid[tuple(nearest[:, ~valid])]
+    return filled
 
 
 def fetch_dem(bbox: BoundingBox) -> ElevationGrid:
@@ -43,7 +79,9 @@ def fetch_dem(bbox: BoundingBox) -> ElevationGrid:
         for c in range(cols):
             lon = bbox.min_lon + c * lon_span / (cols - 1)
             elev = elevation_data.get_elevation(lat, lon)
-            grid[r, c] = elev if elev is not None else 0.0
+            grid[r, c] = elev if elev is not None else _SRTM_VOID
+
+    grid = _fill_voids(grid).astype(np.float32)
 
     return ElevationGrid(
         data=grid,

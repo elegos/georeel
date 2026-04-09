@@ -30,6 +30,17 @@ class PhotoStore:
             for p in self._photos
         ]
 
+    def update_gps(self, path: str, latitude: float | None, longitude: float | None) -> None:
+        self._photos = [
+            PhotoMetadata(
+                path=p.path,
+                timestamp=p.timestamp,
+                latitude=latitude,
+                longitude=longitude,
+            ) if p.path == path else p
+            for p in self._photos
+        ]
+
     def remove(self, path: str) -> None:
         self._photos = [p for p in self._photos if p.path != path]
 

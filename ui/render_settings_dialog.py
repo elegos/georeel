@@ -53,6 +53,8 @@ KEY_TANGENT_LOOKAHEAD_S   = "render/tangent_lookahead_s"     # seconds (float)
 KEY_TANGENT_WEIGHT        = "render/tangent_weight"          # "uniform" | "linear" | "exponential"
 KEY_PIN_COLOR             = "pins/color"                     # named color id or "custom"
 KEY_PIN_CUSTOM_COLOR      = "pins/custom_color"              # "#rrggbb" when color=="custom"
+KEY_MARKER_COLOR          = "marker/color"                   # named color id or "custom"
+KEY_MARKER_CUSTOM_COLOR   = "marker/custom_color"            # "#rrggbb" when color=="custom"
 KEY_IMAGERY_PROVIDER      = "imagery/provider"               # provider id
 KEY_IMAGERY_QUALITY       = "imagery/quality"                # "standard" | "high" | "very_high"
 KEY_IMAGERY_API_KEY       = "imagery/api_key"                # per-provider key (provider-prefixed)
@@ -66,7 +68,7 @@ KEY_OUTPUT_PRESET         = "output/preset"                  # string
 DEFAULTS = {
     KEY_PATH_SMOOTHING:       "spline",
     KEY_HEIGHT_MODE:          "dem_fixed",
-    KEY_HEIGHT_OFFSET:        200,
+    KEY_HEIGHT_OFFSET:        2000,
     KEY_ORIENTATION:          "tangent",
     KEY_TILT_DEG:             45,
     KEY_PHOTO_PAUSE_MODE:     "hold",
@@ -93,6 +95,8 @@ DEFAULTS = {
     KEY_IMAGERY_CUSTOM_URL:   "",
     KEY_PIN_COLOR:            "ForestGreen",
     KEY_PIN_CUSTOM_COLOR:     "#228B22",
+    KEY_MARKER_COLOR:         "LightBlue",
+    KEY_MARKER_CUSTOM_COLOR:  "#ADD8E6",
 }
 
 
@@ -296,26 +300,6 @@ class RenderSettingsDialog(QDialog):
     def _build_photos_tab(self) -> QWidget:
         tab, layout = _make_tab()
 
-        tz_group = QGroupBox("Timestamp matching")
-        tz_form = QFormLayout(tz_group)
-        self._tz_offset_spin = QDoubleSpinBox()
-        self._tz_offset_spin.setRange(-14.0, 14.0)
-        self._tz_offset_spin.setSingleStep(0.5)
-        self._tz_offset_spin.setDecimals(1)
-        self._tz_offset_spin.setPrefix("UTC")
-        self._tz_offset_spin.setSuffix(" h")
-        self._tz_offset_spin.setSpecialValueText("")
-        self._tz_offset_spin.setValue(
-            float(self._settings.value(KEY_PHOTO_TZ_OFFSET, DEFAULTS[KEY_PHOTO_TZ_OFFSET]))
-        )
-        tz_form.addRow("Camera clock timezone:", self._tz_offset_spin)
-        tz_note = QLabel(
-            "EXIF timestamps are local time. Set this to the UTC offset "
-            "of the camera's clock (e.g. +2.0 for UTC+2 / CEST)."
-        )
-        tz_note.setWordWrap(True)
-        tz_form.addRow(tz_note)
-
         group = QGroupBox("Photo overlay")
         form = QFormLayout(group)
 
@@ -344,7 +328,6 @@ class RenderSettingsDialog(QDialog):
         )
         form.addRow("Fade duration:", self._fade_dur_spin)
 
-        layout.addWidget(tz_group)
         layout.addWidget(group)
         layout.addStretch()
         return tab
@@ -397,6 +380,33 @@ class RenderSettingsDialog(QDialog):
     def _build_pins_tab(self) -> QWidget:
         tab, layout = _make_tab()
 
+        # -- Track marker --
+        marker_group = QGroupBox("Track marker")
+        marker_form = QFormLayout(marker_group)
+
+        self._marker_color_name   = self._settings.value(KEY_MARKER_COLOR,        DEFAULTS[KEY_MARKER_COLOR])
+        self._marker_custom_color = self._settings.value(KEY_MARKER_CUSTOM_COLOR, DEFAULTS[KEY_MARKER_CUSTOM_COLOR])
+
+        marker_swatch_row = QWidget()
+        marker_swatch_layout = QHBoxLayout(marker_swatch_row)
+        marker_swatch_layout.setContentsMargins(0, 0, 0, 0)
+        marker_swatch_layout.setSpacing(6)
+        self._marker_swatch = QLabel()
+        self._marker_swatch.setFixedSize(24, 24)
+        self._marker_swatch.setAutoFillBackground(True)
+        self._marker_color_label = QLabel()
+        marker_change_btn = QPushButton("Change…")
+        marker_change_btn.setFixedWidth(80)
+        marker_change_btn.clicked.connect(self._change_marker_color)
+        marker_swatch_layout.addWidget(self._marker_swatch)
+        marker_swatch_layout.addWidget(self._marker_color_label)
+        marker_swatch_layout.addWidget(marker_change_btn)
+        marker_swatch_layout.addStretch()
+        marker_form.addRow("Marker color:", marker_swatch_row)
+
+        layout.addWidget(marker_group)
+
+        # -- Photo waypoint pins --
         group = QGroupBox("Photo waypoint pins")
         form = QFormLayout(group)
 
@@ -431,8 +441,31 @@ class RenderSettingsDialog(QDialog):
         layout.addWidget(group)
         layout.addStretch()
 
+        self._refresh_marker_swatch()
         self._refresh_pin_swatch()
         return tab
+
+    def _refresh_marker_swatch(self) -> None:
+        name = self._marker_color_name
+        if name == "custom":
+            hex_color = self._marker_custom_color
+            label_text = f"Custom  {hex_color.upper()}"
+        else:
+            hex_color = get_color_hex(name, self._marker_custom_color)
+            label_text = name
+        _set_swatch(self._marker_swatch, hex_color)
+        self._marker_color_label.setText(label_text)
+
+    def _change_marker_color(self) -> None:
+        dlg = ColorPickerDialog(
+            current_name=self._marker_color_name,
+            current_custom_hex=self._marker_custom_color,
+            parent=self,
+        )
+        if dlg.exec() == QDialog.Accepted:
+            self._marker_color_name   = dlg.selected_name()
+            self._marker_custom_color = dlg.custom_hex()
+            self._refresh_marker_swatch()
 
     def _refresh_pin_swatch(self) -> None:
         name = self._pin_color_name
@@ -641,7 +674,6 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_ENGINE,              self._engine_combo.currentData())
         self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
         self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
-        self._settings.setValue(KEY_PHOTO_TZ_OFFSET,     self._tz_offset_spin.value())
         self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FILL,          self._fill_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FADE_DURATION, self._fade_dur_spin.value())
@@ -654,8 +686,10 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_IMAGERY_QUALITY,    self._imagery_quality_combo.currentData())
         self._settings.setValue(KEY_IMAGERY_API_KEY,    self._api_key_edit.text().strip())
         self._settings.setValue(KEY_IMAGERY_CUSTOM_URL, self._custom_url_edit.text().strip())
-        self._settings.setValue(KEY_PIN_COLOR,        self._pin_color_name)
-        self._settings.setValue(KEY_PIN_CUSTOM_COLOR, self._pin_custom_color)
+        self._settings.setValue(KEY_MARKER_COLOR,        self._marker_color_name)
+        self._settings.setValue(KEY_MARKER_CUSTOM_COLOR, self._marker_custom_color)
+        self._settings.setValue(KEY_PIN_COLOR,           self._pin_color_name)
+        self._settings.setValue(KEY_PIN_CUSTOM_COLOR,    self._pin_custom_color)
         self.accept()
 
 

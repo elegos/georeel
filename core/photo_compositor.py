@@ -88,7 +88,7 @@ def composite_photos(
         if not block["is_pause"]:
             # Regular fly-through frames — copy as-is
             for frame_num in block["frames"]:
-                src = src_dir / f"{frame_num:06d}.png"
+                src = src_dir / f"{frame_num - 1:06d}.png"
                 if src.exists():
                     shutil.copy(src, out_dir / src.name)
                 done += 1
@@ -102,7 +102,7 @@ def composite_photos(
             if photo_path is None or n == 0:
                 # No photo associated — copy terrain frames
                 for frame_num in frame_nums:
-                    src = src_dir / f"{frame_num:06d}.png"
+                    src = src_dir / f"{frame_num - 1:06d}.png"
                     if src.exists():
                         shutil.copy(src, out_dir / src.name)
                     done += 1
@@ -124,7 +124,7 @@ def composite_photos(
                 actual_fade = 0
 
             for i, frame_num in enumerate(frame_nums):
-                src_path = src_dir / f"{frame_num:06d}.png"
+                src_path = src_dir / f"{frame_num - 1:06d}.png"
 
                 if actual_fade > 0 and i < actual_fade:
                     # Fade in: blend terrain → photo
@@ -141,7 +141,7 @@ def composite_photos(
                     # Full photo
                     frame_img = photo_img
 
-                frame_img.save(out_dir / f"{frame_num:06d}.png")
+                frame_img.save(out_dir / f"{frame_num - 1:06d}.png")
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)

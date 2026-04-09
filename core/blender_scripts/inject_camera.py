@@ -65,22 +65,29 @@ def main() -> None:
     scene = bpy.context.scene
 
     # ------------------------------------------------------------------ #
-    # Remove any existing preview camera                                  #
+    # Find or create FlyCamera                                            #
+    # Reuse the existing object (created as a placeholder by             #
+    # build_scene.py) so that LOCKED_TRACK constraints on the marker and  #
+    # pins keep their target reference.  Only fall back to creating a new  #
+    # object if the placeholder is absent.                                #
     # ------------------------------------------------------------------ #
     for obj in list(bpy.data.objects):
-        if obj.type == 'CAMERA' and obj.name in ("FlyCamera", "PreviewCam"):
+        if obj.type == 'CAMERA' and obj.name == "PreviewCam":
             bpy.data.objects.remove(obj, do_unlink=True)
 
-    # ------------------------------------------------------------------ #
-    # Create camera                                                       #
-    # ------------------------------------------------------------------ #
-    cam_data = bpy.data.cameras.new("FlyCamera")
-    cam_data.lens       = 35
-    cam_data.clip_start = 1.0
-    cam_data.clip_end   = 100_000.0
+    cam_obj = bpy.data.objects.get("FlyCamera")
+    if cam_obj is None:
+        cam_data = bpy.data.cameras.new("FlyCamera")
+        cam_obj = bpy.data.objects.new("FlyCamera", cam_data)
+        scene.collection.objects.link(cam_obj)
+    else:
+        # Clear any previous keyframes so we can re-bake from scratch
+        if cam_obj.animation_data:
+            cam_obj.animation_data_clear()
 
-    cam_obj = bpy.data.objects.new("FlyCamera", cam_data)
-    scene.collection.objects.link(cam_obj)
+    cam_obj.data.lens       = 35
+    cam_obj.data.clip_start = 1.0
+    cam_obj.data.clip_end   = 100_000.0
     scene.camera = cam_obj
     cam_obj.rotation_mode = "QUATERNION"
 

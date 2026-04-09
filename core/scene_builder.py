@@ -60,6 +60,7 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None,
     blend_path = work_dir / "scene.blend"
 
     pin_color     = _resolve_pin_color(settings)
+    marker_color  = _resolve_marker_color(settings)
     height_offset = float(settings.get("render/camera_height_offset", 200))
     fps           = float(settings.get("render/fps", 30))
     speed_mps     = float(settings.get("render/camera_speed_mps", 80.0))
@@ -80,6 +81,7 @@ def build_scene(pipeline: Pipeline, blender_exe: str | None = None,
         str(fps),
         str(speed_mps),
         str(pauses_path),
+        marker_color,
     ] + _sun_args(pipeline)
 
     try:
@@ -306,6 +308,8 @@ def _compute_pause_schedule(
     total_ribbon_len = (n_ribbon - 1) * _RIBBON_SAMPLE_SPACING_M if n_ribbon > 1 else 0.0
     fly_total = max(2, int(total_ribbon_len / dist_per_frame))
 
+    pre_total  = 0
+    post_total = 0
     pauses: list[dict] = []
 
     if pipeline.match_results and pipeline.elevation_grid is not None and n_ribbon >= 2:
@@ -316,10 +320,18 @@ def _compute_pause_schedule(
 
         ribbon_xy = np.array([(p["x"], p["y"]) for p in ribbon_points])
 
-        # Collect (fly_frame, photo_path) per matched result — same order as _insert_pauses
+        # Count pre/post photos (position attribute added by timestamp matcher)
+        pre_count  = sum(1 for r in pipeline.match_results
+                         if r.ok and r.position == "pre")
+        post_count = sum(1 for r in pipeline.match_results
+                         if r.ok and r.position == "post")
+        pre_total  = pre_count  * pause_frames
+        post_total = post_count * pause_frames
+
+        # Collect in-track (fly_frame, photo_path) — matches _insert_pauses order
         waypoints: list[tuple[int, str]] = []
         for r in pipeline.match_results:
-            if not r.ok or r.trackpoint_index is None:
+            if not r.ok or r.trackpoint_index is None or r.position != "track":
                 continue
             tp = pipeline.trackpoints[r.trackpoint_index]
             x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
@@ -333,7 +345,8 @@ def _compute_pause_schedule(
 
         cumulative_pause = 0
         for fly_frame, _ in waypoints:
-            scene_start = fly_frame + cumulative_pause + 1   # Blender frames are 1-indexed
+            # scene_start is offset by pre_total so it falls in the fly section
+            scene_start = pre_total + fly_frame + cumulative_pause + 1
             pauses.append({
                 "scene_start":        scene_start,
                 "duration":           pause_frames,
@@ -341,9 +354,13 @@ def _compute_pause_schedule(
             })
             cumulative_pause += pause_frames
 
-    total_scene_frames = fly_total + sum(p["duration"] for p in pauses)
+    total_scene_frames = (pre_total + fly_total
+                          + sum(p["duration"] for p in pauses)
+                          + post_total)
     return {
+        "pre_total_frames":   pre_total,
         "fly_total_frames":   fly_total,
+        "post_total_frames":  post_total,
         "total_scene_frames": total_scene_frames,
         "pauses":             pauses,
     }
@@ -356,6 +373,15 @@ def _resolve_pin_color(settings: dict) -> str:
     if color_id == "custom":
         return settings.get("pins/custom_color", "#228B22")
     return get_color_hex(color_id, "#228B22")
+
+
+def _resolve_marker_color(settings: dict) -> str:
+    """Return a #rrggbb color string for the track marker from settings."""
+    from ui.color_picker_dialog import get_color_hex  # type: ignore[import]
+    color_id = settings.get("marker/color", "LightBlue")
+    if color_id == "custom":
+        return settings.get("marker/custom_color", "#ADD8E6")
+    return get_color_hex(color_id, "#ADD8E6")
 
 
 def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:

@@ -66,11 +66,31 @@ def _match_by_timestamp(
     # subtraction against the UTC-aware GPX timestamps is unambiguous.
     photo_utc = photo.timestamp.replace(tzinfo=tz)
 
+    timed_sorted = sorted(timed, key=lambda x: x[1].timestamp)
+    first_time = timed_sorted[0][1].timestamp
+    last_time  = timed_sorted[-1][1].timestamp
+    sort_key   = (photo_utc - first_time).total_seconds()
+
+    if photo_utc < first_time:
+        return MatchResult(
+            photo_path=photo.path,
+            trackpoint_index=timed_sorted[0][0],
+            position="pre",
+            sort_key=sort_key,   # negative: further before = smaller value
+        )
+    if photo_utc > last_time:
+        return MatchResult(
+            photo_path=photo.path,
+            trackpoint_index=timed_sorted[-1][0],
+            position="post",
+            sort_key=sort_key,
+        )
+
     best_i, _ = min(
         timed,
         key=lambda x: abs((x[1].timestamp - photo_utc).total_seconds()),
     )
-    return MatchResult(photo_path=photo.path, trackpoint_index=best_i)
+    return MatchResult(photo_path=photo.path, trackpoint_index=best_i, sort_key=sort_key)
 
 
 def _match_by_gps(
