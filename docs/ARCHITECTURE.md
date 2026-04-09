@@ -8,32 +8,31 @@ flowchart TD
     GPX([GPX File])
     PHOTOS([Photo Files])
 
-    %% Stage 1 – Parsing & ingestion
+    %% Stage 1 – Parsing
     GPX --> GPXParser[GPX Parser]
-    PHOTOS --> PhotoIngester[Photo Ingester\nEXIF reader]
 
     %% Stage 2 – Photo matching
     GPXParser -->|trackpoints| PhotoMatcher[Photo Matcher\ntimestamp / GPS / both]
-    PhotoIngester -->|EXIF metadata| PhotoMatcher
+    PHOTOS -->|EXIF on demand| PhotoMatcher
 
     %% Stage 3 – External data fetching
-    GPXParser -->|bounding box| DEMFetcher[DEM Fetcher\nSRTM / Copernicus]
-    GPXParser -->|bounding box| ImgFetcher[Satellite Imagery Fetcher\nSentinel-2 / WMTS]
+    GPXParser -->|bounding box| DEMFetcher[DEM Fetcher\nSRTM]
+    GPXParser -->|bounding box| ImgFetcher[Satellite Imagery Fetcher\nESRI / MapTiler / custom XYZ]
 
     %% Stage 4 – Scene construction
     DEMFetcher -->|elevation grid| SceneBuilder[3D Scene Builder\nterrain mesh + texture]
-    ImgFetcher -->|satellite tiles| SceneBuilder
+    ImgFetcher -->|satellite texture| SceneBuilder
 
     %% Stage 5 – Camera path
     GPXParser -->|trackpoints| CamPath[Camera Path Generator\nposition + orientation]
     PhotoMatcher -->|waypoint positions| CamPath
 
     %% Stage 6 – Rendering
-    SceneBuilder -->|3D scene| Renderer[Frame Renderer\nfly-through frames]
+    SceneBuilder -->|.blend scene| Renderer[Frame Renderer\nBlender headless]
     CamPath -->|camera keyframes| Renderer
 
     %% Stage 7 – Photo overlay
-    PhotoMatcher -->|matched photos + positions| Compositor[Photo Overlay Compositor\nfull-screen inserts]
+    PhotoMatcher -->|matched photos + positions| Compositor[Photo Overlay Compositor\nfull-screen inserts + carousel]
     Renderer -->|rendered frames| Compositor
 
     %% Stage 8 – Final output
@@ -45,40 +44,56 @@ flowchart TD
 
 ## Architectural Components
 
-### 1. GPX Parser
-Reads the input `.gpx` file and extracts the ordered list of trackpoints (latitude, longitude, elevation, timestamp). Also derives the bounding box used downstream for data fetching.
+### 1. GPX Parser (`core/gpx_parser.py`)
+Reads the input `.gpx` file and extracts the ordered list of trackpoints (latitude, longitude, elevation, timestamp). Also derives the bounding box used downstream for DEM and imagery fetching.
 
-### 2. Photo Ingester
-Reads all input photo files and extracts EXIF metadata: GPS coordinates (if present), capture timestamp, and image dimensions. Produces a normalised list of photo descriptors.
-
-### 3. Photo Matcher
-Resolves each photo to the nearest trackpoint using one of three strategies (controlled by `--photo-match`):
+### 2. Photo Matcher (`core/photo_matcher.py`)
+Reads EXIF metadata from photo files on demand (GPS coordinates, capture timestamp) and resolves each photo to its position along the track using one of three strategies:
 - **`timestamp`** — closest trackpoint by time delta
 - **`gps`** — closest trackpoint by geographic distance
-- **`both`** — GPS primary, timestamp fallback; warns when the two disagree beyond a configurable threshold
+- **`both`** (default) — GPS primary, timestamp fallback; warns when the two disagree beyond a configurable threshold
 
-Outputs an ordered list of waypoints: `(trackpoint_index, photo_file)`.
+Photos that fall before or after the track time range are assigned a `pre` or `post` position and displayed as a slideshow before/after the fly-through. Outputs a list of `MatchResult` objects carrying `photo_path`, `trackpoint_index`, `position` (`pre`/`track`/`post`), and any warning or error.
 
-### 4. DEM Fetcher
-Downloads and caches a Digital Elevation Model (SRTM 30 m or Copernicus DEM) for the track bounding box. Exposes a regular elevation grid ready for mesh construction. Results are cached locally to avoid re-downloading.
+### 3. DEM Fetcher (`core/dem_fetcher.py`)
+Downloads SRTM elevation tiles (via the `srtm-py` library) for the expanded track bounding box. Tiles are cached locally (`~/.cache/srtm.py/`). Exposes a regular `ElevationGrid` (90 m resolution, float32, row-major) ready for mesh construction. Outlier cells and NoData voids are smoothed before the grid is handed to the scene builder.
 
-### 5. Satellite Imagery Fetcher
-Downloads and caches satellite image tiles (Sentinel-2, NASA Earthdata, or any open WMTS endpoint) covering the track bounding box at the required zoom level. Assembles tiles into a single georeferenced texture. Results are cached locally.
+### 4. Satellite Imagery Fetcher (`core/satellite/`)
+Downloads XYZ/TMS tile imagery for the track bounding box at an automatically selected zoom level and stitches tiles into a single RGB texture. Supported providers:
 
-### 6. 3D Scene Builder
-Combines the elevation grid and satellite texture into a 3D terrain scene. Responsible for mesh generation, UV mapping, and exporting the scene in a format consumable by the renderer.
+| Provider | Key required |
+|---|---|
+| ESRI World Imagery (default) | No |
+| ESRI Clarity | No |
+| MapTiler Satellite | Yes (free tier) |
+| Custom XYZ URL | — |
 
-### 7. Camera Path Generator
-Computes a smooth fly-through camera trajectory following the GPX trackpoints. Determines position (slightly behind/above each point), look-at direction, and field of view. Inserts pause keyframes at photo waypoint positions to allow the compositor to insert photo overlays.
+### 5. 3D Scene Builder (`core/scene_builder.py`)
+Launches Blender headlessly and runs `blender_scripts/build_scene.py` to:
+- Construct the terrain mesh from the elevation grid and apply the satellite texture
+- Build the animated track ribbon (colour-coded by slope) with a Build modifier for progressive reveal
+- Place the animated position marker and photo waypoint pins (billboard meshes with camera-facing constraints)
+- Set up sun lighting using computed azimuth/elevation for the track's location and time
 
-### 8. Frame Renderer
-Renders each camera keyframe against the 3D scene, producing an image-per-frame sequence. Delegates to an open-source rendering backend (Blender, VTK, or similar).
+The resulting `.blend` file packs the texture internally and is stored in a temporary directory registered for cleanup on app exit.
 
-### 9. Photo Overlay Compositor
-At each photo waypoint, inserts the corresponding photo as a full-screen frame sequence (configurable duration, fade/cut transition). Merges these frames into the rendered frame sequence at the correct positions.
+### 6. Camera Path Generator (`core/camera_path.py`)
+Fits a parametric cubic B-spline through the trackpoints and resamples it at equal arc-length intervals (one sample per frame at the configured speed). Computes per-frame camera position (behind and above the track at a configurable slant distance and tilt), look-at direction (tangent or next-waypoint), and inserts pause keyframes at photo waypoint positions. Outputs a list of `CameraKeyframe` objects.
 
-### 10. Video Assembler
-Encodes the final ordered frame sequence (fly-through frames + photo overlays) into a video file using FFmpeg. Configurable codec, resolution, and frame rate.
+### 7. Frame Renderer (`core/frame_renderer.py`)
+Launches Blender headlessly and runs `blender_scripts/render_frames.py`, which positions the camera at each keyframe and renders a PNG. Supports EEVEE (fast, rasterisation) and Cycles (slow, path tracing) engines at configurable quality levels. Output PNGs are stored in a temporary directory that is registered on `Pipeline._temp_dirs` for post-job cleanup.
+
+### 8. Photo Overlay Compositor (`core/photo_compositor.py`)
+Groups consecutive pause keyframes into blocks and renders them as a photo carousel:
+- **Single photo at a waypoint**: fade in from terrain → full-screen photo → fade out to terrain
+- **Multiple photos at the same waypoint**: terrain fade-in on the first, cross-fades between photos, terrain fade-out on the last
+- Letterboxing: blurred photo fill or black bars, preserving aspect ratio
+- Transition: fade (cross-dissolve) or cut (hard edit)
+
+Supports all resolution presets (landscape 16:9, portrait 9:16, square 1:1). Output is stored in a temporary directory registered on `Pipeline._temp_dirs` for post-job cleanup.
+
+### 9. Video Assembler (`core/video_assembler.py`)
+Encodes the final frame sequence into a video file using FFmpeg. Configurable container (MKV/MP4), codec (H.264/H.265/AV1), and encoder with automatic detection of available hardware accelerators (NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox) and software fallbacks. For MKV output, the source GPX and render settings JSON are attached as named attachments.
 
 ---
 
@@ -87,12 +102,21 @@ Encodes the final ordered frame sequence (fly-through frames + photo overlays) i
 | Stage | Input | Output |
 |---|---|---|
 | GPX Parser | `.gpx` file | trackpoints, bounding box |
-| Photo Ingester | image files | EXIF metadata list |
-| Photo Matcher | trackpoints + EXIF | waypoints `(index, photo)` |
-| DEM Fetcher | bounding box | elevation grid |
-| Satellite Imagery Fetcher | bounding box | georeferenced texture |
-| 3D Scene Builder | elevation grid + texture | 3D scene |
-| Camera Path Generator | trackpoints + waypoints | camera keyframes |
-| Frame Renderer | 3D scene + keyframes | frame sequence |
-| Photo Overlay Compositor | frames + matched photos | merged frame sequence |
-| Video Assembler | merged frames | `.mp4` / output video |
+| Photo Matcher | trackpoints + photo EXIF (on demand) | `list[MatchResult]` |
+| DEM Fetcher | bounding box | `ElevationGrid` (90 m, float32) |
+| Satellite Imagery Fetcher | bounding box | RGB texture (PNG) |
+| 3D Scene Builder | elevation grid + texture + match results | `.blend` scene file |
+| Camera Path Generator | trackpoints + match results | `list[CameraKeyframe]` |
+| Frame Renderer | `.blend` scene + keyframes | PNG frame sequence |
+| Photo Overlay Compositor | frames + match results + keyframes | merged PNG frame sequence |
+| Video Assembler | merged frames | `.mp4` or `.mkv` |
+
+---
+
+## Temporary File Lifecycle
+
+| Directory prefix | Contents | Cleanup |
+|---|---|---|
+| `georeel_scene_*` | DEM binary, texture PNG, `.blend` | `atexit` (on app exit) |
+| `georeel_frames_*` | Blender-rendered PNGs | Immediately after stage 9 (or on cancel) |
+| `georeel_comp_*` | Composited PNGs | Immediately after stage 9 (or on cancel) |
