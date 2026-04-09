@@ -592,6 +592,23 @@ class MainWindow(QMainWindow):
             self._status_show("Please select a GPX file first.")
             return
 
+        # Check for output file overwrite before doing any work
+        output_path = self._output_selector.output_path()
+        if not output_path:
+            QMessageBox.warning(self, "No output path", "Please set an output video path before starting.")
+            self._status_show("Pipeline stopped: no output path set.")
+            return
+        if Path(output_path).exists():
+            answer = QMessageBox.question(
+                self, "Overwrite file?",
+                f"The file already exists:\n{output_path}\n\nOverwrite it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self._status_show("Pipeline stopped: output file not overwritten.")
+                return
+
         # If the background worker is still building the scene, wait for it
         # to finish rather than starting a duplicate Blender process.
         if self._scene_prep_worker and self._scene_prep_worker.isRunning():
@@ -806,20 +823,6 @@ class MainWindow(QMainWindow):
 
         # Stage 9 — Video Assembler
         output_path = self._output_selector.output_path()
-        if not output_path:
-            QMessageBox.warning(self, "No output path", "Please set an output video path before starting.")
-            self._status_show("Pipeline stopped: no output path set.")
-            return
-        if Path(output_path).exists():
-            answer = QMessageBox.question(
-                self, "Overwrite file?",
-                f"The file already exists:\n{output_path}\n\nOverwrite it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if answer != QMessageBox.Yes:
-                self._status_show("Pipeline stopped: output file not overwritten.")
-                return
         total_frames = len(self._pipeline.camera_keyframes or [])
         dlg = VideoProgressDialog(
             self._pipeline.composited_frames_dir,

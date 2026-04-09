@@ -262,8 +262,11 @@ def _write_pins(
 
     height_offset = float((settings or {}).get("render/camera_height_offset", 200))
     scale = height_offset / 200.0
-    # Spread step = 1.5 × scaled pin width so adjacent pins have a small gap
-    spread_step_m = 24.0 * scale * 1.5
+    # Pin geometry (mirrors build_scene.py _build_pins)
+    marker_r = max(1.5, 4.0 * scale)
+    r_head   = marker_r * 0.8   # radius of the circular head
+    # Gap between adjacent pins: small fixed margin so they almost touch
+    PIN_GAP_M = max(2.0, marker_r * 0.1)
 
     # Collect raw pins, keyed by trackpoint_index to detect collisions
     from collections import defaultdict
@@ -288,10 +291,15 @@ def _write_pins(
             if n == 1:
                 dx, dy = 0.0, 0.0
             else:
-                # Arrange evenly on a circle around the trackpoint
+                # Place pins on a circle whose radius makes adjacent pins
+                # almost touch (gap ≈ PIN_GAP_M between edges).
+                # Chord between adjacent pins = 2*r_head + PIN_GAP_M
+                # Chord = 2 * R * sin(π/n)  →  R = chord / (2*sin(π/n))
+                chord    = 2 * r_head + PIN_GAP_M
+                circle_r = chord / (2 * math.sin(math.pi / n))
                 angle = 2 * math.pi * k / n
-                dx = spread_step_m * math.cos(angle)
-                dy = spread_step_m * math.sin(angle)
+                dx = circle_r * math.cos(angle)
+                dy = circle_r * math.sin(angle)
             pins.append(
                 {
                     "x": pin["x"] + dx,

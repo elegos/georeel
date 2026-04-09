@@ -165,16 +165,26 @@ def main() -> None:
     out_node.location = (300, 0)
 
     if sun_vec is not None:
-        # Sun position known: use Principled BSDF so the terrain receives
-        # directional shading, revealing topographic relief.
-        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-        bsdf.location = (0, 0)
-        bsdf.inputs["Roughness"].default_value = 1.0
-        bsdf.inputs["Metallic"].default_value = 0.0
-        if "Specular" in bsdf.inputs:
-            bsdf.inputs["Specular"].default_value = 0.0
-        links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
-        links.new(bsdf.outputs["BSDF"], out_node.inputs["Surface"])
+        # Sun position known: mix a dominant Emission (preserves satellite
+        # colours) with a small Diffuse component (adds topographic shading).
+        # This avoids the washout / desaturation of a pure Principled BSDF
+        # while still letting the sun reveal terrain relief subtly.
+        emit_node = nodes.new("ShaderNodeEmission")
+        emit_node.inputs["Strength"].default_value = 1.0
+        emit_node.location = (-150, 100)
+        links.new(tex_node.outputs["Color"], emit_node.inputs["Color"])
+
+        diff_node = nodes.new("ShaderNodeBsdfDiffuse")
+        diff_node.inputs["Roughness"].default_value = 1.0
+        diff_node.location = (-150, -100)
+        links.new(tex_node.outputs["Color"], diff_node.inputs["Color"])
+
+        mix_node = nodes.new("ShaderNodeMixShader")
+        mix_node.inputs["Fac"].default_value = 0.25   # 75% emission, 25% diffuse
+        mix_node.location = (100, 0)
+        links.new(emit_node.outputs["Emission"], mix_node.inputs[1])
+        links.new(diff_node.outputs["BSDF"],     mix_node.inputs[2])
+        links.new(mix_node.outputs["Shader"],    out_node.inputs["Surface"])
     else:
         # No timestamp available: flat emission so the terrain is always visible.
         emit_node = nodes.new("ShaderNodeEmission")
@@ -540,7 +550,7 @@ def _build_pins(bpy, pins_data: list[dict], pin_color_hex: str,
     r_head      = marker_r * 0.8
     z_c         = r_head * 1.7
     solidify_th = max(1.0, marker_r * 0.3)
-    z_offset    = 3.0 * scale
+    z_offset    = 0.5   # tiny fixed lift to avoid z-fighting with terrain
     r_inner     = r_head * 0.52
     n_inner     = 20
     n_arc       = 24
