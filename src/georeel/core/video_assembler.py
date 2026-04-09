@@ -73,6 +73,10 @@ def assemble_video(
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
+    _log.debug(
+        "Video assembler: %d frames → %s  (encoder=%s fps=%d)",
+        total_frames, out, encoder_name, fps,
+    )
     _log.debug("FFmpeg command: %s", shlex.join(cmd))
 
     stderr_lines: list[str] = []
@@ -115,6 +119,13 @@ def assemble_video(
 
     if not out.is_file():
         raise VideoAssembleError("FFmpeg finished but output file was not created.")
+
+    size_mb = out.stat().st_size / 1_048_576
+    duration_s = total_frames / fps if fps > 0 else 0
+    _log.info(
+        "Video ready: %s  (%.1f s, %d frames at %d fps, %.1f MB, encoder=%s)",
+        out, duration_s, total_frames, fps, size_mb, encoder_name,
+    )
 
     _copy_gpx_alongside(gpx_path, out, container)
     _write_settings(settings, out, container)

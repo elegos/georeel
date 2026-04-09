@@ -10,6 +10,7 @@ Each consecutive run of pause keyframes sharing the same photo_path is one
 block; fade-in / fade-out are applied at its boundaries when transition="fade".
 """
 
+import logging
 import shutil
 import tempfile
 from itertools import groupby
@@ -20,6 +21,8 @@ from PIL import Image, ImageFilter, ImageOps
 
 from .camera_keyframe import CameraKeyframe
 from .pipeline import Pipeline
+
+_log = logging.getLogger(__name__)
 
 _RESOLUTIONS: dict[str, tuple[int, int]] = {
     # Landscape (16:9)
@@ -88,14 +91,39 @@ def composite_photos(
     # fly-through gaps between consecutive photo blocks so photos are shown
     # back-to-back without the terrain briefly reappearing in between.
     blocks = _build_blocks(pipeline.camera_keyframes)
-    blocks = _absorb_photo_gaps(blocks, max_gap=max(1, fade_frames * 2))
+    n_pause_blocks  = sum(1 for b in blocks if b["is_pause"])
+    n_fly_blocks    = sum(1 for b in blocks if not b["is_pause"])
+    pause_frames_total = sum(len(b["frames"]) for b in blocks if b["is_pause"])
+    _log.debug(
+        "Compositor: %d keyframes → %d blocks (%d pause, %d fly-through); "
+        "%d pause frames, %d fly frames",
+        total, len(blocks), n_pause_blocks, n_fly_blocks,
+        pause_frames_total, total - pause_frames_total,
+    )
+
+    max_gap = max(1, fade_frames * 2)
+    blocks, n_gaps_absorbed = _absorb_photo_gaps(blocks, max_gap=max_gap)
+    if n_gaps_absorbed:
+        _log.debug(
+            "Compositor: absorbed %d short fly-through gap(s) (≤%d frames each) "
+            "between consecutive photo blocks",
+            n_gaps_absorbed, max_gap,
+        )
 
     # Consecutive pause blocks form a carousel: each photo is shown for its
     # own duration and photos cross-fade into each other.  Terrain fades only
     # appear at the very first and very last boundary of a run.
     runs = _group_into_runs(blocks)
+    carousel_runs = [r for r in runs if r[0]["is_pause"] and len(r) > 1]
+    if carousel_runs:
+        _log.debug(
+            "Compositor: %d carousel run(s) with multiple photos (%s photos each)",
+            len(carousel_runs),
+            ", ".join(str(len(r)) for r in carousel_runs),
+        )
 
     photo_cache: dict[str, Image.Image] = {}
+    missing_frames: list[int] = []
 
     done = 0
     for run in runs:
@@ -109,15 +137,39 @@ def composite_photos(
                     src = src_dir / f"{frame_num - 1:06d}.png"
                     if src.exists():
                         shutil.copy(src, out_dir / src.name)
+                    else:
+                        missing_frames.append(frame_num)
                     done += 1
                     if progress_cb:
                         progress_cb(done, total)
         else:
-            done = _composite_pause_run(
+            done, block_missing = _composite_pause_run(
                 run, src_dir, out_dir, out_w, out_h, fill,
                 transition, fade_frames, photo_cache,
                 done, total, progress_cb,
             )
+            missing_frames.extend(block_missing)
+
+    # ── Final summary ────────────────────────────────────────────────────
+    out_frames = len(list(out_dir.glob("*.png")))
+    if missing_frames:
+        _log.warning(
+            "Compositor: %d source frame(s) were missing and skipped "
+            "(first missing: frame %d). Output has %d/%d frames — "
+            "the video may be shorter than expected.",
+            len(missing_frames), missing_frames[0], out_frames, total,
+        )
+    elif out_frames == total:
+        _log.info(
+            "Compositor: complete — %d/%d frames written with no gaps.",
+            out_frames, total,
+        )
+    else:
+        _log.warning(
+            "Compositor: output has %d frames but %d were expected. "
+            "The video may be shorter than expected.",
+            out_frames, total,
+        )
 
     return str(out_dir)
 
@@ -154,14 +206,18 @@ def _composite_pause_run(
     photo_cache: dict[str, Image.Image],
     done: int, total: int,
     progress_cb,
-) -> int:
+) -> tuple[int, list[int]]:
     """Composite a run of consecutive pause blocks as a photo carousel.
 
     - Terrain fade-in applies only at the start of the first photo.
     - Terrain fade-out applies only at the end of the last photo.
     - Between photos a cross-fade is used: the last *fade_frames* of photo A
       blend A→B so that B is already fully visible at the start of its block.
+
+    Returns (done count, list of missing source frame numbers).
     """
+    missing: list[int] = []
+
     # Preload all photos in the run
     for block in run:
         photo_path = block["photo_path"]
@@ -186,6 +242,8 @@ def _composite_pause_run(
                 src = src_dir / f"{frame_num - 1:06d}.png"
                 if src.exists():
                     shutil.copy(src, out_dir / src.name)
+                else:
+                    missing.append(frame_num)
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)
@@ -227,7 +285,7 @@ def _composite_pause_run(
             if progress_cb:
                 progress_cb(done, total)
 
-    return done
+    return done, missing
 
 
 def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict]:
@@ -242,7 +300,7 @@ def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict]:
     return blocks
 
 
-def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> list[dict]:
+def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> tuple[list[dict], int]:
     """Absorb short fly-through gaps between consecutive photo pause blocks.
 
     When two photo blocks are separated by ≤ *max_gap* fly frames, those
@@ -250,8 +308,11 @@ def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> list[dict]:
     never flashes between photos.  The compositor then shows photo A for
     the gap frames (fading into photo B as its block starts), giving a
     clean photo-to-photo cross-fade with no terrain in between.
+
+    Returns (updated blocks list, number of gaps absorbed).
     """
     result: list[dict] = []
+    absorbed = 0
     i = 0
     while i < len(blocks):
         current = blocks[i]
@@ -266,10 +327,11 @@ def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> list[dict]:
             # Extend this pause block to cover the gap frames
             current = dict(current)
             current["frames"] = current["frames"] + blocks[i + 1]["frames"]
-            i += 2  # consume current + fly gap; next iteration sees blocks[i+2]
+            i += 1  # skip past the absorbed gap; inner while re-checks blocks[i+1]
+            absorbed += 1
         result.append(current)
         i += 1
-    return result
+    return result, absorbed
 
 
 def _fit_photo(photo: Image.Image, out_w: int, out_h: int, fill: str) -> Image.Image:
