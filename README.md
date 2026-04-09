@@ -174,8 +174,10 @@ georeel/
     └── build_icon.py              # Embeds Earth photo into icon SVG
 ```
 
+For a detailed breakdown of the pipeline and each component, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ---
 
 ## License
 
-MIT
+GNU GPL v3.0
