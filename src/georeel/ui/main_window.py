@@ -1151,18 +1151,19 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
+        _SB = QMessageBox.StandardButton
         if self._project_path:
             name = Path(self._project_path).name
             answer = QMessageBox.question(
                 self, "Unsaved changes",
                 f'Save changes to "{name}"?',
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                _SB.Save | _SB.Discard | _SB.Cancel,
             )
-            if answer == QMessageBox.Save:
+            if answer == _SB.Save:
                 self._pending_close = True
                 self._save_to_path(self._project_path)
                 event.ignore()   # window stays open; close() fires in _on_save_complete
-            elif answer == QMessageBox.Discard:
+            elif answer == _SB.Discard:
                 self._cleanup_temp_dir()
                 event.accept()
             else:
@@ -1171,9 +1172,9 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self, "Unsaved changes",
                 "Do you want to save the project before closing?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                _SB.Save | _SB.Discard | _SB.Cancel,
             )
-            if answer == QMessageBox.Save:
+            if answer == _SB.Save:
                 path, _ = QFileDialog.getSaveFileName(
                     self, "Save project",
                     str(Path(self._last_project_dir()) / "project.georeel"),
@@ -1187,7 +1188,7 @@ class MainWindow(QMainWindow):
                     event.ignore()
                 else:
                     event.ignore()  # user cancelled the save dialog
-            elif answer == QMessageBox.Discard:
+            elif answer == _SB.Discard:
                 self._cleanup_temp_dir()
                 event.accept()
             else:

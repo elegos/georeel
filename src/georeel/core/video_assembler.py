@@ -172,6 +172,7 @@ def assemble_video(
             text=True,
             shell=True,
         )
+        assert proc.stderr is not None
         for line in proc.stderr:
             stderr_lines.append(line)
             # FFmpeg progress: "frame=  123 fps=..."
@@ -479,7 +480,7 @@ def _composite_title_frames(
                     _font_local.instance = ImageFont.truetype(font_name, font_size)
                 except OSError:
                     _font_local.instance = ImageFont.load_default()
-        return _font_local.instance
+        return _font_local.instance  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # Per-frame worker (closure — captures pre-computed constants)

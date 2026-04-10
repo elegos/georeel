@@ -1,7 +1,11 @@
 """Clip effects settings widget — fade-in/fade-out, title, and music controls."""
 
+from typing import TypeVar, cast
+
 from PySide6.QtCore import QRect, QSettings, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+
+_T = TypeVar("_T")
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -116,7 +120,7 @@ class _TitlePreviewWidget(QWidget):
         self._apply_size()
 
     def _preview_dims(self) -> tuple[int, int]:
-        aspect = self._settings.value("render/aspect_ratio", "landscape")
+        aspect = str(self._settings.value("render/aspect_ratio", "landscape"))
         return _PREVIEW_SIZES.get(aspect, (320, 180))
 
     def _apply_size(self):
@@ -129,23 +133,23 @@ class _TitlePreviewWidget(QWidget):
 
     def paintEvent(self, _event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.black)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
 
-        text = self._settings.value(_KEY_TITLE_TEXT, "")
+        text = str(self._settings.value(_KEY_TITLE_TEXT, ""))
         if not text.strip():
             return
 
         pw, ph = self.width(), self.height()
-        font_name  = self._settings.value(_KEY_TITLE_FONT, "Noto Serif")
-        font_size  = int(self._settings.value(_KEY_TITLE_FONT_SIZE, 95))
-        anchor     = self._settings.value(_KEY_TITLE_ANCHOR, "bottom-right")
-        margin     = int(self._settings.value(_KEY_TITLE_MARGIN, 40))
-        alignment  = self._settings.value(_KEY_TITLE_ALIGNMENT, "right")
-        color_str  = self._settings.value(_KEY_TITLE_COLOR, "#ffffff")
-        shadow     = self._settings.value(_KEY_TITLE_SHADOW, True, type=bool)
+        font_name  = str(self._settings.value(_KEY_TITLE_FONT, "Noto Serif"))
+        font_size  = cast(int, self._settings.value(_KEY_TITLE_FONT_SIZE, 95, type=int))
+        anchor     = str(self._settings.value(_KEY_TITLE_ANCHOR, "bottom-right"))
+        margin     = cast(int, self._settings.value(_KEY_TITLE_MARGIN, 40, type=int))
+        alignment  = str(self._settings.value(_KEY_TITLE_ALIGNMENT, "right"))
+        color_str  = str(self._settings.value(_KEY_TITLE_COLOR, "#ffffff"))
+        shadow     = bool(self._settings.value(_KEY_TITLE_SHADOW, True, type=bool))
 
         # Scale font size proportionally to preview vs. actual resolution
-        res   = self._settings.value("render/resolution", "1080p")
+        res   = str(self._settings.value("render/resolution", "1080p"))
         ref_w = _RESOLUTION_WIDTHS.get(res, 1920)
         scale = pw / ref_w
         scaled_size   = max(6, round(font_size * scale))
@@ -190,11 +194,12 @@ class _TitlePreviewWidget(QWidget):
 
         draw_rect = QRect(rect_x, rect_y, rect_w, text_h + 4)
 
+        _af = Qt.AlignmentFlag
         align_flag = {
-            "left":   Qt.AlignLeft,
-            "center": Qt.AlignHCenter,
-            "right":  Qt.AlignRight,
-        }.get(alignment, Qt.AlignLeft)
+            "left":   _af.AlignLeft,
+            "center": _af.AlignHCenter,
+            "right":  _af.AlignRight,
+        }.get(alignment, _af.AlignLeft)
 
         if shadow:
             off = max(1, round(3 * scale))
@@ -206,7 +211,20 @@ class _TitlePreviewWidget(QWidget):
 
 
 class ClipEffectsWidget(QWidget):
-    """Provides fade-in/fade-out and title settings backed by QSettings."""
+    """Provides fade-in/fade-out, title, and music settings backed by QSettings."""
+
+    # Declared at class level: _build_fade_group sets these via setattr so Pyright
+    # cannot infer them from the __init__ body alone.
+    _fi_group: "QGroupBox"
+    _fi_black_spin: "QDoubleSpinBox"
+    _fi_fade_spin: "QDoubleSpinBox"
+    _fo_group: "QGroupBox"
+    _fo_black_spin: "QDoubleSpinBox"
+    _fo_fade_spin: "QDoubleSpinBox"
+
+    def _qsv(self, key: str, default: _T) -> _T:
+        """Type-safe QSettings.value() wrapper — infers return type from default."""
+        return cast(_T, self._settings.value(key, default, type=type(default)))
 
     def __init__(self, settings: QSettings, parent=None):
         super().__init__(parent)
@@ -275,7 +293,7 @@ class ClipEffectsWidget(QWidget):
         key_fade: str,
         attr_prefix: str,
     ) -> QGroupBox:
-        enabled = self._settings.value(key_enabled, False, type=bool)
+        enabled = self._qsv(key_enabled, False)
         group = QGroupBox(title)
         group.setCheckable(True)
         group.setChecked(enabled)
@@ -289,7 +307,7 @@ class ClipEffectsWidget(QWidget):
         black_spin.setDecimals(1)
         black_spin.setSuffix(" s")
         black_spin.setToolTip("Duration of the pure-black clip before/after the content.")
-        black_spin.setValue(float(self._settings.value(key_black, 5.0)))
+        black_spin.setValue(self._qsv(key_black, 5.0))
 
         fade_spin = QDoubleSpinBox()
         fade_spin.setRange(0.0, 60.0)
@@ -297,7 +315,7 @@ class ClipEffectsWidget(QWidget):
         fade_spin.setDecimals(1)
         fade_spin.setSuffix(" s")
         fade_spin.setToolTip("Duration of the luminance transition between black and content.")
-        fade_spin.setValue(float(self._settings.value(key_fade, 1.0)))
+        fade_spin.setValue(self._qsv(key_fade, 1.0))
 
         form.addRow("Black clip duration:", black_spin)
         form.addRow("Fade duration:", fade_spin)
@@ -317,10 +335,9 @@ class ClipEffectsWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _build_title_group(self) -> QGroupBox:
-        enabled = self._settings.value(_KEY_TITLE_ENABLED, False, type=bool)
         group = QGroupBox("Title")
         group.setCheckable(True)
-        group.setChecked(enabled)
+        group.setChecked(self._qsv(_KEY_TITLE_ENABLED, False))
         group.toggled.connect(lambda v: self._settings.setValue(_KEY_TITLE_ENABLED, v))
         self._title_group = group
 
@@ -334,19 +351,19 @@ class ClipEffectsWidget(QWidget):
         text_edit = QPlainTextEdit()
         text_edit.setPlaceholderText("Enter title text…")
         text_edit.setFixedHeight(72)
-        text_edit.setPlainText(self._settings.value(_KEY_TITLE_TEXT, ""))
+        text_edit.setPlainText(self._qsv(_KEY_TITLE_TEXT, ""))
         self._title_text = text_edit
         form.addRow("Text:", text_edit)
 
         # Font + size
         font_row = QHBoxLayout()
         font_combo = QFontComboBox()
-        saved_font = self._settings.value(_KEY_TITLE_FONT, "")
+        saved_font = self._qsv(_KEY_TITLE_FONT, "")
         font_combo.setCurrentFont(QFont(saved_font or "Noto Serif"))
         self._title_font = font_combo
         size_spin = QSpinBox()
         size_spin.setRange(6, 500)
-        size_spin.setValue(int(self._settings.value(_KEY_TITLE_FONT_SIZE, 95)))
+        size_spin.setValue(self._qsv(_KEY_TITLE_FONT_SIZE, 95))
         size_spin.setSuffix(" pt")
         size_spin.setFixedWidth(70)
         self._title_font_size = size_spin
@@ -357,7 +374,7 @@ class ClipEffectsWidget(QWidget):
         # Anchor + margin
         anchor_row = QHBoxLayout()
         anchor_combo = QComboBox()
-        saved_anchor = self._settings.value(_KEY_TITLE_ANCHOR, "bottom-right")
+        saved_anchor = self._qsv(_KEY_TITLE_ANCHOR, "bottom-right")
         for label, value in _ANCHORS:
             anchor_combo.addItem(label, value)
             if value == saved_anchor:
@@ -365,7 +382,7 @@ class ClipEffectsWidget(QWidget):
         self._title_anchor = anchor_combo
         margin_spin = QSpinBox()
         margin_spin.setRange(0, 500)
-        margin_spin.setValue(int(self._settings.value(_KEY_TITLE_MARGIN, 40)))
+        margin_spin.setValue(self._qsv(_KEY_TITLE_MARGIN, 40))
         margin_spin.setSuffix(" px")
         margin_spin.setFixedWidth(75)
         margin_spin.setEnabled(saved_anchor != "center")
@@ -377,7 +394,7 @@ class ClipEffectsWidget(QWidget):
 
         # Alignment
         align_combo = QComboBox()
-        saved_align = self._settings.value(_KEY_TITLE_ALIGNMENT, "right")
+        saved_align = self._qsv(_KEY_TITLE_ALIGNMENT, "right")
         for label, value in _ALIGNMENTS:
             align_combo.addItem(label, value)
             if value == saved_align:
@@ -387,14 +404,14 @@ class ClipEffectsWidget(QWidget):
 
         # Color + shadow
         color_row = QHBoxLayout()
-        saved_color = self._settings.value(_KEY_TITLE_COLOR, "#ffffff")
+        saved_color = self._qsv(_KEY_TITLE_COLOR, "#ffffff")
         color_btn = QPushButton()
         color_btn.setFixedWidth(80)
         self._title_color = saved_color
         self._title_color_btn = color_btn
         self._update_color_btn(color_btn, saved_color)
         shadow_chk = QCheckBox("Shadow")
-        shadow_chk.setChecked(self._settings.value(_KEY_TITLE_SHADOW, True, type=bool))
+        shadow_chk.setChecked(self._qsv(_KEY_TITLE_SHADOW, True))
         self._title_shadow = shadow_chk
         color_row.addWidget(color_btn)
         color_row.addWidget(shadow_chk)
@@ -407,21 +424,21 @@ class ClipEffectsWidget(QWidget):
         dur_spin.setSingleStep(0.5)
         dur_spin.setDecimals(1)
         dur_spin.setSuffix(" s")
-        dur_spin.setValue(float(self._settings.value(_KEY_TITLE_DURATION, 10.0)))
+        dur_spin.setValue(self._qsv(_KEY_TITLE_DURATION, 10.0))
         self._title_duration = dur_spin
         form.addRow("Duration:", dur_spin)
 
         # Title fade-in
         fi_row = QHBoxLayout()
         fi_chk = QCheckBox("Fade in")
-        fi_chk.setChecked(self._settings.value(_KEY_TITLE_FI_ENABLED, True, type=bool))
+        fi_chk.setChecked(self._qsv(_KEY_TITLE_FI_ENABLED, True))
         self._title_fi_chk = fi_chk
         fi_dur = QDoubleSpinBox()
         fi_dur.setRange(0.0, 60.0)
         fi_dur.setSingleStep(0.5)
         fi_dur.setDecimals(1)
         fi_dur.setSuffix(" s")
-        fi_dur.setValue(float(self._settings.value(_KEY_TITLE_FI_DUR, 3.0)))
+        fi_dur.setValue(self._qsv(_KEY_TITLE_FI_DUR, 3.0))
         fi_dur.setEnabled(fi_chk.isChecked())
         fi_dur.setFixedWidth(80)
         self._title_fi_dur = fi_dur
@@ -432,14 +449,14 @@ class ClipEffectsWidget(QWidget):
 
         # Title fade-out
         fo_chk = QCheckBox("Fade out")
-        fo_chk.setChecked(self._settings.value(_KEY_TITLE_FO_ENABLED, True, type=bool))
+        fo_chk.setChecked(self._qsv(_KEY_TITLE_FO_ENABLED, True))
         self._title_fo_chk = fo_chk
         fo_dur = QDoubleSpinBox()
         fo_dur.setRange(0.0, 60.0)
         fo_dur.setSingleStep(0.5)
         fo_dur.setDecimals(1)
         fo_dur.setSuffix(" s")
-        fo_dur.setValue(float(self._settings.value(_KEY_TITLE_FO_DUR, 3.0)))
+        fo_dur.setValue(self._qsv(_KEY_TITLE_FO_DUR, 3.0))
         fo_dur.setEnabled(fo_chk.isChecked())
         fo_dur.setFixedWidth(80)
         self._title_fo_dur = fo_dur
@@ -497,10 +514,9 @@ class ClipEffectsWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _build_music_group(self) -> QGroupBox:
-        enabled = self._settings.value(_KEY_MUSIC_ENABLED, False, type=bool)
         group = QGroupBox("Music")
         group.setCheckable(True)
-        group.setChecked(enabled)
+        group.setChecked(self._qsv(_KEY_MUSIC_ENABLED, False))
         group.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_ENABLED, v))
         self._music_group = group
 
@@ -510,7 +526,7 @@ class ClipEffectsWidget(QWidget):
         # File path + browse button
         file_row = QHBoxLayout()
         path_edit = _AudioPathEdit()
-        path_edit.setText(self._settings.value(_KEY_MUSIC_PATH, ""))
+        path_edit.setText(self._qsv(_KEY_MUSIC_PATH, ""))
         self._music_path_edit = path_edit
         browse_btn = QPushButton("Browse…")
         browse_btn.setFixedWidth(80)
@@ -524,21 +540,21 @@ class ClipEffectsWidget(QWidget):
         delay_spin.setSingleStep(0.5)
         delay_spin.setDecimals(1)
         delay_spin.setSuffix(" s")
-        delay_spin.setValue(float(self._settings.value(_KEY_MUSIC_DELAY, 0.0)))
+        delay_spin.setValue(self._qsv(_KEY_MUSIC_DELAY, 0.0))
         self._music_delay = delay_spin
         form.addRow("Delay:", delay_spin)
 
         # Fade-in + Fade-out
         fade_row = QHBoxLayout()
         fi_chk = QCheckBox("Fade in")
-        fi_chk.setChecked(self._settings.value(_KEY_MUSIC_FI_ENABLED, False, type=bool))
+        fi_chk.setChecked(self._qsv(_KEY_MUSIC_FI_ENABLED, False))
         self._music_fi_chk = fi_chk
         fi_dur = QDoubleSpinBox()
         fi_dur.setRange(0.0, 60.0)
         fi_dur.setSingleStep(0.5)
         fi_dur.setDecimals(1)
         fi_dur.setSuffix(" s")
-        fi_dur.setValue(float(self._settings.value(_KEY_MUSIC_FI_DUR, 1.0)))
+        fi_dur.setValue(self._qsv(_KEY_MUSIC_FI_DUR, 1.0))
         fi_dur.setEnabled(fi_chk.isChecked())
         fi_dur.setFixedWidth(80)
         self._music_fi_dur = fi_dur
@@ -547,14 +563,14 @@ class ClipEffectsWidget(QWidget):
         fade_row.addWidget(fi_dur)
 
         fo_chk = QCheckBox("Fade out")
-        fo_chk.setChecked(self._settings.value(_KEY_MUSIC_FO_ENABLED, True, type=bool))
+        fo_chk.setChecked(self._qsv(_KEY_MUSIC_FO_ENABLED, True))
         self._music_fo_chk = fo_chk
         fo_dur = QDoubleSpinBox()
         fo_dur.setRange(0.0, 60.0)
         fo_dur.setSingleStep(0.5)
         fo_dur.setDecimals(1)
         fo_dur.setSuffix(" s")
-        fo_dur.setValue(float(self._settings.value(_KEY_MUSIC_FO_DUR, 5.0)))
+        fo_dur.setValue(self._qsv(_KEY_MUSIC_FO_DUR, 5.0))
         fo_dur.setEnabled(fo_chk.isChecked())
         fo_dur.setFixedWidth(80)
         self._music_fo_dur = fo_dur
@@ -566,7 +582,7 @@ class ClipEffectsWidget(QWidget):
 
         # Loop
         loop_chk = QCheckBox("Loop audio")
-        loop_chk.setChecked(self._settings.value(_KEY_MUSIC_LOOP, False, type=bool))
+        loop_chk.setChecked(self._qsv(_KEY_MUSIC_LOOP, False))
         self._music_loop_chk = loop_chk
         form.addRow("", loop_chk)
 
@@ -635,9 +651,10 @@ class ClipEffectsWidget(QWidget):
         widget reflects the loaded project without destroying and recreating it
         (which would cause tab-index churn and spurious Qt layout events).
         """
-        def _sv(key, default, t=None):
-            return self._settings.value(key, default) if t is None \
-                else self._settings.value(key, default, type=t)
+        def _sv(key: str, default: _T, t: type[_T] | None = None) -> _T:
+            return self._settings.value(  # type: ignore[return-value]
+                key, default, type=t or type(default)
+            )
 
         # Fade-in
         self._fi_group.setChecked(_sv(_KEY_FI_ENABLED, False, bool))
