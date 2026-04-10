@@ -103,9 +103,16 @@ def render_preview_video(
     preview_pipeline.camera_keyframes = preview_kfs
     preview_pipeline.match_results = pipeline.match_results
 
-    # Fast, low-res settings
+    # Fast, low-res settings — pick the smallest resolution that matches the
+    # user's chosen aspect ratio so portrait/square previews keep their shape.
+    _PREVIEW_RESOLUTION = {
+        "landscape": "720p",
+        "portrait":  "portrait_720p",
+        "square":    "square_720",
+    }
+    aspect = settings.get("render/aspect_ratio", "landscape")
     preview_settings = dict(settings)
-    preview_settings["render/resolution"] = "720p"
+    preview_settings["render/resolution"] = _PREVIEW_RESOLUTION.get(aspect, "720p")
     preview_settings["render/quality"]    = "low"
 
     # ------------------------------------------------------------------ #
