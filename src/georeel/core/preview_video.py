@@ -96,6 +96,7 @@ def render_preview_video(
         raise PreviewVideoError("Blender scene is required (run stages 1–5 first).")
 
     preview_kfs = build_preview_keyframes(pipeline.camera_keyframes, settings)
+    is_full_video = len(preview_kfs) == len(pipeline.camera_keyframes)
 
     # Shallow pipeline clone with only the preview keyframes
     preview_pipeline = Pipeline()
@@ -157,6 +158,10 @@ def render_preview_video(
     # video, so the fade-out must not fire (its timing is relative to the
     # full-video duration, not the preview duration).
     assemble_settings["clip_effects/fade_out_enabled"] = False
+    # Music fade-out is relative to the full video end — suppress it unless
+    # the preview happens to cover all frames (i.e. it IS the full video).
+    if not is_full_video:
+        assemble_settings["clip_effects/music_fade_out_enabled"] = False
 
     try:
         assemble_video(

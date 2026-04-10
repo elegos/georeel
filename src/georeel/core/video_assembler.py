@@ -124,15 +124,24 @@ def assemble_video(
     )
     vf_args = ["-vf", ",".join(vf_filters)] if vf_filters else []
 
+    total_duration_s = total_frames / fps
+    pre_music, music_input, af_args, music_codec_args = _music_audio_cmd_parts(
+        settings, total_duration_s
+    )
+
     cmd = (
         [ffmpeg, "-y",
          "-framerate", str(fps),
-         "-i", str(Path(frames_dir) / "%06d.png"),
-         "-c:v", enc.name]
+         "-i", str(Path(frames_dir) / "%06d.png")]
+        + pre_music       # -stream_loop -1 (if loop enabled), before music -i
+        + music_input     # -i music_path
+        + ["-c:v", enc.name]
         + _quality_args(enc, cq, preset)
         + _pix_fmt_args(enc)
         + vf_args
+        + af_args         # -af "adelay=...,afade=...,atrim=...,asetpts=...,afade=..."
         + _container_args(enc, container)
+        + music_codec_args  # -map 0:v -map 1:a -c:a aac -b:a 192k
         + _attach_args(gpx_path, container)
         + _attach_settings_args(str(tmp_settings), container)
         + [str(out)]
@@ -559,6 +568,57 @@ def _composite_title_frames(
         "Title compositing done: %d/%d frames composited (alpha>0), %d hard-linked",
         composited, total, total - composited,
     )
+
+
+def _music_audio_cmd_parts(
+    settings: dict,
+    total_duration_s: float,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return (pre_input_args, input_args, af_args, map_codec_args) for music audio.
+
+    pre_input_args: placed immediately before the music -i (e.g. -stream_loop -1).
+    input_args:     [-i, music_path].
+    af_args:        [-af, filter_chain_string].
+    map_codec_args: explicit stream mapping + AAC codec args.
+
+    All four lists are empty when music is disabled or the file cannot be found.
+    """
+    if not settings.get("clip_effects/music_enabled", False):
+        return [], [], [], []
+    music_path = settings.get("clip_effects/music_path") or ""
+    if not music_path or not Path(music_path).is_file():
+        return [], [], [], []
+
+    delay  = max(0.0, float(settings.get("clip_effects/music_delay",        0.0)))
+    loop   = bool(settings.get("clip_effects/music_loop",                   False))
+    fi_on  = bool(settings.get("clip_effects/music_fade_in_enabled",        False))
+    fi_dur = max(0.0, float(settings.get("clip_effects/music_fade_in_dur",  1.0)))
+    fo_on  = bool(settings.get("clip_effects/music_fade_out_enabled",       True))
+    fo_dur = max(0.0, float(settings.get("clip_effects/music_fade_out_dur", 5.0)))
+
+    T = total_duration_s
+
+    # Build audio filter chain:
+    #   adelay  → push music start by delay seconds (silence before)
+    #   afade=in→ fade in at music start
+    #   atrim   → cut audio at the exact video end (loop or non-loop)
+    #   asetpts → normalise PTS to 0-based after trim
+    #   afade=out → fade out at video end
+    af: list[str] = []
+    if delay > 0:
+        af.append(f"adelay={round(delay * 1000)}:all=1")
+    if fi_on and fi_dur > 0 and delay < T:
+        af.append(f"afade=t=in:st={delay:.6f}:d={fi_dur:.6f}")
+    af.append(f"atrim=end={T:.6f}")
+    af.append("asetpts=PTS-STARTPTS")
+    if fo_on and fo_dur > 0 and fo_dur < T:
+        af.append(f"afade=t=out:st={T - fo_dur:.6f}:d={fo_dur:.6f}")
+
+    pre_input      = ["-stream_loop", "-1"] if loop else []
+    input_args     = ["-i", music_path]
+    af_args        = ["-af", ",".join(af)]
+    map_codec_args = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
+    return pre_input, input_args, af_args, map_codec_args
 
 
 def _quality_args(enc: EncoderConfig, cq: int, preset: str) -> list[str]:

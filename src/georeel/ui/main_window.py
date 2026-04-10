@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QObject, QSettings, QThread, Signal
 
 _log = logging.getLogger(__name__)
 from PySide6.QtGui import QCloseEvent
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QStatusBar,
@@ -73,6 +74,24 @@ _MATCH_MODES = [
 ]
 
 
+class _SaveWorker(QObject):
+    """Runs save_project in a background thread."""
+    finished = Signal()
+    failed   = Signal(str)
+
+    def __init__(self, state, path: str):
+        super().__init__()
+        self._state = state
+        self._path  = path
+
+    def run(self):
+        try:
+            save_project(self._state, self._path)
+            self.finished.emit()
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -91,6 +110,8 @@ class MainWindow(QMainWindow):
         self._keyframe_calc_worker: KeyframeCalcWorker | None = None
         self._pipeline = Pipeline()
         self._pending_preview: str = "map"  # "map" or "video"
+        self._pending_close: bool = False
+        self._save_thread: QThread | None = None
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
 
@@ -110,10 +131,19 @@ class MainWindow(QMainWindow):
         self._clip_effects_widget = ClipEffectsWidget(self._settings)
 
         tabs.addTab(main_tab, "Main")
-        tabs.addTab(self._clip_effects_widget, "Clip effects")
+        tabs.addTab(self._clip_effects_widget.fade_tab_widget(), "Fade")
+        tabs.addTab(self._clip_effects_widget.title_tab_widget(), "Title")
+        tabs.addTab(self._clip_effects_widget.music_tab_widget(), "Music")
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
+
+        self._save_progress_bar = QProgressBar()
+        self._save_progress_bar.setRange(0, 0)       # indeterminate
+        self._save_progress_bar.setMaximumWidth(160)
+        self._save_progress_bar.setTextVisible(False)
+        self._save_progress_bar.hide()
+        self._status.addPermanentWidget(self._save_progress_bar)
 
         try:
             from importlib.metadata import version as _pkg_version
@@ -140,6 +170,27 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_menu_bar(self):
+        # File menu
+        file_menu = self.menuBar().addMenu("File")
+
+        open_action = file_menu.addAction("Open…")
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._load_project)
+
+        self._recent_menu = file_menu.addMenu("Open Recent")
+        self._recent_menu.aboutToShow.connect(self._populate_recent_menu)
+
+        file_menu.addSeparator()
+
+        save_action = file_menu.addAction("Save")
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self._save)
+
+        save_as_action = file_menu.addAction("Save As…")
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self._save_project)
+
+        # Options menu
         options_menu = self.menuBar().addMenu("Options")
         blender_action = options_menu.addAction("Blender…")
         blender_action.triggered.connect(self._open_blender_settings)
@@ -875,6 +926,40 @@ class MainWindow(QMainWindow):
     def _save_last_project_dir(self, path: str):
         self._settings.setValue("project/last_dir", str(Path(path).parent))
 
+    # ------------------------------------------------------------------
+    # Recent files
+    # ------------------------------------------------------------------
+
+    _MAX_RECENT = 10
+
+    def _recent_files(self) -> list[str]:
+        """Return recent project paths that still exist, most-recent first."""
+        raw = self._settings.value("project/recent_files", [])
+        if isinstance(raw, str):   # QSettings may deserialise a single item as str
+            raw = [raw]
+        return [p for p in (raw or []) if Path(p).is_file()]
+
+    def _add_recent_file(self, path: str) -> None:
+        raw = self._settings.value("project/recent_files", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        paths = [p for p in (raw or []) if p != path]
+        paths.insert(0, path)
+        self._settings.setValue("project/recent_files", paths[: self._MAX_RECENT])
+
+    def _populate_recent_menu(self) -> None:
+        self._recent_menu.clear()
+        recent = self._recent_files()
+        if not recent:
+            empty = self._recent_menu.addAction("No recent files")
+            empty.setEnabled(False)
+            return
+        for p in recent:
+            label = f"{Path(p).name}  —  {Path(p).parent}"
+            action = self._recent_menu.addAction(label)
+            action.setToolTip(p)
+            action.triggered.connect(lambda checked, path=p: self._load_from_path(path))
+
     def _suggest_output_from_project(self, project_path: str):
         """Auto-fill output path from the project filename if not already set."""
         if self._output_selector.output_path():
@@ -889,32 +974,71 @@ class MainWindow(QMainWindow):
         finally:
             self._suppress_dirty = False
 
-    def _save_to_path(self, path: str) -> bool:
-        """Save current state to *path*. Returns True on success."""
-        try:
-            save_project(self._current_state(), path)
+    def _save_to_path(self, path: str) -> None:
+        """Start an async save to *path*. UI is disabled until completion."""
+        if self._save_thread and self._save_thread.isRunning():
+            return  # already saving
+
+        state = self._current_state()
+
+        self.centralWidget().setEnabled(False)
+        self.menuBar().setEnabled(False)
+        self._save_progress_bar.show()
+        self._status.showMessage("Saving project…")
+
+        worker = _SaveWorker(state, path)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda: self._on_save_complete(path, None))
+        worker.failed.connect(lambda msg: self._on_save_complete(path, msg))
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._save_thread = thread
+        self._save_worker = worker   # keep reference alive
+        thread.start()
+
+    def _on_save_complete(self, path: str, error: str | None) -> None:
+        self._save_progress_bar.hide()
+        self.centralWidget().setEnabled(True)
+        self.menuBar().setEnabled(True)
+        self._save_thread = None
+
+        if error:
+            self._status_show("Save failed.")
+            QMessageBox.critical(self, "Save failed", error)
+            self._pending_close = False
+        else:
             self._save_last_project_dir(path)
+            self._add_recent_file(path)
             self._project_path = path
             self._suggest_output_from_project(path)
             self._dirty = False
             self._status_show(f"Project saved: {path}")
-            return True
-        except Exception as e:
-            QMessageBox.critical(self, "Save failed", str(e))
-            return False
+            if self._pending_close:
+                self._pending_close = False
+                self._cleanup_temp_dir()
+                self.close()   # _dirty is False now → accepted without re-prompting
 
-    def _save_project(self) -> bool:
-        """Show save dialog, then save. Returns True if actually saved."""
+    def _save(self) -> None:
+        """Save to the current project path; open dialog if no path set yet."""
+        if self._project_path:
+            self._save_to_path(self._project_path)
+        else:
+            self._save_project()
+
+    def _save_project(self) -> None:
+        """Show save-as dialog, then start an async save."""
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project",
             str(Path(self._last_project_dir()) / "project.georeel"),
             "GeoReel project (*.georeel)",
         )
         if not path:
-            return False
+            return
         if not path.endswith(".georeel"):
             path += ".georeel"
-        return self._save_to_path(path)
+        self._save_to_path(path)
 
     def _load_project(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -923,12 +1047,19 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self._load_from_path(path)
+
+    def _load_from_path(self, path: str) -> None:
+        """Load the project at *path* without showing a file dialog."""
         try:
             state = load_project(path)
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
             return
+        self._apply_loaded_project(state, path)
 
+    def _apply_loaded_project(self, state, path: str) -> None:
+        """Apply a loaded ProjectState to the UI."""
         self._suppress_dirty = True
         try:
             self._clear()
@@ -965,6 +1096,7 @@ class MainWindow(QMainWindow):
                 self._settings.setValue(key, value)
         self._clip_effects_widget.reload()
         self._save_last_project_dir(path)
+        self._add_recent_file(path)
         self._project_path = path
         self._suggest_output_from_project(path)
         self._dirty = False
@@ -1027,11 +1159,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             )
             if answer == QMessageBox.Save:
-                if self._save_to_path(self._project_path):
-                    self._cleanup_temp_dir()
-                    event.accept()
-                else:
-                    event.ignore()
+                self._pending_close = True
+                self._save_to_path(self._project_path)
+                event.ignore()   # window stays open; close() fires in _on_save_complete
             elif answer == QMessageBox.Discard:
                 self._cleanup_temp_dir()
                 event.accept()
@@ -1044,11 +1174,19 @@ class MainWindow(QMainWindow):
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             )
             if answer == QMessageBox.Save:
-                if self._save_project():
-                    self._cleanup_temp_dir()
-                    event.accept()
-                else:
+                path, _ = QFileDialog.getSaveFileName(
+                    self, "Save project",
+                    str(Path(self._last_project_dir()) / "project.georeel"),
+                    "GeoReel project (*.georeel)",
+                )
+                if path:
+                    if not path.endswith(".georeel"):
+                        path += ".georeel"
+                    self._pending_close = True
+                    self._save_to_path(path)
                     event.ignore()
+                else:
+                    event.ignore()  # user cancelled the save dialog
             elif answer == QMessageBox.Discard:
                 self._cleanup_temp_dir()
                 event.accept()

@@ -21,6 +21,7 @@ _SAT_TEXTURE  = "satellite/texture.png"  # RGB PNG; metadata in project.json
 _GPX_ENTRY    = "gpx/track.gpx"          # embedded GPX track
 _PHOTOS_DIR   = "photos/"                # embedded photos: photos/0000.jpg, etc.
 _FONT_ENTRY   = "font/title"             # embedded font; extension appended at save time
+_MUSIC_ENTRY  = "music/audio"            # embedded music; extension appended at save time
 
 _FORMAT_VERSION = 2
 
@@ -74,9 +75,10 @@ def save_project(state: ProjectState, path: str) -> None:
         project_payload["render_settings"] = state.render_settings
 
     if state.clip_effects is not None:
-        # Strip any runtime-only font_path key — the font file is re-embedded below.
+        # Strip runtime-only path keys — files are re-embedded below.
+        _runtime_keys = {"clip_effects/title_font_path", "clip_effects/music_path"}
         safe_ce = {k: v for k, v in state.clip_effects.items()
-                   if k != "clip_effects/title_font_path"}
+                   if k not in _runtime_keys}
         project_payload["clip_effects"] = safe_ce
 
     if state.satellite_texture is not None:
@@ -119,6 +121,15 @@ def save_project(state: ProjectState, path: str) -> None:
                 ext = Path(font_file).suffix.lower() or ".ttf"
                 zf.write(font_file, f"{_FONT_ENTRY}{ext}")
                 project_payload["font_embedded"] = True
+
+        # ── Embed music ──────────────────────────────────────────────
+        ce = state.clip_effects or {}
+        if ce.get("clip_effects/music_enabled") and ce.get("clip_effects/music_path"):
+            music_file = ce["clip_effects/music_path"]
+            if Path(music_file).is_file():
+                ext = Path(music_file).suffix.lower() or ".mp3"
+                zf.write(music_file, f"{_MUSIC_ENTRY}{ext}")
+                project_payload["music_embedded"] = True
 
         # project.json written last so it captures all embedded flags above.
         zf.writestr(_PROJECT, json.dumps(project_payload, indent=2))
@@ -177,6 +188,16 @@ def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(entry))
             clip_effects["clip_effects/title_font_path"] = str(dest)
+
+    # ── Extract music ────────────────────────────────────────────────
+    if payload.get("music_embedded"):
+        music_entries = [n for n in namelist if n.startswith(_MUSIC_ENTRY)]
+        if music_entries:
+            entry = music_entries[0]
+            dest = _tmpdir() / entry
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(zf.read(entry))
+            clip_effects["clip_effects/music_path"] = str(dest)
 
     # ── DEM & satellite (unchanged) ──────────────────────────────────
     elevation_grid = None

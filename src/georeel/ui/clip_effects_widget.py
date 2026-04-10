@@ -1,4 +1,4 @@
-"""Clip effects settings widget — fade-in/fade-out and title controls."""
+"""Clip effects settings widget — fade-in/fade-out, title, and music controls."""
 
 from PySide6.QtCore import QRect, QSettings, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
@@ -7,11 +7,13 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFontComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -41,6 +43,15 @@ _KEY_TITLE_FI_DUR     = "clip_effects/title_fade_in_dur"
 _KEY_TITLE_FO_ENABLED = "clip_effects/title_fade_out_enabled"
 _KEY_TITLE_FO_DUR     = "clip_effects/title_fade_out_dur"
 
+_KEY_MUSIC_ENABLED   = "clip_effects/music_enabled"
+_KEY_MUSIC_PATH      = "clip_effects/music_path"
+_KEY_MUSIC_DELAY     = "clip_effects/music_delay"
+_KEY_MUSIC_LOOP      = "clip_effects/music_loop"
+_KEY_MUSIC_FI_ENABLED = "clip_effects/music_fade_in_enabled"
+_KEY_MUSIC_FI_DUR    = "clip_effects/music_fade_in_dur"
+_KEY_MUSIC_FO_ENABLED = "clip_effects/music_fade_out_enabled"
+_KEY_MUSIC_FO_DUR    = "clip_effects/music_fade_out_dur"
+
 _ANCHORS = [
     ("Top left",     "top-left"),
     ("Top",          "top"),
@@ -68,6 +79,32 @@ _PREVIEW_SIZES = {
     "portrait":  (180, 320),
     "square":    (280, 280),
 }
+
+
+class _AudioPathEdit(QLineEdit):
+    """Read-only line edit that accepts audio file drops."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setPlaceholderText("No audio file selected…")
+        self.setReadOnly(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and urls[0].isLocalFile():
+                event.acceptProposedAction()
+                return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls and urls[0].isLocalFile():
+            self.setText(urls[0].toLocalFile())
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
 
 class _TitlePreviewWidget(QWidget):
@@ -175,22 +212,56 @@ class ClipEffectsWidget(QWidget):
         super().__init__(parent)
         self._settings = settings
 
-        root = QVBoxLayout(self)
-        root.setSpacing(16)
-        root.setContentsMargins(16, 16, 16, 16)
-
-        root.addWidget(self._build_fade_group(
+        # Build groups (assigns self._fi_*, self._fo_*, self._title_*, self._music_*).
+        # Groups are not laid out here — use fade_tab_widget / title_tab_widget /
+        # music_tab_widget to get the ready-made tab content widgets.
+        self._build_fade_group(
             "Fade in (black → content)",
             _KEY_FI_ENABLED, _KEY_FI_BLACK_DUR, _KEY_FI_FADE_DUR,
             "_fi",
-        ))
-        root.addWidget(self._build_fade_group(
+        )
+        self._build_fade_group(
             "Fade out (content → black)",
             _KEY_FO_ENABLED, _KEY_FO_BLACK_DUR, _KEY_FO_FADE_DUR,
             "_fo",
-        ))
-        root.addWidget(self._build_title_group())
-        root.addStretch()
+        )
+        self._build_title_group()
+        self._build_music_group()
+
+    # ------------------------------------------------------------------
+    # Tab widget factories (called by main_window to populate tabs)
+    # ------------------------------------------------------------------
+
+    def fade_tab_widget(self) -> QWidget:
+        """Return a widget containing the fade-in and fade-out groups."""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(16)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.addWidget(self._fi_group)
+        layout.addWidget(self._fo_group)
+        layout.addStretch()
+        return w
+
+    def title_tab_widget(self) -> QWidget:
+        """Return a widget containing the title group."""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(16)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.addWidget(self._title_group)
+        layout.addStretch()
+        return w
+
+    def music_tab_widget(self) -> QWidget:
+        """Return a widget containing the music group."""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(16)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.addWidget(self._music_group)
+        layout.addStretch()
+        return w
 
     # ------------------------------------------------------------------
     # Fade group builder
@@ -422,6 +493,110 @@ class ClipEffectsWidget(QWidget):
         return group
 
     # ------------------------------------------------------------------
+    # Music group builder
+    # ------------------------------------------------------------------
+
+    def _build_music_group(self) -> QGroupBox:
+        enabled = self._settings.value(_KEY_MUSIC_ENABLED, False, type=bool)
+        group = QGroupBox("Music")
+        group.setCheckable(True)
+        group.setChecked(enabled)
+        group.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_ENABLED, v))
+        self._music_group = group
+
+        form = QFormLayout(group)
+        form.setSpacing(8)
+
+        # File path + browse button
+        file_row = QHBoxLayout()
+        path_edit = _AudioPathEdit()
+        path_edit.setText(self._settings.value(_KEY_MUSIC_PATH, ""))
+        self._music_path_edit = path_edit
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedWidth(80)
+        file_row.addWidget(path_edit, stretch=1)
+        file_row.addWidget(browse_btn)
+        form.addRow("Audio file:", file_row)
+
+        # Delay
+        delay_spin = QDoubleSpinBox()
+        delay_spin.setRange(0.0, 3600.0)
+        delay_spin.setSingleStep(0.5)
+        delay_spin.setDecimals(1)
+        delay_spin.setSuffix(" s")
+        delay_spin.setValue(float(self._settings.value(_KEY_MUSIC_DELAY, 0.0)))
+        self._music_delay = delay_spin
+        form.addRow("Delay:", delay_spin)
+
+        # Fade-in + Fade-out
+        fade_row = QHBoxLayout()
+        fi_chk = QCheckBox("Fade in")
+        fi_chk.setChecked(self._settings.value(_KEY_MUSIC_FI_ENABLED, False, type=bool))
+        self._music_fi_chk = fi_chk
+        fi_dur = QDoubleSpinBox()
+        fi_dur.setRange(0.0, 60.0)
+        fi_dur.setSingleStep(0.5)
+        fi_dur.setDecimals(1)
+        fi_dur.setSuffix(" s")
+        fi_dur.setValue(float(self._settings.value(_KEY_MUSIC_FI_DUR, 1.0)))
+        fi_dur.setEnabled(fi_chk.isChecked())
+        fi_dur.setFixedWidth(80)
+        self._music_fi_dur = fi_dur
+        fi_chk.toggled.connect(fi_dur.setEnabled)
+        fade_row.addWidget(fi_chk)
+        fade_row.addWidget(fi_dur)
+
+        fo_chk = QCheckBox("Fade out")
+        fo_chk.setChecked(self._settings.value(_KEY_MUSIC_FO_ENABLED, True, type=bool))
+        self._music_fo_chk = fo_chk
+        fo_dur = QDoubleSpinBox()
+        fo_dur.setRange(0.0, 60.0)
+        fo_dur.setSingleStep(0.5)
+        fo_dur.setDecimals(1)
+        fo_dur.setSuffix(" s")
+        fo_dur.setValue(float(self._settings.value(_KEY_MUSIC_FO_DUR, 5.0)))
+        fo_dur.setEnabled(fo_chk.isChecked())
+        fo_dur.setFixedWidth(80)
+        self._music_fo_dur = fo_dur
+        fo_chk.toggled.connect(fo_dur.setEnabled)
+        fade_row.addWidget(fo_chk)
+        fade_row.addWidget(fo_dur)
+        fade_row.addStretch()
+        form.addRow("Fades:", fade_row)
+
+        # Loop
+        loop_chk = QCheckBox("Loop audio")
+        loop_chk.setChecked(self._settings.value(_KEY_MUSIC_LOOP, False, type=bool))
+        self._music_loop_chk = loop_chk
+        form.addRow("", loop_chk)
+
+        # Signals
+        path_edit.textChanged.connect(
+            lambda p: self._settings.setValue(_KEY_MUSIC_PATH, p)
+        )
+
+        def _browse():
+            p, _ = QFileDialog.getOpenFileName(
+                self, "Select audio file", "",
+                "Audio files (*.mp3 *.m4a *.aac *.ogg *.flac *.wav *.opus)"
+                ";;All files (*)",
+            )
+            if p:
+                path_edit.setText(p)
+
+        browse_btn.clicked.connect(_browse)
+        delay_spin.valueChanged.connect(
+            lambda v: self._settings.setValue(_KEY_MUSIC_DELAY, v)
+        )
+        fi_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FI_ENABLED, v))
+        fi_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FI_DUR, v))
+        fo_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FO_ENABLED, v))
+        fo_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FO_DUR, v))
+        loop_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_LOOP, v))
+
+        return group
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -507,6 +682,18 @@ class ClipEffectsWidget(QWidget):
 
         self._title_preview.refresh()
 
+        # Music
+        self._music_group.setChecked(_sv(_KEY_MUSIC_ENABLED, False, bool))
+        self._music_path_edit.setText(_sv(_KEY_MUSIC_PATH, ""))
+        self._music_delay.setValue(float(_sv(_KEY_MUSIC_DELAY, 0.0)))
+        self._music_fi_chk.setChecked(_sv(_KEY_MUSIC_FI_ENABLED, False, bool))
+        self._music_fi_dur.setValue(float(_sv(_KEY_MUSIC_FI_DUR, 1.0)))
+        self._music_fi_dur.setEnabled(self._music_fi_chk.isChecked())
+        self._music_fo_chk.setChecked(_sv(_KEY_MUSIC_FO_ENABLED, True, bool))
+        self._music_fo_dur.setValue(float(_sv(_KEY_MUSIC_FO_DUR, 5.0)))
+        self._music_fo_dur.setEnabled(self._music_fo_chk.isChecked())
+        self._music_loop_chk.setChecked(_sv(_KEY_MUSIC_LOOP, False, bool))
+
     def get_settings(self) -> dict:
         """Return current clip effects settings as a flat dict."""
         return {
@@ -530,4 +717,12 @@ class ClipEffectsWidget(QWidget):
             _KEY_TITLE_FI_DUR:     self._title_fi_dur.value(),
             _KEY_TITLE_FO_ENABLED: self._title_fo_chk.isChecked(),
             _KEY_TITLE_FO_DUR:     self._title_fo_dur.value(),
+            _KEY_MUSIC_ENABLED:    self._music_group.isChecked(),
+            _KEY_MUSIC_PATH:       self._music_path_edit.text(),
+            _KEY_MUSIC_DELAY:      self._music_delay.value(),
+            _KEY_MUSIC_FI_ENABLED: self._music_fi_chk.isChecked(),
+            _KEY_MUSIC_FI_DUR:     self._music_fi_dur.value(),
+            _KEY_MUSIC_FO_ENABLED: self._music_fo_chk.isChecked(),
+            _KEY_MUSIC_FO_DUR:     self._music_fo_dur.value(),
+            _KEY_MUSIC_LOOP:       self._music_loop_chk.isChecked(),
         }
