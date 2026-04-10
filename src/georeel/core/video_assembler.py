@@ -58,6 +58,8 @@ def assemble_video(
     tmp_settings = Path(tempfile.mktemp(suffix="_georeel_settings.json"))
     tmp_settings.write_text(settings_json, encoding="utf-8")
 
+    vf_args, total_frames = _fade_vf_args(settings, total_frames, fps)
+
     cmd = (
         [ffmpeg, "-y",
          "-framerate", str(fps),
@@ -65,6 +67,7 @@ def assemble_video(
          "-c:v", enc.name]
         + _quality_args(enc, cq, preset)
         + _pix_fmt_args(enc)
+        + vf_args
         + _container_args(enc, container)
         + _attach_args(gpx_path, container)
         + _attach_settings_args(str(tmp_settings), container)
@@ -134,6 +137,57 @@ def assemble_video(
 # ------------------------------------------------------------------
 # Command-line argument helpers
 # ------------------------------------------------------------------
+
+def _fade_vf_args(settings: dict, total_frames: int, fps: int) -> tuple[list[str], int]:
+    """Return a (-vf, <filter_graph>) pair and the adjusted frame count.
+
+    The adjusted frame count accounts for black frames added by tpad so the
+    caller can pass the correct total to progress reporting.
+
+    Timeline (both effects enabled):
+      [fi_black][content fading in][content][content fading out][fo_black]
+
+    tpad pads the stream; fade operates on the padded result.  Both filters
+    run inside a single FFmpeg pass — no re-encode of the composited frames.
+    """
+    fade_in  = settings.get("clip_effects/fade_in_enabled",  False)
+    fade_out = settings.get("clip_effects/fade_out_enabled", False)
+
+    if not fade_in and not fade_out:
+        return [], total_frames
+
+    fi_black = float(settings.get("clip_effects/fade_in_black_dur",  5.0)) if fade_in  else 0.0
+    fi_fade  = float(settings.get("clip_effects/fade_in_fade_dur",   1.0)) if fade_in  else 0.0
+    fo_black = float(settings.get("clip_effects/fade_out_black_dur", 5.0)) if fade_out else 0.0
+    fo_fade  = float(settings.get("clip_effects/fade_out_fade_dur",  1.0)) if fade_out else 0.0
+
+    orig_dur = total_frames / fps
+    filters: list[str] = []
+
+    # tpad: prepend and/or append black frames in one pass.
+    # start_mode/stop_mode must be "add" (fills with color, default black)
+    # or "clone". "black" is not a valid value.
+    tpad_parts: list[str] = []
+    if fi_black > 0:
+        tpad_parts += [f"start_duration={fi_black}", "start_mode=add"]
+    if fo_black > 0:
+        tpad_parts += [f"stop_duration={fo_black}", "stop_mode=add"]
+    if tpad_parts:
+        filters.append("tpad=" + ":".join(tpad_parts))
+
+    # Fade in: ramps from black to full at the start of the content
+    if fi_fade > 0:
+        filters.append(f"fade=t=in:st={fi_black}:d={fi_fade}")
+
+    # Fade out: ramps from full to black before the content ends, so by the
+    # time the stop-pad black begins the image is already fully black.
+    if fo_fade > 0:
+        fo_start = fi_black + orig_dur - fo_fade
+        filters.append(f"fade=t=out:st={fo_start:.6f}:d={fo_fade}")
+
+    extra_frames = round(fi_black * fps) + round(fo_black * fps)
+    return ["-vf", ",".join(filters)], total_frames + extra_frames
+
 
 def _quality_args(enc: EncoderConfig, cq: int, preset: str) -> list[str]:
     args: list[str] = []

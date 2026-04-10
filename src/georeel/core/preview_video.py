@@ -23,6 +23,7 @@ from .pipeline import Pipeline
 from .video_assembler import VideoAssembleError, assemble_video
 
 _PREVIEW_FRACTION = 0.02   # render the first 2 % of total frames (minimum 2)
+_PREVIEW_MIN_CONTENT_S = 3.0  # seconds of post-fade content always visible in preview
 
 
 class PreviewVideoError(Exception):
@@ -33,10 +34,39 @@ class PreviewVideoError(Exception):
 # Public helpers
 # ------------------------------------------------------------------
 
-def build_preview_keyframes(keyframes: list[CameraKeyframe]) -> list[CameraKeyframe]:
-    """Return the first 2 % of keyframes (minimum 2) as the preview clip."""
+def build_preview_keyframes(
+    keyframes: list[CameraKeyframe],
+    settings: dict | None = None,
+) -> list[CameraKeyframe]:
+    """Return the first N keyframes as the preview clip.
+
+    The base count is 2 % of the total (minimum 2).  When clip effects are
+    active, extra frames are added so that the full fade transition is visible
+    and at least *_PREVIEW_MIN_CONTENT_S* seconds of clean content follow it.
+
+    - Fade-in: fi_black is added by ffmpeg's tpad (no extra rendered frames
+      needed for the black part), but fi_fade overlaps the start of rendered
+      content, so fi_fade + _PREVIEW_MIN_CONTENT_S extra seconds are rendered.
+    - Fade-out: fo_fade overlaps the end of rendered content; fo_black is added
+      by tpad. fo_fade extra seconds are rendered so the transition is visible.
+    """
     n = len(keyframes)
-    count = max(2, round(n * _PREVIEW_FRACTION))
+    fps = int((settings or {}).get("render/fps", 30))
+    base = max(2, round(n * _PREVIEW_FRACTION))
+
+    extra = 0
+    if settings:
+        if settings.get("clip_effects/fade_in_enabled", False):
+            fi_black = float(settings.get("clip_effects/fade_in_black_dur", 5.0))
+            fi_fade  = float(settings.get("clip_effects/fade_in_fade_dur",  1.0))
+            # fi_black from tpad doesn't consume rendered frames, but we extend
+            # the base by fi_black too so the preview is proportionally longer
+            # and the user can see content well after the fade completes.
+            extra += round((fi_black + fi_fade + _PREVIEW_MIN_CONTENT_S) * fps)
+        # fade-out is suppressed in the preview (see assemble_settings below),
+        # so no extra frames are needed for it here.
+
+    count = min(base + extra, n)
     return keyframes[:count]
 
 
@@ -64,7 +94,7 @@ def render_preview_video(
     if not pipeline.scene:
         raise PreviewVideoError("Blender scene is required (run stages 1–5 first).")
 
-    preview_kfs = build_preview_keyframes(pipeline.camera_keyframes)
+    preview_kfs = build_preview_keyframes(pipeline.camera_keyframes, settings)
 
     # Shallow pipeline clone with only the preview keyframes
     preview_pipeline = Pipeline()
@@ -115,6 +145,10 @@ def render_preview_video(
     # ------------------------------------------------------------------ #
     assemble_settings = dict(preview_settings)
     assemble_settings["output/container"] = "mp4"
+    # The preview is a leading clip — it never reaches the end of the full
+    # video, so the fade-out must not fire (its timing is relative to the
+    # full-video duration, not the preview duration).
+    assemble_settings["clip_effects/fade_out_enabled"] = False
 
     try:
         assemble_video(

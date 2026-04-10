@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +52,7 @@ from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.scene_builder import SceneBuildError, build_scene
 from georeel.core.preview_map import PreviewMapError, render_preview_map
 
+from .clip_effects_widget import ClipEffectsWidget
 from .gpx_drop_area import GpxDropArea
 from .gpx_stats_widget import GpxStatsWidget
 from .output_file_selector import OutputFileSelector
@@ -90,17 +92,23 @@ class MainWindow(QMainWindow):
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+
+        main_tab = QWidget()
+        root = QVBoxLayout(main_tab)
         root.setSpacing(12)
         root.setContentsMargins(16, 16, 16, 16)
-
         root.addWidget(self._build_gpx_group())
         root.addWidget(self._build_photos_group(), stretch=1)
         root.addWidget(self._build_match_group())
         root.addWidget(self._build_output_group())
         root.addLayout(self._build_action_buttons())
+
+        self._clip_effects_widget = ClipEffectsWidget(self._settings)
+
+        tabs.addTab(main_tab, "Main")
+        tabs.addTab(self._clip_effects_widget, "Clip effects")
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
@@ -516,8 +524,9 @@ class MainWindow(QMainWindow):
 
         blender_exe = self._settings.value("blender/executable_path") or None
         self._status_show("Rendering preview video…")
+        preview_settings = {**render_settings, **self._clip_effects_widget.get_settings()}
         dlg = PreviewVideoProgressDialog(
-            self._pipeline, render_settings,
+            self._pipeline, preview_settings,
             blender_exe=blender_exe, parent=self,
         )
         if dlg.exec() != PreviewVideoProgressDialog.Accepted:
@@ -828,10 +837,11 @@ class MainWindow(QMainWindow):
         # Stage 9 — Video Assembler
         output_path = self._output_selector.output_path()
         total_frames = len(self._pipeline.camera_keyframes or [])
+        assemble_settings = {**render_settings, **self._clip_effects_widget.get_settings()}
         dlg = VideoProgressDialog(
             self._pipeline.composited_frames_dir,
             output_path,
-            render_settings,
+            assemble_settings,
             total_frames,
             gpx_path=self._gpx_path,
             parent=self,
