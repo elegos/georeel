@@ -77,6 +77,7 @@ def render_preview_video(
     blender_exe: str | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    title_progress_cb: Callable[[int, int], None] | None = None,
 ) -> str:
     """Render a preview video to *output_path* and return the path.
 
@@ -159,6 +160,7 @@ def render_preview_video(
             gpx_path=None,
             progress_cb=None,
             cancel_check=cancel_check,
+            title_progress_cb=title_progress_cb,
         )
     except VideoAssembleError as e:
         raise PreviewVideoError(f"Video assembly failed: {e}") from e

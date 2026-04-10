@@ -1,9 +1,5 @@
 # TO-DO list for GeoReel
 
-## Title
-
-Add an option to add a title to the clip to be overlayed on top of the main video, in the "Clip effects" tab of the main window. The user should be able to insert a multi-line title, choose the font from the ones available system-wide (default: "Noto Serif", defaulting to "Sans Serif" or otherwise the first available font), the font size (default: 95), the anchor point (default: bottom-right, with options top-left, top, top-right, center-left, center, etc.), the anchor point's margin (ignored for anchor point center), text alignment (default: right), text color (default: white), text shadow (default: yes), title duration (default: 10s). The user should be able to see a preview of the title in a black preview area with the same selected video resolution's ratio and the text resized according to the preview "screen" resolution. The preview should update as soon as any option or the text change.
-
 ## Export as Kdenlive project
 
 Add an optional "Export as Kdenlive project" action (e.g. a button in the main window or a menu item) that, given a completed pipeline run, generates a `.kdenlive` XML project file containing:

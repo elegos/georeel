@@ -31,6 +31,7 @@ class ProjectState:
     elevation_grid: ElevationGrid | None = None
     satellite_texture: SatelliteTexture | None = None
     render_settings: dict | None = None   # camera + imagery settings at fetch time
+    clip_effects: dict | None = None      # fade-in/out, title, music settings
 
 
 # ------------------------------------------------------------------
@@ -58,6 +59,9 @@ def save_project(state: ProjectState, path: str) -> None:
 
     if state.render_settings is not None:
         project_payload["render_settings"] = state.render_settings
+
+    if state.clip_effects is not None:
+        project_payload["clip_effects"] = state.clip_effects
 
     if state.satellite_texture is not None:
         t = state.satellite_texture
@@ -128,6 +132,7 @@ def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
         elevation_grid=elevation_grid,
         satellite_texture=satellite_texture,
         render_settings=payload.get("render_settings"),
+        clip_effects=payload.get("clip_effects"),
     )
 
 

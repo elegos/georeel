@@ -406,6 +406,7 @@ class MainWindow(QMainWindow):
             elevation_grid=self._cached_elevation_grid,
             satellite_texture=self._cached_satellite_texture,
             render_settings=get_render_settings(self._settings),
+            clip_effects=self._clip_effects_widget.get_settings(),
         )
 
     # ------------------------------------------------------------------
@@ -955,6 +956,10 @@ class MainWindow(QMainWindow):
             self._tz_offset_spin.setValue(tz)
             self._tz_offset_spin.blockSignals(False)
             self._photo_area.set_tz_offset(tz)
+        if state.clip_effects:
+            for key, value in state.clip_effects.items():
+                self._settings.setValue(key, value)
+        self._clip_effects_widget.reload()
         self._save_last_project_dir(path)
         self._project_path = path
         self._suggest_output_from_project(path)

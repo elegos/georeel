@@ -23,9 +23,10 @@ from georeel.core.preview_video import PreviewVideoError, render_preview_video
 
 
 class _Worker(QObject):
-    progress = Signal(int, int)  # current, total
-    finished = Signal(str)       # output_path
-    failed   = Signal(str)       # error message
+    progress       = Signal(int, int)  # current, total  (Blender render)
+    title_progress = Signal(int, int)  # current, total  (PIL title compositing)
+    finished       = Signal(str)       # output_path
+    failed         = Signal(str)       # error message
 
     def __init__(self, pipeline: Pipeline, settings: dict,
                  output_path: str, blender_exe: str | None):
@@ -48,6 +49,7 @@ class _Worker(QObject):
                 blender_exe=self._blender_exe,
                 progress_cb=lambda cur, tot: self.progress.emit(cur, tot),
                 cancel_check=self._cancel.is_set,
+                title_progress_cb=lambda cur, tot: self.title_progress.emit(cur, tot),
             )
             if self._cancel.is_set():
                 self.failed.emit("Cancelled.")
@@ -99,6 +101,7 @@ class PreviewVideoProgressDialog(QDialog):
 
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
+        self._worker.title_progress.connect(self._on_title_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
 
@@ -120,6 +123,11 @@ class PreviewVideoProgressDialog(QDialog):
         self._bar.setRange(0, total)
         self._bar.setValue(current)
         self._label.setText(f"Rendering preview frame {current} / {total}…")
+
+    def _on_title_progress(self, current: int, total: int):
+        self._bar.setRange(0, total)
+        self._bar.setValue(current)
+        self._label.setText(f"Compositing title frame {current} / {total}…")
 
     def _on_finished(self, path: str):
         self._output_path = path
