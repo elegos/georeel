@@ -10,4 +10,4 @@ Add an option to add a title to the clip to be overlayed on top of the main vide
 
 ## Music
 
-Add an option to add a music to the clip in the main window, under the "Clip effects", with the possibility to fade-in, fade-out and the relative timings (default: fade-in disabled, fade-out 5s)
+Add an option to add a music to the clip in the main window, under the "Clip effects", selecting the audio clip with a choose file dialog or dropping an audio file in the drop area, with the possibility to fade-in, fade-out, loop and the relative timings (default: fade-in: disabled; fade-out: yes, 5s; loop: disabled)
