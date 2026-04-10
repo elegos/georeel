@@ -1,11 +1,8 @@
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QThread, Signal
-
-_log = logging.getLogger(__name__)
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -25,42 +22,51 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .blender_settings_dialog import BlenderSettingsDialog
-from .compositor_progress_dialog import CompositorProgressDialog
-from .render_progress_dialog import RenderProgressDialog
-from .render_settings_dialog import (
-    RenderSettingsDialog, get_render_settings,
-    KEY_HEIGHT_OFFSET, KEY_TILT_DEG, KEY_PHOTO_TZ_OFFSET,
-    KEY_IMAGERY_PROVIDER, KEY_IMAGERY_QUALITY, KEY_IMAGERY_API_KEY, KEY_IMAGERY_CUSTOM_URL,
-)
-from .video_progress_dialog import VideoProgressDialog
-from .preview_map_dialog import PreviewMapDialog
-from .preview_video_dialog import open_preview_video
-from .preview_video_progress_dialog import PreviewVideoProgressDialog
-from .keyframe_calc_worker import KeyframeCalcWorker
-from .scene_prep_worker import ScenePrepWorker
-
+from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
-from georeel.core.frustum import frustum_margin
 from georeel.core.elevation_grid import ElevationGrid
-from georeel.core.satellite import SatelliteTexture, build_source
-from georeel.core.satellite.providers import QUALITY_MAX_TILES
+from georeel.core.frustum import frustum_margin
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
-from georeel.core.project import ProjectState, load_project, save_project
-from georeel.core.camera_path import CameraPathError, build_camera_path
-from georeel.core.scene_builder import SceneBuildError, build_scene
 from georeel.core.preview_map import PreviewMapError, render_preview_map
+from georeel.core.project import ProjectState, load_project, save_project
+from georeel.core.satellite import SatelliteTexture, build_source
+from georeel.core.satellite.providers import QUALITY_MAX_TILES
+from georeel.core.scene_builder import SceneBuildError, build_scene
 
+from .blender_settings_dialog import BlenderSettingsDialog
 from .clip_effects_widget import ClipEffectsWidget
+from .compositor_progress_dialog import CompositorProgressDialog
 from .gpx_drop_area import GpxDropArea
 from .gpx_stats_widget import GpxStatsWidget
+from .keyframe_calc_worker import KeyframeCalcWorker
 from .output_file_selector import OutputFileSelector
 from .photo_list_area import PhotoListArea
+from .preview_map_dialog import PreviewMapDialog
+from .preview_video_dialog import open_preview_video
+from .preview_video_progress_dialog import PreviewVideoProgressDialog
+from .render_progress_dialog import RenderProgressDialog
+from .render_settings_dialog import (
+    KEY_HEIGHT_OFFSET,
+    KEY_IMAGERY_API_KEY,
+    KEY_IMAGERY_CUSTOM_URL,
+    KEY_IMAGERY_PROVIDER,
+    KEY_IMAGERY_QUALITY,
+    KEY_PHOTO_TZ_OFFSET,
+    KEY_TILT_DEG,
+    RenderSettingsDialog,
+    get_render_settings,
+)
+from .scene_prep_worker import ScenePrepWorker
+from .video_progress_dialog import VideoProgressDialog
 
-_QUALITY_ORDER = {q: i for i, q in enumerate(QUALITY_MAX_TILES)}  # standard=0, high=1, very_high=2
+_log = logging.getLogger(__name__)
+
+_QUALITY_ORDER = {
+    q: i for i, q in enumerate(QUALITY_MAX_TILES)
+}  # standard=0, high=1, very_high=2
 
 
 def _quality_rank(quality: str) -> int:
@@ -76,13 +82,14 @@ _MATCH_MODES = [
 
 class _SaveWorker(QObject):
     """Runs save_project in a background thread."""
+
     finished = Signal()
-    failed   = Signal(str)
+    failed = Signal(str)
 
     def __init__(self, state, path: str):
         super().__init__()
         self._state = state
-        self._path  = path
+        self._path = path
 
     def run(self):
         try:
@@ -105,7 +112,7 @@ class MainWindow(QMainWindow):
         self._cached_satellite_texture: SatelliteTexture | None = None
         self._dirty = False
         self._suppress_dirty = False
-        self._scene_stale = True        # True → stage 5 must rerun in _start()
+        self._scene_stale = True  # True → stage 5 must rerun in _start()
         self._scene_prep_worker: ScenePrepWorker | None = None
         self._keyframe_calc_worker: KeyframeCalcWorker | None = None
         self._pipeline = Pipeline()
@@ -115,8 +122,14 @@ class MainWindow(QMainWindow):
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
 
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        self.setCentralWidget(central)
+
         tabs = QTabWidget()
-        self.setCentralWidget(tabs)
+        central_layout.addWidget(tabs, stretch=1)
 
         main_tab = QWidget()
         root = QVBoxLayout(main_tab)
@@ -126,7 +139,6 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_photos_group(), stretch=1)
         root.addWidget(self._build_match_group())
         root.addWidget(self._build_output_group())
-        root.addLayout(self._build_action_buttons())
 
         self._clip_effects_widget = ClipEffectsWidget(self._settings)
 
@@ -135,11 +147,17 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._clip_effects_widget.title_tab_widget(), "Title")
         tabs.addTab(self._clip_effects_widget.music_tab_widget(), "Music")
 
+        btn_container = QWidget()
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setContentsMargins(16, 8, 16, 8)
+        btn_layout.addLayout(self._build_action_buttons())
+        central_layout.addWidget(btn_container)
+
         self._status = QStatusBar()
         self.setStatusBar(self._status)
 
         self._save_progress_bar = QProgressBar()
-        self._save_progress_bar.setRange(0, 0)       # indeterminate
+        self._save_progress_bar.setRange(0, 0)  # indeterminate
         self._save_progress_bar.setMaximumWidth(160)
         self._save_progress_bar.setTextVisible(False)
         self._save_progress_bar.hide()
@@ -147,6 +165,7 @@ class MainWindow(QMainWindow):
 
         try:
             from importlib.metadata import version as _pkg_version
+
             _version = _pkg_version("georeel")
         except Exception:
             _version = "unknown"
@@ -156,11 +175,15 @@ class MainWindow(QMainWindow):
 
         self._build_menu_bar()
 
-        self._photo_area.set_tz_offset(float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
+        self._photo_area.set_tz_offset(
+            float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+        )
         self._photo_area.photos_changed.connect(self._on_photos_changed)
         self._photo_area.photos_changed.connect(self._mark_dirty)
         self._photo_area.photos_changed.connect(self._invalidate_scene)
-        self._photo_area.calculate_keyframes_requested.connect(self._calculate_keyframes)
+        self._photo_area.calculate_keyframes_requested.connect(
+            self._calculate_keyframes
+        )
         self._match_group.buttonClicked.connect(self._mark_dirty)
         self._match_group.buttonClicked.connect(self._invalidate_scene)
         self._output_selector.path_changed.connect(self._mark_dirty)
@@ -204,8 +227,12 @@ class MainWindow(QMainWindow):
     def _open_render_settings(self):
         # Snapshot settings that affect DEM coverage and satellite texture
         _dem_keys = (KEY_HEIGHT_OFFSET, KEY_TILT_DEG)
-        _sat_keys = (KEY_IMAGERY_PROVIDER, KEY_IMAGERY_QUALITY,
-                     KEY_IMAGERY_API_KEY, KEY_IMAGERY_CUSTOM_URL)
+        _sat_keys = (
+            KEY_IMAGERY_PROVIDER,
+            KEY_IMAGERY_QUALITY,
+            KEY_IMAGERY_API_KEY,
+            KEY_IMAGERY_CUSTOM_URL,
+        )
         dem_before = {k: self._settings.value(k) for k in _dem_keys}
         sat_before = {k: self._settings.value(k) for k in _sat_keys}
 
@@ -247,14 +274,16 @@ class MainWindow(QMainWindow):
     def _on_keyframes_ready(self, keyframes, match_results, trackpoints):
         self._photo_area.set_calc_kf_running(False)
         self._photo_area.update_match_statuses(match_results)
-        self._photo_area.update_pipeline_info(trackpoints=trackpoints, keyframes=keyframes)
-        self._status_show(
-            f"Keyframes calculated: {len(keyframes)} frames total."
+        self._photo_area.update_pipeline_info(
+            trackpoints=trackpoints, keyframes=keyframes
         )
+        self._status_show(f"Keyframes calculated: {len(keyframes)} frames total.")
 
     def _on_keyframe_calc_error(self, message: str):
         self._photo_area.set_calc_kf_running(False)
-        self._status_show(f"Keyframe calculation failed: {message}", level=logging.ERROR)
+        self._status_show(
+            f"Keyframe calculation failed: {message}", level=logging.ERROR
+        )
 
     def _build_gpx_group(self) -> QGroupBox:
         group = QGroupBox("GPX Track")
@@ -273,7 +302,9 @@ class MainWindow(QMainWindow):
         # Thumbnail rows are 52 px tall; keep at least 3 visible rows + header
         _row_h = 52
         _header_h = 26
-        group.setMinimumHeight(_header_h + _row_h * 3 + 60)  # 60 for group title + buttons
+        group.setMinimumHeight(
+            _header_h + _row_h * 3 + 60
+        )  # 60 for group title + buttons
         return group
 
     def _build_match_group(self) -> QGroupBox:
@@ -476,6 +507,7 @@ class MainWindow(QMainWindow):
         self._open_blender_btn.setEnabled(True)
         try:
             from georeel.core.gpx_parser import parse_gpx
+
             trackpoints, _ = parse_gpx(path)
             self._gpx_stats.update_stats(trackpoints)
         except Exception:
@@ -531,8 +563,12 @@ class MainWindow(QMainWindow):
         blender_exe = self._settings.value("blender/executable_path") or None
         render_settings = get_render_settings(self._settings)
         res = render_settings.get("render/resolution", "1080p")
-        wh = {"720p": (1280, 720), "1080p": (1920, 1080),
-              "1440p": (2560, 1440), "4k": (3840, 2160)}
+        wh = {
+            "720p": (1280, 720),
+            "1080p": (1920, 1080),
+            "1440p": (2560, 1440),
+            "4k": (3840, 2160),
+        }
         width, height = wh.get(res, (1920, 1080))
 
         self._status_show("Rendering preview map…")
@@ -549,7 +585,9 @@ class MainWindow(QMainWindow):
             return
 
         self._status_show(f"Preview map ready: {png_path}")
-        dlg = PreviewMapDialog(png_path, initial_dir=self._last_project_dir(), parent=self)
+        dlg = PreviewMapDialog(
+            png_path, initial_dir=self._last_project_dir(), parent=self
+        )
         dlg.exec()
 
     def _show_preview_video(self):
@@ -576,6 +614,7 @@ class MainWindow(QMainWindow):
             self._status_show("Computing camera path…")
             try:
                 from georeel.core.camera_path import CameraPathError, build_camera_path
+
                 self._pipeline.camera_keyframes = build_camera_path(
                     self._pipeline, render_settings
                 )
@@ -586,10 +625,15 @@ class MainWindow(QMainWindow):
 
         blender_exe = self._settings.value("blender/executable_path") or None
         self._status_show("Rendering preview video…")
-        preview_settings = {**render_settings, **self._clip_effects_widget.get_settings()}
+        preview_settings = {
+            **render_settings,
+            **self._clip_effects_widget.get_settings(),
+        }
         dlg = PreviewVideoProgressDialog(
-            self._pipeline, preview_settings,
-            blender_exe=blender_exe, parent=self,
+            self._pipeline,
+            preview_settings,
+            blender_exe=blender_exe,
+            parent=self,
         )
         if dlg.exec() != PreviewVideoProgressDialog.Accepted:
             self._status_show("Preview video cancelled or failed.")
@@ -620,11 +664,14 @@ class MainWindow(QMainWindow):
 
         blender_exe = self._settings.value("blender/executable_path") or None
         from georeel.core.blender_runtime import find_blender
+
         exe = find_blender(blender_exe)
         if exe is None:
-            QMessageBox.critical(self, "Blender not found",
-                                 "Blender executable not found.\n"
-                                 "Set the path via Options → Blender…")
+            QMessageBox.critical(
+                self,
+                "Blender not found",
+                "Blender executable not found.\nSet the path via Options → Blender…",
+            )
             return
 
         render_settings = get_render_settings(self._settings)
@@ -634,6 +681,7 @@ class MainWindow(QMainWindow):
             self._status_show("Computing camera path…")
             try:
                 from georeel.core.camera_path import CameraPathError, build_camera_path
+
                 self._pipeline.camera_keyframes = build_camera_path(
                     self._pipeline, render_settings
                 )
@@ -646,6 +694,7 @@ class MainWindow(QMainWindow):
         self._status_show("Injecting camera into scene…")
         try:
             from georeel.core.open_in_blender import inject_camera_and_open
+
             inject_camera_and_open(
                 exe,
                 self._pipeline.scene,
@@ -667,12 +716,17 @@ class MainWindow(QMainWindow):
         # Check for output file overwrite before doing any work
         output_path = self._output_selector.output_path()
         if not output_path:
-            QMessageBox.warning(self, "No output path", "Please set an output video path before starting.")
+            QMessageBox.warning(
+                self,
+                "No output path",
+                "Please set an output video path before starting.",
+            )
             self._status_show("Pipeline stopped: no output path set.")
             return
         if Path(output_path).exists():
             answer = QMessageBox.question(
-                self, "Overwrite file?",
+                self,
+                "Overwrite file?",
                 f"The file already exists:\n{output_path}\n\nOverwrite it?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
@@ -698,9 +752,7 @@ class MainWindow(QMainWindow):
         # Stages 1–5: skip entirely if the background worker already built
         # a fresh scene for the current inputs.
         if not self._scene_stale and self._pipeline.scene is not None:
-            self._status_show(
-                f"Reusing existing scene: {self._pipeline.scene}"
-            )
+            self._status_show(f"Reusing existing scene: {self._pipeline.scene}")
             render_settings = get_render_settings(self._settings)
             # Jump straight to stage 6
             self._start_from_camera_path(render_settings)
@@ -718,28 +770,27 @@ class MainWindow(QMainWindow):
         self._pipeline.trackpoints = trackpoints
         self._pipeline.bounding_box = bbox
         self._photo_area.update_pipeline_info(trackpoints=trackpoints)
-        self._status_show(
-            f"GPX parsed: {len(trackpoints)} trackpoints, bounds: {bbox}"
-        )
+        self._status_show(f"GPX parsed: {len(trackpoints)} trackpoints, bounds: {bbox}")
 
         # Stage 2 — Photo Matcher
         photos = self._store.all()
         if photos:
             self._status_show("Matching photos to trackpoints…")
             tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
-            results = match_photos(photos, trackpoints, self._match_mode(),
-                                   tz_offset_hours=tz_offset)
+            results = match_photos(
+                photos, trackpoints, self._match_mode(), tz_offset_hours=tz_offset
+            )
             self._pipeline.match_results = results
             self._photo_area.update_match_statuses(results)
 
             failed = [r for r in results if not r.ok]
             if failed:
                 lines = "\n".join(
-                    f"• {Path(r.photo_path).name}: {r.error}"
-                    for r in failed
+                    f"• {Path(r.photo_path).name}: {r.error}" for r in failed
                 )
                 QMessageBox.warning(
-                    self, "Photo matching failed",
+                    self,
+                    "Photo matching failed",
                     f"{len(failed)} photo(s) could not be matched:\n\n{lines}",
                 )
                 self._status_show("Pipeline stopped: photo matching errors.")
@@ -771,13 +822,10 @@ class MainWindow(QMainWindow):
         ):
             self._pipeline.elevation_grid = cached
             self._status_show(
-                f"DEM: using cached grid "
-                f"({cached.rows}×{cached.cols} points)."
+                f"DEM: using cached grid ({cached.rows}×{cached.cols} points)."
             )
         else:
-            self._status_show(
-                f"Fetching DEM (SRTM, {margin_m/1000:.1f} km margin)…"
-            )
+            self._status_show(f"Fetching DEM (SRTM, {margin_m / 1000:.1f} km margin)…")
             try:
                 grid = fetch_dem(fetch_bbox)
             except DemFetchError as e:
@@ -794,7 +842,7 @@ class MainWindow(QMainWindow):
 
         # Stage 4 — Satellite Imagery Fetcher
         provider_id = self._settings.value("imagery/provider", "esri_world")
-        img_quality = self._settings.value("imagery/quality",  "standard")
+        img_quality = self._settings.value("imagery/quality", "standard")
         cached_sat = self._cached_satellite_texture
         if (
             cached_sat is not None
@@ -835,8 +883,9 @@ class MainWindow(QMainWindow):
         self._status_show("Building 3D scene (Blender)…")
         blender_exe = self._settings.value("blender/executable_path") or None
         try:
-            blend_path = build_scene(self._pipeline, blender_exe=blender_exe,
-                                     settings=render_settings)
+            blend_path = build_scene(
+                self._pipeline, blender_exe=blender_exe, settings=render_settings
+            )
         except SceneBuildError as e:
             QMessageBox.critical(self, "Scene build error", str(e))
             self._status_show("Pipeline stopped: scene build failed.")
@@ -866,24 +915,23 @@ class MainWindow(QMainWindow):
         fps = render_settings.get("render/fps", 30)
         duration_s = len(keyframes) / fps
         self._status_show(
-            f"Camera path: {len(keyframes)} frames "
-            f"({duration_s:.1f} s at {fps} fps)"
+            f"Camera path: {len(keyframes)} frames ({duration_s:.1f} s at {fps} fps)"
         )
 
         # Stage 7 — Frame Renderer
         blender_exe = self._settings.value("blender/executable_path") or None
         dlg = RenderProgressDialog(
-            self._pipeline, render_settings,
-            blender_exe=blender_exe, parent=self,
+            self._pipeline,
+            render_settings,
+            blender_exe=blender_exe,
+            parent=self,
         )
         if dlg.exec() != RenderProgressDialog.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: rendering cancelled or failed.")
             return
         self._pipeline.rendered_frames_dir = dlg.frames_dir()
-        self._status_show(
-            f"Frames rendered: {self._pipeline.rendered_frames_dir}"
-        )
+        self._status_show(f"Frames rendered: {self._pipeline.rendered_frames_dir}")
 
         # Stage 8 — Photo Overlay Compositor
         dlg = CompositorProgressDialog(self._pipeline, render_settings, parent=self)
@@ -892,14 +940,15 @@ class MainWindow(QMainWindow):
             self._status_show("Pipeline stopped: compositing cancelled or failed.")
             return
         self._pipeline.composited_frames_dir = dlg.composited_frames_dir()
-        self._status_show(
-            f"Compositing done: {self._pipeline.composited_frames_dir}"
-        )
+        self._status_show(f"Compositing done: {self._pipeline.composited_frames_dir}")
 
         # Stage 9 — Video Assembler
         output_path = self._output_selector.output_path()
         total_frames = len(self._pipeline.camera_keyframes or [])
-        assemble_settings = {**render_settings, **self._clip_effects_widget.get_settings()}
+        assemble_settings = {
+            **render_settings,
+            **self._clip_effects_widget.get_settings(),
+        }
         dlg = VideoProgressDialog(
             self._pipeline.composited_frames_dir,
             output_path,
@@ -935,7 +984,7 @@ class MainWindow(QMainWindow):
     def _recent_files(self) -> list[str]:
         """Return recent project paths that still exist, most-recent first."""
         raw = self._settings.value("project/recent_files", [])
-        if isinstance(raw, str):   # QSettings may deserialise a single item as str
+        if isinstance(raw, str):  # QSettings may deserialise a single item as str
             raw = [raw]
         return [p for p in (raw or []) if Path(p).is_file()]
 
@@ -995,7 +1044,7 @@ class MainWindow(QMainWindow):
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         self._save_thread = thread
-        self._save_worker = worker   # keep reference alive
+        self._save_worker = worker  # keep reference alive
         thread.start()
 
     def _on_save_complete(self, path: str, error: str | None) -> None:
@@ -1018,7 +1067,7 @@ class MainWindow(QMainWindow):
             if self._pending_close:
                 self._pending_close = False
                 self._cleanup_temp_dir()
-                self.close()   # _dirty is False now → accepted without re-prompting
+                self.close()  # _dirty is False now → accepted without re-prompting
 
     def _save(self) -> None:
         """Save to the current project path; open dialog if no path set yet."""
@@ -1030,7 +1079,8 @@ class MainWindow(QMainWindow):
     def _save_project(self) -> None:
         """Show save-as dialog, then start an async save."""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save project",
+            self,
+            "Save project",
             str(Path(self._last_project_dir()) / "project.georeel"),
             "GeoReel project (*.georeel)",
         )
@@ -1042,7 +1092,9 @@ class MainWindow(QMainWindow):
 
     def _load_project(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load project", self._last_project_dir(),
+            self,
+            "Load project",
+            self._last_project_dir(),
             "GeoReel project (*.georeel)",
         )
         if not path:
@@ -1155,14 +1207,15 @@ class MainWindow(QMainWindow):
         if self._project_path:
             name = Path(self._project_path).name
             answer = QMessageBox.question(
-                self, "Unsaved changes",
+                self,
+                "Unsaved changes",
                 f'Save changes to "{name}"?',
                 _SB.Save | _SB.Discard | _SB.Cancel,
             )
             if answer == _SB.Save:
                 self._pending_close = True
                 self._save_to_path(self._project_path)
-                event.ignore()   # window stays open; close() fires in _on_save_complete
+                event.ignore()  # window stays open; close() fires in _on_save_complete
             elif answer == _SB.Discard:
                 self._cleanup_temp_dir()
                 event.accept()
@@ -1170,13 +1223,15 @@ class MainWindow(QMainWindow):
                 event.ignore()
         else:
             answer = QMessageBox.question(
-                self, "Unsaved changes",
+                self,
+                "Unsaved changes",
                 "Do you want to save the project before closing?",
                 _SB.Save | _SB.Discard | _SB.Cancel,
             )
             if answer == _SB.Save:
                 path, _ = QFileDialog.getSaveFileName(
-                    self, "Save project",
+                    self,
+                    "Save project",
                     str(Path(self._last_project_dir()) / "project.georeel"),
                     "GeoReel project (*.georeel)",
                 )

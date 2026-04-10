@@ -104,10 +104,19 @@ def save_project(state: ProjectState, path: str) -> None:
             project_payload["gpx_embedded"] = True
 
         # ── Embed photos ─────────────────────────────────────────────
-        for i, (photo, ser) in enumerate(zip(state.photos, serialised_photos)):
+        _seen_photo_names: set[str] = set()
+        for photo, ser in zip(state.photos, serialised_photos):
             if photo.path and Path(photo.path).is_file():
-                ext = Path(photo.path).suffix.lower() or ".jpg"
-                entry = f"{_PHOTOS_DIR}{i:04d}{ext}"
+                p = Path(photo.path)
+                stem, ext = p.stem, p.suffix.lower() or ".jpg"
+                name = f"{stem}{ext}"
+                if name in _seen_photo_names:
+                    counter = 1
+                    while f"{stem}_{counter}{ext}" in _seen_photo_names:
+                        counter += 1
+                    name = f"{stem}_{counter}{ext}"
+                _seen_photo_names.add(name)
+                entry = f"{_PHOTOS_DIR}{name}"
                 zf.write(photo.path, entry)
                 ser["embedded"] = entry   # mutates serialised_photos[i]
 
