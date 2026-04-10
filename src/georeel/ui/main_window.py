@@ -112,6 +112,14 @@ class MainWindow(QMainWindow):
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
+
+        try:
+            from importlib.metadata import version as _pkg_version
+            _version = _pkg_version("georeel")
+        except Exception:
+            _version = "unknown"
+        self._status.addPermanentWidget(QLabel(f"v{_version}"))
+
         self._status_show("Ready.")
 
         self._build_menu_bar()
