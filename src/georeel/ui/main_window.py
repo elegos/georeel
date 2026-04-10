@@ -1,4 +1,5 @@
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
 
         self._gpx_path: str | None = None
         self._project_path: str | None = None
+        self._project_temp_dir: Path | None = None
         self._cached_elevation_grid: ElevationGrid | None = None
         self._cached_satellite_texture: SatelliteTexture | None = None
         self._dirty = False
@@ -930,6 +932,8 @@ class MainWindow(QMainWindow):
         self._suppress_dirty = True
         try:
             self._clear()
+            if state.temp_dir:
+                self._project_temp_dir = state.temp_dir
             if state.gpx_path:
                 self._gpx_path = state.gpx_path
                 self._gpx_area.set_file(state.gpx_path)
@@ -987,6 +991,7 @@ class MainWindow(QMainWindow):
         self._cached_elevation_grid = None
         self._cached_satellite_texture = None
         self._project_path = None
+        self._cleanup_temp_dir()
         self._pipeline = Pipeline()
         self._scene_stale = True
         self._open_blender_btn.setEnabled(False)
@@ -1003,8 +1008,14 @@ class MainWindow(QMainWindow):
     # Close / unsaved-changes guard
     # ------------------------------------------------------------------
 
+    def _cleanup_temp_dir(self):
+        if self._project_temp_dir and self._project_temp_dir.exists():
+            shutil.rmtree(self._project_temp_dir, ignore_errors=True)
+        self._project_temp_dir = None
+
     def closeEvent(self, event: QCloseEvent):
         if not self._dirty:
+            self._cleanup_temp_dir()
             event.accept()
             return
 
@@ -1017,10 +1028,12 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.Save:
                 if self._save_to_path(self._project_path):
+                    self._cleanup_temp_dir()
                     event.accept()
                 else:
                     event.ignore()
             elif answer == QMessageBox.Discard:
+                self._cleanup_temp_dir()
                 event.accept()
             else:
                 event.ignore()
@@ -1032,10 +1045,12 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.Save:
                 if self._save_project():
+                    self._cleanup_temp_dir()
                     event.accept()
                 else:
                     event.ignore()
             elif answer == QMessageBox.Discard:
+                self._cleanup_temp_dir()
                 event.accept()
             else:
                 event.ignore()

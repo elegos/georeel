@@ -399,8 +399,8 @@ def _composite_title_frames(
     # Pre-compute everything that is constant across all frames
     # ------------------------------------------------------------------
 
-    # Font
-    font_path = _resolve_fontfile(font_name)
+    # Font — prefer embedded path (set by load_project when font is bundled)
+    font_path = settings.get("clip_effects/title_font_path") or _resolve_fontfile(font_name)
     try:
         pil_font = ImageFont.truetype(font_path or font_name, font_size)
     except (OSError, TypeError):
