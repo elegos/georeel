@@ -2,7 +2,7 @@
 
 ## Fade-in and fade-out
 
-Add an option to fade-in from and fade-out to black. The user should choose whether to activate the fade-in and/or the fade-out, specifying for each active effect the duration (default: 1s). The feature should be selectable in the main window, under a dedicated tab "Clip effects". The main tab where the existing items already exist should be called "Main".
+Add an option to fade-in from and fade-out to black. The user should choose whether to activate the fade-in and/or the fade-out, specifying for each active effect the black clip's duration (default: 5s) and the fade duration (default: 1s). The feature should be selectable in the main window, under a dedicated tab "Clip effects". The main tab where the existing items already exist should be called "Main".
 
 ## Title
 
