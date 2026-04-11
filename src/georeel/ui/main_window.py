@@ -6,8 +6,10 @@ from PySide6.QtCore import QObject, QSettings, QThread, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QStatusBar,
     QTabWidget,
     QVBoxLayout,
@@ -26,6 +29,7 @@ from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.frustum import frustum_margin
+from georeel.core.gpx_cleaner import REPAIR_NONE, detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
@@ -49,6 +53,10 @@ from .preview_video_dialog import open_preview_video
 from .preview_video_progress_dialog import PreviewVideoProgressDialog
 from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
+    KEY_GPX_MAX_GAP_S,
+    KEY_GPX_MAX_JUMP_KM,
+    KEY_GPX_MAX_SPEED_KMH,
+    KEY_GPX_REPAIR_MODE,
     KEY_HEIGHT_OFFSET,
     KEY_IMAGERY_API_KEY,
     KEY_IMAGERY_CUSTOM_URL,
@@ -292,7 +300,106 @@ class MainWindow(QMainWindow):
         self._gpx_stats = GpxStatsWidget()
         layout.addWidget(self._gpx_area)
         layout.addWidget(self._gpx_stats)
+        layout.addWidget(self._build_gpx_repair_row())
         return group
+
+    def _build_gpx_repair_row(self) -> QWidget:
+        """Compact per-project GPX hole-repair controls."""
+        container = QWidget()
+        form = QFormLayout(container)
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setSpacing(6)
+
+        # ── Mode combo ────────────────────────────────────────────────
+        self._gpx_repair_combo = QComboBox()
+        self._gpx_repair_combo.addItem("No hole repair", "none")
+        self._gpx_repair_combo.addItem("Ground interpolation", "ground")
+        self._gpx_repair_combo.addItem("Street interpolation (OSRM)", "street")
+        saved_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, "none"))
+        idx = self._gpx_repair_combo.findData(saved_mode)
+        if idx >= 0:
+            self._gpx_repair_combo.setCurrentIndex(idx)
+        self._gpx_repair_combo.setToolTip(
+            "Ground: fills gaps with a straight line on the terrain.\n"
+            "Street: routes via the OSRM public API (router.project-osrm.org);\n"
+            "falls back to ground when the route is unavailable."
+        )
+        form.addRow("Hole repair:", self._gpx_repair_combo)
+
+        # ── Threshold row (hidden when mode == none) ──────────────────
+        thresh_row = QHBoxLayout()
+
+        self._gpx_speed_spin = QSpinBox()
+        self._gpx_speed_spin.setRange(10, 5000)
+        self._gpx_speed_spin.setSingleStep(10)
+        self._gpx_speed_spin.setSuffix(" km/h")
+        self._gpx_speed_spin.setValue(
+            int(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+        )
+        self._gpx_speed_spin.setToolTip(
+            "Points implying a speed above this are treated as bad GPS readings "
+            "and removed (requires timestamps)."
+        )
+
+        self._gpx_gap_spin = QDoubleSpinBox()
+        self._gpx_gap_spin.setRange(1.0, 3600.0)
+        self._gpx_gap_spin.setSingleStep(5.0)
+        self._gpx_gap_spin.setDecimals(1)
+        self._gpx_gap_spin.setSuffix(" s gap")
+        self._gpx_gap_spin.setValue(
+            float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))
+        )
+        self._gpx_gap_spin.setToolTip(
+            "Time gaps longer than this between two valid points are filled "
+            "with synthetic track points (requires timestamps)."
+        )
+
+        thresh_row.addWidget(QLabel("Max speed:"))
+        thresh_row.addWidget(self._gpx_speed_spin)
+        thresh_row.addSpacing(12)
+        thresh_row.addWidget(QLabel("Fill above:"))
+        thresh_row.addWidget(self._gpx_gap_spin)
+        thresh_row.addStretch()
+
+        self._gpx_thresh_widget = QWidget()
+        self._gpx_thresh_widget.setLayout(thresh_row)
+        form.addRow("", self._gpx_thresh_widget)
+
+        # Show/hide thresholds based on mode.
+        def _update_thresh_visibility():
+            visible = self._gpx_repair_combo.currentData() != "none"
+            self._gpx_thresh_widget.setVisible(visible)
+            self._settings.setValue(KEY_GPX_REPAIR_MODE,
+                                    self._gpx_repair_combo.currentData())
+
+        _update_thresh_visibility()
+        self._gpx_repair_combo.currentIndexChanged.connect(_update_thresh_visibility)
+        self._gpx_speed_spin.valueChanged.connect(
+            lambda v: self._settings.setValue(KEY_GPX_MAX_SPEED_KMH, v)
+        )
+        self._gpx_gap_spin.valueChanged.connect(
+            lambda v: self._settings.setValue(KEY_GPX_MAX_GAP_S, v)
+        )
+
+        return container
+
+    def _reload_gpx_repair_controls(self) -> None:
+        """Sync GPX repair widgets from QSettings (called after project load)."""
+        mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, "none"))
+        idx = self._gpx_repair_combo.findData(mode)
+        self._gpx_repair_combo.blockSignals(True)
+        if idx >= 0:
+            self._gpx_repair_combo.setCurrentIndex(idx)
+        self._gpx_repair_combo.blockSignals(False)
+        self._gpx_thresh_widget.setVisible(mode != "none")
+
+        self._gpx_speed_spin.blockSignals(True)
+        self._gpx_speed_spin.setValue(int(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+        self._gpx_speed_spin.blockSignals(False)
+
+        self._gpx_gap_spin.blockSignals(True)
+        self._gpx_gap_spin.setValue(float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+        self._gpx_gap_spin.blockSignals(False)
 
     def _build_photos_group(self) -> QGroupBox:
         group = QGroupBox("Photos")
@@ -767,6 +874,28 @@ class MainWindow(QMainWindow):
             self._status_show("GPX parsing failed.")
             return
 
+        # GPX hole repair (optional, controlled by render settings)
+        repair_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE))
+        if repair_mode != REPAIR_NONE:
+            self._status_show(f"Repairing GPX holes ({repair_mode} mode)…")
+            max_speed_mps = float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6
+            max_gap_s     = float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))
+            max_jump_m    = float(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)) * 1_000
+            trackpoints, _cs = detect_and_repair(
+                trackpoints,
+                repair_mode,
+                max_speed_mps=max_speed_mps,
+                max_gap_s=max_gap_s,
+                max_jump_m=max_jump_m,
+            )
+            _repair_msg = (
+                f"GPX repaired: {_cs.nullified_removed} bad points removed, "
+                f"{_cs.holes_filled} synthetic points added"
+            )
+            if _cs.street_fallbacks:
+                _repair_msg += f" ({_cs.street_fallbacks} street→ground fallbacks)"
+            _log.info(_repair_msg)
+
         self._pipeline.trackpoints = trackpoints
         self._pipeline.bounding_box = bbox
         self._photo_area.update_pipeline_info(trackpoints=trackpoints)
@@ -1143,6 +1272,7 @@ class MainWindow(QMainWindow):
             self._tz_offset_spin.setValue(tz)
             self._tz_offset_spin.blockSignals(False)
             self._photo_area.set_tz_offset(tz)
+            self._reload_gpx_repair_controls()
         if state.clip_effects:
             for key, value in state.clip_effects.items():
                 self._settings.setValue(key, value)

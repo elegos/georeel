@@ -65,6 +65,10 @@ KEY_CODEC                 = "output/codec"                   # "h264" | "h265" |
 KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder name
 KEY_OUTPUT_CQ             = "output/cq"                      # int
 KEY_OUTPUT_PRESET         = "output/preset"                  # string
+KEY_GPX_REPAIR_MODE       = "gpx/repair_mode"                # "none" | "ground" | "street"
+KEY_GPX_MAX_SPEED_KMH     = "gpx/max_speed_kmh"             # int km/h — above this is nullified
+KEY_GPX_MAX_GAP_S         = "gpx/max_gap_s"                 # float s — gaps longer than this are filled
+KEY_GPX_MAX_JUMP_KM       = "gpx/max_jump_km"               # float km — no-timestamp fallback distance
 
 _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
     "landscape": [
@@ -120,6 +124,10 @@ DEFAULTS = {
     KEY_PIN_CUSTOM_COLOR:     "#228B22",
     KEY_MARKER_COLOR:         "LightBlue",
     KEY_MARKER_CUSTOM_COLOR:  "#ADD8E6",
+    KEY_GPX_REPAIR_MODE:      "none",
+    KEY_GPX_MAX_SPEED_KMH:    300,
+    KEY_GPX_MAX_GAP_S:        30.0,
+    KEY_GPX_MAX_JUMP_KM:      50.0,
 }
 
 
