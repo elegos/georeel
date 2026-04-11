@@ -401,6 +401,9 @@ def _composite_title_frames(
     frames = sorted(Path(src_dir).glob("*.png"))
     total  = len(frames)
 
+    if not frames:
+        return
+
     if not text:
         # No text — just hard-link / copy every frame unchanged
         for src in frames:

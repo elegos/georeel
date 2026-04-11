@@ -9,7 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  test:
+    name: Test
     runs-on: ubuntu-latest
 
     steps:
@@ -21,6 +22,32 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install system dependencies (Qt/OpenGL for PySide6)
+        run: sudo apt-get install -y --no-install-recommends libegl1 libgl1 libglib2.0-0
+
+      - name: Install project dependencies
+        run: uv sync --group dev
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov=georeel.core --cov-report=term-missing --cov-fail-under=64
+
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.14"
 

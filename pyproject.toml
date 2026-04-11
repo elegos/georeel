@@ -25,3 +25,17 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 georeel = ["assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+source = ["georeel"]
+omit = ["*/ui/*", "*/blender_scripts/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+]
