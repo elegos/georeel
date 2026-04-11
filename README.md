@@ -25,38 +25,35 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 
 ## Requirements
 
-### System dependencies
-
-| Tool | Version | Notes |
+| Requirement | Version | Notes |
 |---|---|---|
-| [Blender](https://www.blender.org/download/) | 4.2 LTS, 4.4, or 4.5 LTS | Can be auto-downloaded from *Options → Blender* |
-| [FFmpeg](https://ffmpeg.org/download.html) | Any recent version | Must be on `PATH` |
-
-Install FFmpeg via your package manager:
-
-```bash
-# Debian/Ubuntu
-sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-
-# Windows (winget)
-winget install ffmpeg
-```
-
-### Python
-
-Python 3.14 and [uv](https://docs.astral.sh/uv/) are required.
+| [Python](https://www.python.org/downloads/) | 3.14+ | Required |
+| [FFmpeg](https://ffmpeg.org/download.html) | Any recent | Must be on `PATH`; used for video encoding |
+| [Blender](https://www.blender.org/download/) | 4.2 LTS, 4.4, or 4.5 LTS | Used for 3D rendering; can be auto-downloaded from inside GeoReel |
 
 ---
 
 ## Installation
 
+See **[INSTALL.md](INSTALL.md)** for full instructions, including:
+
+- Automated install scripts for Linux, macOS, and Windows
+- Manual install from the release wheel (no `uv` needed)
+- Build from source (requires [uv](https://docs.astral.sh/uv/))
+- PySide6 system dependency details per Linux distribution
+
+### Quick start
+
+**Linux / macOS:**
+
 ```bash
-git clone https://github.com/elegos/georeel.git
-cd georeel
-uv sync
+curl -fsSL https://raw.githubusercontent.com/elegos/georeel/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/elegos/georeel/main/scripts/install.ps1 | iex
 ```
 
 ---
@@ -64,7 +61,7 @@ uv sync
 ## Running
 
 ```bash
-uv run main.py
+georeel
 ```
 
 ---
