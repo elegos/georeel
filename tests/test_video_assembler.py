@@ -185,114 +185,187 @@ class TestFadeFilters:
 
 # ── _music_audio_cmd_parts ───────────────────────────────────────────
 
+import json as _json
+
 class TestMusicAudioCmdParts:
+    # ── helpers ───────────────────────────────────────────────────────
+    @staticmethod
+    def _paths_setting(*paths: str) -> str:
+        return _json.dumps(list(paths))
+
+    # ── disabled / empty ─────────────────────────────────────────────
     def test_disabled_returns_empty(self):
         settings = {"clip_effects/music_enabled": False}
-        r = _music_audio_cmd_parts(settings, 60.0)
-        assert r == ([], [], [], [])
+        assert _music_audio_cmd_parts(settings, 60.0) == ([], [], [], [])
 
-    def test_enabled_but_no_path_returns_empty(self):
-        settings = {"clip_effects/music_enabled": True, "clip_effects/music_path": ""}
-        r = _music_audio_cmd_parts(settings, 60.0)
-        assert r == ([], [], [], [])
+    def test_enabled_empty_list_returns_empty(self):
+        settings = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": "[]",
+        }
+        assert _music_audio_cmd_parts(settings, 60.0) == ([], [], [], [])
 
     def test_enabled_nonexistent_file_returns_empty(self):
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": "/nonexistent/audio.mp3",
+            "clip_effects/music_paths": self._paths_setting("/nonexistent/audio.mp3"),
         }
-        r = _music_audio_cmd_parts(settings, 60.0)
-        assert r == ([], [], [], [])
+        assert _music_audio_cmd_parts(settings, 60.0) == ([], [], [], [])
 
-    def test_enabled_with_real_file(self, tmp_path):
+    def test_backward_compat_old_single_path_key(self, tmp_path):
+        """Old clip_effects/music_path key is used as fallback when paths list is absent."""
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_path": str(audio),  # old key, no music_paths key
         }
         pre, inp, af, codec = _music_audio_cmd_parts(settings, 60.0)
         assert inp == ["-i", str(audio)]
         assert "-af" in af
-        assert "-map" in codec
 
-    def test_loop_adds_stream_loop(self, tmp_path):
+    # ── single file ───────────────────────────────────────────────────
+    def test_single_file_basic(self, tmp_path):
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
-            "clip_effects/music_loop": True,
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
         }
         pre, inp, af, codec = _music_audio_cmd_parts(settings, 60.0)
-        assert "-stream_loop" in pre
+        assert inp == ["-i", str(audio)]
+        assert af[0] == "-af"
+        assert "-map" in codec
+        assert "aac" in codec
 
-    def test_no_loop_no_stream_loop(self, tmp_path):
+    def test_single_file_loop_adds_stream_loop(self, tmp_path):
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
+            "clip_effects/music_loop": True,
+        }
+        pre, _, _, _ = _music_audio_cmd_parts(settings, 60.0)
+        assert "-stream_loop" in pre
+
+    def test_single_file_no_loop(self, tmp_path):
+        audio = tmp_path / "track.mp3"
+        audio.write_bytes(b"\x00" * 100)
+        settings = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
             "clip_effects/music_loop": False,
         }
         pre, _, _, _ = _music_audio_cmd_parts(settings, 60.0)
         assert pre == []
 
-    def test_delay_adds_adelay(self, tmp_path):
+    def test_single_file_delay_adds_adelay(self, tmp_path):
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
             "clip_effects/music_delay": 3.0,
         }
         _, _, af, _ = _music_audio_cmd_parts(settings, 60.0)
         assert "adelay" in af[1]
 
-    def test_fade_in_adds_afade_in(self, tmp_path):
+    def test_single_file_fade_in(self, tmp_path):
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
             "clip_effects/music_fade_in_enabled": True,
             "clip_effects/music_fade_in_dur": 2.0,
         }
         _, _, af, _ = _music_audio_cmd_parts(settings, 60.0)
         assert "afade=t=in" in af[1]
 
-    def test_fade_out_adds_afade_out(self, tmp_path):
+    def test_single_file_fade_out(self, tmp_path):
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
             "clip_effects/music_fade_out_enabled": True,
             "clip_effects/music_fade_out_dur": 5.0,
         }
         _, _, af, _ = _music_audio_cmd_parts(settings, 60.0)
         assert "afade=t=out" in af[1]
 
-    def test_atrim_uses_total_duration(self, tmp_path):
+    def test_single_file_atrim_uses_total_duration(self, tmp_path):
         audio = tmp_path / "track.mp3"
         audio.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_paths": self._paths_setting(str(audio)),
         }
         _, _, af, _ = _music_audio_cmd_parts(settings, 45.0)
         assert "atrim=end=45.000000" in af[1]
 
-    def test_codec_args_include_aac(self, tmp_path):
-        audio = tmp_path / "track.mp3"
-        audio.write_bytes(b"\x00" * 100)
+    # ── multiple files ────────────────────────────────────────────────
+    def test_multi_file_uses_filter_complex(self, tmp_path):
+        a1 = tmp_path / "a.mp3"
+        a2 = tmp_path / "b.mp3"
+        a1.write_bytes(b"\x00" * 100)
+        a2.write_bytes(b"\x00" * 100)
         settings = {
             "clip_effects/music_enabled": True,
-            "clip_effects/music_path": str(audio),
+            "clip_effects/music_paths": self._paths_setting(str(a1), str(a2)),
         }
-        _, _, _, codec = _music_audio_cmd_parts(settings, 60.0)
-        assert "-c:a" in codec
-        assert "aac" in codec
+        pre, inp, fc, codec = _music_audio_cmd_parts(settings, 120.0)
+        assert pre == []
+        assert inp == ["-i", str(a1), "-i", str(a2)]
+        assert fc[0] == "-filter_complex"
+        assert "acrossfade" in fc[1]
+        assert "[aout]" in fc[1]
+        assert "-map" in codec
+        assert "[aout]" in codec
+
+    def test_multi_file_crossfade_disabled_uses_concat(self, tmp_path):
+        a1 = tmp_path / "a.mp3"
+        a2 = tmp_path / "b.mp3"
+        a1.write_bytes(b"\x00" * 100)
+        a2.write_bytes(b"\x00" * 100)
+        settings = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": self._paths_setting(str(a1), str(a2)),
+            "clip_effects/music_crossfade_enabled": False,
+        }
+        _, _, fc, _ = _music_audio_cmd_parts(settings, 120.0)
+        assert "concat=n=2:v=0:a=1" in fc[1]
+
+    def test_multi_file_loop_repeats_playlist(self, tmp_path):
+        a1 = tmp_path / "a.mp3"
+        a2 = tmp_path / "b.mp3"
+        a1.write_bytes(b"\x00" * 100)
+        a2.write_bytes(b"\x00" * 100)
+        settings = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": self._paths_setting(str(a1), str(a2)),
+            "clip_effects/music_loop": True,
+        }
+        _, inp, _, _ = _music_audio_cmd_parts(settings, 120.0)
+        # With loop the file list is repeated; there must be more than 2 -i flags.
+        i_count = sum(1 for x in inp if x == "-i")
+        assert i_count > 2
+
+    def test_multi_file_fade_out_applied_at_end(self, tmp_path):
+        a1 = tmp_path / "a.mp3"
+        a2 = tmp_path / "b.mp3"
+        a1.write_bytes(b"\x00" * 100)
+        a2.write_bytes(b"\x00" * 100)
+        settings = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": self._paths_setting(str(a1), str(a2)),
+            "clip_effects/music_fade_out_enabled": True,
+            "clip_effects/music_fade_out_dur": 5.0,
+        }
+        _, _, fc, _ = _music_audio_cmd_parts(settings, 120.0)
+        assert "afade=t=out" in fc[1]
+        assert "atrim=end=120.000000" in fc[1]
 
 
 # ── _quality_args ────────────────────────────────────────────────────

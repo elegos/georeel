@@ -584,51 +584,129 @@ def _music_audio_cmd_parts(
     settings: dict,
     total_duration_s: float,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
-    """Return (pre_input_args, input_args, af_args, map_codec_args) for music audio.
+    """Return (pre_input_args, input_args, filter_args, map_codec_args) for music.
 
-    pre_input_args: placed immediately before the music -i (e.g. -stream_loop -1).
-    input_args:     [-i, music_path].
-    af_args:        [-af, filter_chain_string].
-    map_codec_args: explicit stream mapping + AAC codec args.
+    pre_input_args: args placed before the first music -i (e.g. -stream_loop -1 for
+                    single-file loop).
+    input_args:     one or more [-i, path] pairs for all music inputs.
+    filter_args:    [-af, chain] for a single file, or [-filter_complex, graph] for
+                    multiple files; empty when music is disabled.
+    map_codec_args: explicit stream mapping + AAC codec args; empty when no music.
 
-    All four lists are empty when music is disabled or the file cannot be found.
+    Multiple files are concatenated (with optional acrossfade crossfade between each
+    pair) and trimmed to the exact video duration.  Fade-out is applied only at the
+    end of the video.  Loop mode repeats the whole playlist enough times to cover T.
     """
     if not settings.get("clip_effects/music_enabled", False):
         return [], [], [], []
-    music_path = settings.get("clip_effects/music_path") or ""
-    if not music_path or not Path(music_path).is_file():
+
+    # ── Resolve file list ─────────────────────────────────────────────────────
+    paths_raw = settings.get("clip_effects/music_paths") or ""
+    if isinstance(paths_raw, list):
+        music_paths: list[str] = paths_raw
+    else:
+        try:
+            music_paths = json.loads(paths_raw) if paths_raw else []
+        except (ValueError, TypeError):
+            music_paths = []
+    # Backward compat: if new key absent/empty, fall back to old single-path key.
+    if not music_paths:
+        old = settings.get("clip_effects/music_path") or ""
+        music_paths = [old] if old else []
+
+    music_paths = [p for p in music_paths if p and Path(p).is_file()]
+    if not music_paths:
         return [], [], [], []
 
-    delay  = max(0.0, float(settings.get("clip_effects/music_delay",        0.0)))
-    loop   = bool(settings.get("clip_effects/music_loop",                   False))
-    fi_on  = bool(settings.get("clip_effects/music_fade_in_enabled",        False))
-    fi_dur = max(0.0, float(settings.get("clip_effects/music_fade_in_dur",  1.0)))
-    fo_on  = bool(settings.get("clip_effects/music_fade_out_enabled",       True))
-    fo_dur = max(0.0, float(settings.get("clip_effects/music_fade_out_dur", 5.0)))
+    # ── Settings ──────────────────────────────────────────────────────────────
+    delay  = max(0.0, float(settings.get("clip_effects/music_delay",               0.0)))
+    loop   = bool(settings.get("clip_effects/music_loop",                          False))
+    fi_on  = bool(settings.get("clip_effects/music_fade_in_enabled",               False))
+    fi_dur = max(0.0, float(settings.get("clip_effects/music_fade_in_dur",         1.0)))
+    fo_on  = bool(settings.get("clip_effects/music_fade_out_enabled",              True))
+    fo_dur = max(0.0, float(settings.get("clip_effects/music_fade_out_dur",        5.0)))
+    cf_on  = bool(settings.get("clip_effects/music_crossfade_enabled",             True))
+    cf_dur = max(0.0, float(settings.get("clip_effects/music_crossfade_dur",       5.0)))
 
     T = total_duration_s
 
-    # Build audio filter chain:
-    #   adelay  → push music start by delay seconds (silence before)
-    #   afade=in→ fade in at music start
-    #   atrim   → cut audio at the exact video end (loop or non-loop)
-    #   asetpts → normalise PTS to 0-based after trim
-    #   afade=out → fade out at video end
-    af: list[str] = []
-    if delay > 0:
-        af.append(f"adelay={round(delay * 1000)}:all=1")
-    if fi_on and fi_dur > 0 and delay < T:
-        af.append(f"afade=t=in:st={delay:.6f}:d={fi_dur:.6f}")
-    af.append(f"atrim=end={T:.6f}")
-    af.append("asetpts=PTS-STARTPTS")
-    if fo_on and fo_dur > 0 and fo_dur < T:
-        af.append(f"afade=t=out:st={T - fo_dur:.6f}:d={fo_dur:.6f}")
+    # ── Single file with loop: use -stream_loop -1 (infinite), simple -af ─────
+    if len(music_paths) == 1:
+        pre_input  = ["-stream_loop", "-1"] if loop else []
+        input_args = ["-i", music_paths[0]]
 
-    pre_input      = ["-stream_loop", "-1"] if loop else []
-    input_args     = ["-i", music_path]
-    af_args        = ["-af", ",".join(af)]
-    map_codec_args = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
-    return pre_input, input_args, af_args, map_codec_args
+        af: list[str] = []
+        if delay > 0:
+            af.append(f"adelay={round(delay * 1000)}:all=1")
+        if fi_on and fi_dur > 0 and delay < T:
+            af.append(f"afade=t=in:st={delay:.6f}:d={fi_dur:.6f}")
+        af.append(f"atrim=end={T:.6f}")
+        af.append("asetpts=PTS-STARTPTS")
+        if fo_on and fo_dur > 0 and fo_dur < T:
+            af.append(f"afade=t=out:st={T - fo_dur:.6f}:d={fo_dur:.6f}")
+
+        filter_args    = ["-af", ",".join(af)]
+        map_codec_args = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
+        return pre_input, input_args, filter_args, map_codec_args
+
+    # ── Multiple files: build -filter_complex ─────────────────────────────────
+    # In loop mode repeat the whole playlist enough times to cover T.
+    # Assume a minimum track length of 10 s; cap at 50 repetitions (≥500 s coverage
+    # per file pair, enough for any realistic video length).
+    if loop:
+        min_cycle_s = 10.0 * len(music_paths)
+        reps = min(50, max(2, int(T / min_cycle_s) + 2))
+        file_sequence = music_paths * reps
+    else:
+        file_sequence = list(music_paths)
+
+    # Build flat input list (video = input 0; audio files start at index 1).
+    input_args = []
+    for f in file_sequence:
+        input_args += ["-i", f]
+
+    n = len(file_sequence)
+    # FFmpeg input indices for the audio files (1-based).
+    idx = list(range(1, n + 1))
+
+    fc_parts: list[str] = []
+
+    # First stream: apply delay and fade-in.
+    pre_filters: list[str] = []
+    if delay > 0:
+        pre_filters.append(f"adelay={round(delay * 1000)}:all=1")
+    if fi_on and fi_dur > 0:
+        pre_filters.append(f"afade=t=in:st={delay:.6f}:d={fi_dur:.6f}")
+
+    if pre_filters:
+        fc_parts.append(f"[{idx[0]}:a]{','.join(pre_filters)}[afirst]")
+        current = "[afirst]"
+    else:
+        current = f"[{idx[0]}:a]"
+
+    # Chain the remaining streams with acrossfade (crossfade) or concat.
+    for i, audio_idx in enumerate(idx[1:], start=1):
+        next_stream = f"[{audio_idx}:a]"
+        out_label   = f"[ac{i}]"
+        if cf_on and cf_dur > 0:
+            fc_parts.append(
+                f"{current}{next_stream}acrossfade=d={cf_dur:.6f}:c1=tri:c2=tri{out_label}"
+            )
+        else:
+            fc_parts.append(
+                f"{current}{next_stream}concat=n=2:v=0:a=1{out_label}"
+            )
+        current = out_label
+
+    # Final trim at T and fade-out applied only at the very end of the video.
+    final_af: list[str] = [f"atrim=end={T:.6f}", "asetpts=PTS-STARTPTS"]
+    if fo_on and fo_dur > 0 and fo_dur < T:
+        final_af.append(f"afade=t=out:st={T - fo_dur:.6f}:d={fo_dur:.6f}")
+    fc_parts.append(f"{current}{','.join(final_af)}[aout]")
+
+    filter_args    = ["-filter_complex", ";".join(fc_parts)]
+    map_codec_args = ["-map", "0:v", "-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
+    return [], input_args, filter_args, map_codec_args
 
 
 def _quality_args(enc: EncoderConfig, cq: int, preset: str) -> list[str]:

@@ -1,5 +1,7 @@
 """Clip effects settings widget — fade-in/fade-out, title, and music controls."""
 
+import json
+from pathlib import Path
 from typing import TypeVar, cast
 
 from PySide6.QtCore import QRect, QSettings, Qt
@@ -17,7 +19,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -47,14 +50,16 @@ _KEY_TITLE_FI_DUR     = "clip_effects/title_fade_in_dur"
 _KEY_TITLE_FO_ENABLED = "clip_effects/title_fade_out_enabled"
 _KEY_TITLE_FO_DUR     = "clip_effects/title_fade_out_dur"
 
-_KEY_MUSIC_ENABLED   = "clip_effects/music_enabled"
-_KEY_MUSIC_PATH      = "clip_effects/music_path"
-_KEY_MUSIC_DELAY     = "clip_effects/music_delay"
-_KEY_MUSIC_LOOP      = "clip_effects/music_loop"
+_KEY_MUSIC_ENABLED    = "clip_effects/music_enabled"
+_KEY_MUSIC_PATHS      = "clip_effects/music_paths"       # JSON list of file paths
+_KEY_MUSIC_DELAY      = "clip_effects/music_delay"
+_KEY_MUSIC_LOOP       = "clip_effects/music_loop"
 _KEY_MUSIC_FI_ENABLED = "clip_effects/music_fade_in_enabled"
-_KEY_MUSIC_FI_DUR    = "clip_effects/music_fade_in_dur"
+_KEY_MUSIC_FI_DUR     = "clip_effects/music_fade_in_dur"
 _KEY_MUSIC_FO_ENABLED = "clip_effects/music_fade_out_enabled"
-_KEY_MUSIC_FO_DUR    = "clip_effects/music_fade_out_dur"
+_KEY_MUSIC_FO_DUR     = "clip_effects/music_fade_out_dur"
+_KEY_MUSIC_CF_ENABLED = "clip_effects/music_crossfade_enabled"
+_KEY_MUSIC_CF_DUR     = "clip_effects/music_crossfade_dur"
 
 _ANCHORS = [
     ("Top left",     "top-left"),
@@ -83,32 +88,6 @@ _PREVIEW_SIZES = {
     "portrait":  (180, 320),
     "square":    (280, 280),
 }
-
-
-class _AudioPathEdit(QLineEdit):
-    """Read-only line edit that accepts audio file drops."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setPlaceholderText("No audio file selected…")
-        self.setReadOnly(True)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if urls and urls[0].isLocalFile():
-                event.acceptProposedAction()
-                return
-        super().dragEnterEvent(event)
-
-    def dropEvent(self, event):
-        urls = event.mimeData().urls()
-        if urls and urls[0].isLocalFile():
-            self.setText(urls[0].toLocalFile())
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)
 
 
 class _TitlePreviewWidget(QWidget):
@@ -520,31 +499,58 @@ class ClipEffectsWidget(QWidget):
         group.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_ENABLED, v))
         self._music_group = group
 
-        form = QFormLayout(group)
+        outer = QVBoxLayout(group)
+        outer.setSpacing(8)
+        form = QFormLayout()
         form.setSpacing(8)
 
-        # File path + browse button
-        file_row = QHBoxLayout()
-        path_edit = _AudioPathEdit()
-        path_edit.setText(self._qsv(_KEY_MUSIC_PATH, ""))
-        self._music_path_edit = path_edit
-        browse_btn = QPushButton("Browse…")
-        browse_btn.setFixedWidth(80)
-        file_row.addWidget(path_edit, stretch=1)
-        file_row.addWidget(browse_btn)
-        form.addRow("Audio file:", file_row)
+        # ── Playlist (QListWidget) ────────────────────────────────────
+        music_list = QListWidget()
+        music_list.setAcceptDrops(True)
+        music_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        music_list.setMinimumHeight(80)
+        music_list.setMaximumHeight(140)
+        music_list.setToolTip(
+            "Audio files played in order. Drag to reorder.\n"
+            "Drop audio files directly onto the list to add them."
+        )
+        self._music_list = music_list
 
-        # Delay
+        # Restore saved paths into the list.
+        try:
+            saved_paths: list[str] = json.loads(self._qsv(_KEY_MUSIC_PATHS, "[]"))
+        except (ValueError, TypeError):
+            saved_paths = []
+        for p in saved_paths:
+            item = QListWidgetItem(Path(p).name)
+            item.setData(Qt.ItemDataRole.UserRole, p)
+            music_list.addItem(item)
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("Add…")
+        add_btn.setFixedWidth(70)
+        remove_btn = QPushButton("Remove")
+        remove_btn.setFixedWidth(70)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch()
+
+        outer.addWidget(music_list)
+        outer.addLayout(btn_row)
+        outer.addLayout(form)
+
+        # ── Delay ────────────────────────────────────────────────────
         delay_spin = QDoubleSpinBox()
         delay_spin.setRange(0.0, 3600.0)
         delay_spin.setSingleStep(0.5)
         delay_spin.setDecimals(1)
         delay_spin.setSuffix(" s")
         delay_spin.setValue(self._qsv(_KEY_MUSIC_DELAY, 0.0))
+        delay_spin.setToolTip("Silence before the audio starts.")
         self._music_delay = delay_spin
         form.addRow("Delay:", delay_spin)
 
-        # Fade-in + Fade-out
+        # ── Fades ────────────────────────────────────────────────────
         fade_row = QHBoxLayout()
         fi_chk = QCheckBox("Fade in")
         fi_chk.setChecked(self._qsv(_KEY_MUSIC_FI_ENABLED, False))
@@ -564,6 +570,7 @@ class ClipEffectsWidget(QWidget):
 
         fo_chk = QCheckBox("Fade out")
         fo_chk.setChecked(self._qsv(_KEY_MUSIC_FO_ENABLED, True))
+        fo_chk.setToolTip("Fade out applied only at the end of the video.")
         self._music_fo_chk = fo_chk
         fo_dur = QDoubleSpinBox()
         fo_dur.setRange(0.0, 60.0)
@@ -580,34 +587,72 @@ class ClipEffectsWidget(QWidget):
         fade_row.addStretch()
         form.addRow("Fades:", fade_row)
 
-        # Loop
-        loop_chk = QCheckBox("Loop audio")
+        # ── Cross-fade ───────────────────────────────────────────────
+        cf_row = QHBoxLayout()
+        cf_chk = QCheckBox("Cross-fade between tracks")
+        cf_chk.setChecked(self._qsv(_KEY_MUSIC_CF_ENABLED, True))
+        cf_chk.setToolTip("Smooth fade transition between consecutive audio files.")
+        self._music_cf_chk = cf_chk
+        cf_dur = QDoubleSpinBox()
+        cf_dur.setRange(0.0, 30.0)
+        cf_dur.setSingleStep(0.5)
+        cf_dur.setDecimals(1)
+        cf_dur.setSuffix(" s")
+        cf_dur.setValue(self._qsv(_KEY_MUSIC_CF_DUR, 5.0))
+        cf_dur.setEnabled(cf_chk.isChecked())
+        cf_dur.setFixedWidth(80)
+        self._music_cf_dur = cf_dur
+        cf_chk.toggled.connect(cf_dur.setEnabled)
+        cf_row.addWidget(cf_chk)
+        cf_row.addWidget(cf_dur)
+        cf_row.addStretch()
+        form.addRow("", cf_row)
+
+        # ── Loop ─────────────────────────────────────────────────────
+        loop_chk = QCheckBox("Loop playlist")
+        loop_chk.setToolTip("Repeat all audio files from the beginning when they end.")
         loop_chk.setChecked(self._qsv(_KEY_MUSIC_LOOP, False))
         self._music_loop_chk = loop_chk
         form.addRow("", loop_chk)
 
-        # Signals
-        path_edit.textChanged.connect(
-            lambda p: self._settings.setValue(_KEY_MUSIC_PATH, p)
-        )
+        # ── Signals ──────────────────────────────────────────────────
+        def _save_paths():
+            paths = [
+                music_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(music_list.count())
+            ]
+            self._settings.setValue(_KEY_MUSIC_PATHS, json.dumps(paths))
 
-        def _browse():
-            p, _ = QFileDialog.getOpenFileName(
-                self, "Select audio file", "",
+        def _add_files():
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Add audio files", "",
                 "Audio files (*.mp3 *.m4a *.aac *.ogg *.flac *.wav *.opus)"
                 ";;All files (*)",
             )
-            if p:
-                path_edit.setText(p)
+            for f in files:
+                item = QListWidgetItem(Path(f).name)
+                item.setData(Qt.ItemDataRole.UserRole, f)
+                music_list.addItem(item)
+            if files:
+                _save_paths()
 
-        browse_btn.clicked.connect(_browse)
-        delay_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(_KEY_MUSIC_DELAY, v)
-        )
+        def _remove_selected():
+            for item in music_list.selectedItems():
+                music_list.takeItem(music_list.row(item))
+            _save_paths()
+
+        add_btn.clicked.connect(_add_files)
+        remove_btn.clicked.connect(_remove_selected)
+        # Persist order after drag-and-drop reorder.
+        music_list.model().rowsMoved.connect(lambda *_: _save_paths())
+
+        delay_spin.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_DELAY, v))
         fi_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FI_ENABLED, v))
         fi_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FI_DUR, v))
         fo_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FO_ENABLED, v))
         fo_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FO_DUR, v))
+        cf_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_CF_ENABLED, v))
+        cf_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_CF_DUR, v))
         loop_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_LOOP, v))
 
         return group
@@ -701,7 +746,17 @@ class ClipEffectsWidget(QWidget):
 
         # Music
         self._music_group.setChecked(_sv(_KEY_MUSIC_ENABLED, False, bool))
-        self._music_path_edit.setText(_sv(_KEY_MUSIC_PATH, ""))
+
+        self._music_list.clear()
+        try:
+            saved_paths: list[str] = json.loads(_sv(_KEY_MUSIC_PATHS, "[]"))
+        except (ValueError, TypeError):
+            saved_paths = []
+        for p in saved_paths:
+            item = QListWidgetItem(Path(p).name)
+            item.setData(Qt.ItemDataRole.UserRole, p)
+            self._music_list.addItem(item)
+
         self._music_delay.setValue(float(_sv(_KEY_MUSIC_DELAY, 0.0)))
         self._music_fi_chk.setChecked(_sv(_KEY_MUSIC_FI_ENABLED, False, bool))
         self._music_fi_dur.setValue(float(_sv(_KEY_MUSIC_FI_DUR, 1.0)))
@@ -709,6 +764,9 @@ class ClipEffectsWidget(QWidget):
         self._music_fo_chk.setChecked(_sv(_KEY_MUSIC_FO_ENABLED, True, bool))
         self._music_fo_dur.setValue(float(_sv(_KEY_MUSIC_FO_DUR, 5.0)))
         self._music_fo_dur.setEnabled(self._music_fo_chk.isChecked())
+        self._music_cf_chk.setChecked(_sv(_KEY_MUSIC_CF_ENABLED, True, bool))
+        self._music_cf_dur.setValue(float(_sv(_KEY_MUSIC_CF_DUR, 5.0)))
+        self._music_cf_dur.setEnabled(self._music_cf_chk.isChecked())
         self._music_loop_chk.setChecked(_sv(_KEY_MUSIC_LOOP, False, bool))
 
     def get_settings(self) -> dict:
@@ -735,11 +793,16 @@ class ClipEffectsWidget(QWidget):
             _KEY_TITLE_FO_ENABLED: self._title_fo_chk.isChecked(),
             _KEY_TITLE_FO_DUR:     self._title_fo_dur.value(),
             _KEY_MUSIC_ENABLED:    self._music_group.isChecked(),
-            _KEY_MUSIC_PATH:       self._music_path_edit.text(),
+            _KEY_MUSIC_PATHS:      json.dumps([
+                self._music_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self._music_list.count())
+            ]),
             _KEY_MUSIC_DELAY:      self._music_delay.value(),
             _KEY_MUSIC_FI_ENABLED: self._music_fi_chk.isChecked(),
             _KEY_MUSIC_FI_DUR:     self._music_fi_dur.value(),
             _KEY_MUSIC_FO_ENABLED: self._music_fo_chk.isChecked(),
             _KEY_MUSIC_FO_DUR:     self._music_fo_dur.value(),
+            _KEY_MUSIC_CF_ENABLED: self._music_cf_chk.isChecked(),
+            _KEY_MUSIC_CF_DUR:     self._music_cf_dur.value(),
             _KEY_MUSIC_LOOP:       self._music_loop_chk.isChecked(),
         }

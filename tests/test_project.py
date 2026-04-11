@@ -247,19 +247,19 @@ class TestSaveLoadClipEffects:
         assert loaded.clip_effects.get("clip_effects/fade_in_black_dur") == pytest.approx(5.0)
 
     def test_runtime_keys_stripped_from_json(self, tmp_path):
+        import json
         ce = {
             "clip_effects/title_font_path": "/tmp/font.ttf",
-            "clip_effects/music_path": "/tmp/music.mp3",
+            "clip_effects/music_paths": json.dumps(["/tmp/music.mp3"]),
             "clip_effects/fade_in_enabled": False,
         }
         path = str(tmp_path / "project.georeel")
         save_project(_state(tmp_path, clip_effects=ce), path)
-        import json
         with zipfile.ZipFile(path) as zf:
             project_data = json.loads(zf.read("project.json"))
         saved_ce = project_data.get("clip_effects", {})
         assert "clip_effects/title_font_path" not in saved_ce
-        assert "clip_effects/music_path" not in saved_ce
+        assert "clip_effects/music_paths" not in saved_ce
         # Non-runtime key preserved
         assert "clip_effects/fade_in_enabled" in saved_ce
 
@@ -320,3 +320,105 @@ class TestSerialiseDeserialisePhoto:
 
     def test_deserialise_empty_list(self):
         assert _deserialise_photos([]) == []
+
+
+class TestMusicEmbedding:
+    """Round-trip tests for multi-file music embedding in .georeel archives."""
+
+    def test_single_music_file_embedded_and_restored(self, tmp_path):
+        import json
+        audio = tmp_path / "track.mp3"
+        audio.write_bytes(b"\xff\xfb" * 50)  # fake mp3 bytes
+        ce = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": json.dumps([str(audio)]),
+        }
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, clip_effects=ce), path)
+
+        # ZIP must contain the file under music/ with original name.
+        with zipfile.ZipFile(path) as zf:
+            namelist = zf.namelist()
+            assert "music/track.mp3" in namelist
+            proj = json.loads(zf.read("project.json"))
+            assert proj["music_embedded"] == ["music/track.mp3"]
+
+        loaded = load_project(path)
+        assert loaded.clip_effects is not None
+        restored = json.loads(loaded.clip_effects["clip_effects/music_paths"])
+        assert len(restored) == 1
+        assert restored[0].endswith("track.mp3")
+        assert Path(restored[0]).is_file()
+
+    def test_multiple_music_files_embedded_and_restored(self, tmp_path):
+        import json
+        a1 = tmp_path / "alpha.mp3"
+        a2 = tmp_path / "beta.mp3"
+        a1.write_bytes(b"\x00" * 100)
+        a2.write_bytes(b"\x00" * 100)
+        ce = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": json.dumps([str(a1), str(a2)]),
+        }
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, clip_effects=ce), path)
+
+        with zipfile.ZipFile(path) as zf:
+            namelist = zf.namelist()
+            assert "music/alpha.mp3" in namelist
+            assert "music/beta.mp3" in namelist
+
+        loaded = load_project(path)
+        restored = json.loads(loaded.clip_effects["clip_effects/music_paths"])
+        names = {Path(p).name for p in restored}
+        assert names == {"alpha.mp3", "beta.mp3"}
+
+    def test_duplicate_music_filenames_get_deduped(self, tmp_path):
+        import json
+        # Two files from different dirs with same name.
+        d1 = tmp_path / "dir1"
+        d2 = tmp_path / "dir2"
+        d1.mkdir(); d2.mkdir()
+        f1 = d1 / "song.mp3"
+        f2 = d2 / "song.mp3"
+        f1.write_bytes(b"\x00" * 100)
+        f2.write_bytes(b"\x00" * 100)
+        ce = {
+            "clip_effects/music_enabled": True,
+            "clip_effects/music_paths": json.dumps([str(f1), str(f2)]),
+        }
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, clip_effects=ce), path)
+
+        with zipfile.ZipFile(path) as zf:
+            namelist = zf.namelist()
+        music_entries = [n for n in namelist if n.startswith("music/")]
+        assert len(music_entries) == 2
+        assert len(set(music_entries)) == 2  # no duplicates
+
+    def test_legacy_bool_music_embedded_loads_single_file(self, tmp_path):
+        """Backward compat: music_embedded=true (bool) from old format."""
+        import json
+        audio = tmp_path / "audio.mp3"
+        audio.write_bytes(b"\x00" * 100)
+
+        # Build a legacy project ZIP by hand.
+        proj_path = str(tmp_path / "legacy.georeel")
+        with zipfile.ZipFile(proj_path, "w") as zf:
+            zf.writestr("manifest.json", json.dumps({"version": 2}))
+            zf.write(str(audio), "music/audio.mp3")
+            payload = {
+                "gpx_path": None,
+                "match_mode": "timestamp",
+                "output_path": None,
+                "photos": [],
+                "music_embedded": True,
+                "clip_effects": {"clip_effects/music_enabled": True},
+            }
+            zf.writestr("project.json", json.dumps(payload))
+
+        loaded = load_project(proj_path)
+        assert loaded.clip_effects is not None
+        restored = json.loads(loaded.clip_effects["clip_effects/music_paths"])
+        assert len(restored) == 1
+        assert Path(restored[0]).is_file()

@@ -21,7 +21,7 @@ _SAT_TEXTURE  = "satellite/texture.png"  # RGB PNG; metadata in project.json
 _GPX_ENTRY    = "gpx/track.gpx"          # embedded GPX track
 _PHOTOS_DIR   = "photos/"                # embedded photos: photos/0000.jpg, etc.
 _FONT_ENTRY   = "font/title"             # embedded font; extension appended at save time
-_MUSIC_ENTRY  = "music/audio"            # embedded music; extension appended at save time
+_MUSIC_DIR    = "music/"                 # embedded music files (original filenames preserved)
 
 _FORMAT_VERSION = 2
 
@@ -76,7 +76,7 @@ def save_project(state: ProjectState, path: str) -> None:
 
     if state.clip_effects is not None:
         # Strip runtime-only path keys — files are re-embedded below.
-        _runtime_keys = {"clip_effects/title_font_path", "clip_effects/music_path"}
+        _runtime_keys = {"clip_effects/title_font_path", "clip_effects/music_paths"}
         safe_ce = {k: v for k, v in state.clip_effects.items()
                    if k not in _runtime_keys}
         project_payload["clip_effects"] = safe_ce
@@ -133,12 +133,32 @@ def save_project(state: ProjectState, path: str) -> None:
 
         # ── Embed music ──────────────────────────────────────────────
         ce = state.clip_effects or {}
-        if ce.get("clip_effects/music_enabled") and ce.get("clip_effects/music_path"):
-            music_file = ce["clip_effects/music_path"]
-            if Path(music_file).is_file():
-                ext = Path(music_file).suffix.lower() or ".mp3"
-                zf.write(music_file, f"{_MUSIC_ENTRY}{ext}")
-                project_payload["music_embedded"] = True
+        if ce.get("clip_effects/music_enabled"):
+            paths_raw = ce.get("clip_effects/music_paths", "[]")
+            try:
+                music_paths: list[str] = (
+                    json.loads(paths_raw) if isinstance(paths_raw, str) else list(paths_raw)
+                )
+            except (ValueError, TypeError):
+                music_paths = []
+            _seen_music_names: set[str] = set()
+            embedded_music_entries: list[str] = []
+            for mpath in music_paths:
+                if mpath and Path(mpath).is_file():
+                    p = Path(mpath)
+                    stem, ext = p.stem, p.suffix.lower() or ".mp3"
+                    name = f"{stem}{ext}"
+                    if name in _seen_music_names:
+                        counter = 1
+                        while f"{stem}_{counter}{ext}" in _seen_music_names:
+                            counter += 1
+                        name = f"{stem}_{counter}{ext}"
+                    _seen_music_names.add(name)
+                    entry = f"{_MUSIC_DIR}{name}"
+                    zf.write(mpath, entry)
+                    embedded_music_entries.append(entry)
+            if embedded_music_entries:
+                project_payload["music_embedded"] = embedded_music_entries
 
         # project.json written last so it captures all embedded flags above.
         zf.writestr(_PROJECT, json.dumps(project_payload, indent=2))
@@ -199,14 +219,23 @@ def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
             clip_effects["clip_effects/title_font_path"] = str(dest)
 
     # ── Extract music ────────────────────────────────────────────────
-    if payload.get("music_embedded"):
-        music_entries = [n for n in namelist if n.startswith(_MUSIC_ENTRY)]
-        if music_entries:
-            entry = music_entries[0]
+    music_embedded = payload.get("music_embedded")
+    if music_embedded:
+        if isinstance(music_embedded, bool):
+            # Legacy v2 format: single file stored at "music/audio<ext>".
+            old_entries = [n for n in namelist if n.startswith("music/audio")]
+            entries_to_load = old_entries[:1]
+        else:
+            # Current format: list of zip entries with original filenames.
+            entries_to_load = [e for e in music_embedded if e in namelist]
+        restored_paths: list[str] = []
+        for entry in entries_to_load:
             dest = _tmpdir() / entry
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(entry))
-            clip_effects["clip_effects/music_path"] = str(dest)
+            restored_paths.append(str(dest))
+        if restored_paths:
+            clip_effects["clip_effects/music_paths"] = json.dumps(restored_paths)
 
     # ── DEM & satellite (unchanged) ──────────────────────────────────
     elevation_grid = None
