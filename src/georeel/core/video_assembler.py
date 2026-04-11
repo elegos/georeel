@@ -308,7 +308,13 @@ def _fade_filters(
         filters.append(f"fade=t=in:st={fi_black}:d={fi_fade}")
 
     if fo_fade > 0:
-        fo_start = fi_black + orig_dur - fo_fade
+        # When skip_prepend=True the prepended black frames are real PNGs already
+        # counted in total_frames, so orig_dur already includes fi_black.
+        # Content ends at orig_dur (no tpad start was added).
+        # When skip_prepend=False the tpad start adds fi_black seconds before the
+        # content, so content ends at fi_black + orig_dur.
+        content_end = orig_dur if skip_prepend else fi_black + orig_dur
+        fo_start = content_end - fo_fade
         filters.append(f"fade=t=out:st={fo_start:.6f}:d={fo_fade}")
 
     # When skip_prepend=True the fi_black frames are already in total_frames.
