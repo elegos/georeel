@@ -1,10 +1,12 @@
 import logging
 import shutil
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QThread, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QComboBox,
     QDoubleSpinBox,
@@ -35,7 +37,7 @@ from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
 from georeel.core.preview_map import PreviewMapError, render_preview_map
-from georeel.core.project import ProjectState, load_project, save_project
+from georeel.core.project import ProjectState, autosave_tilde, load_project, save_project
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_MAX_TILES
 from georeel.core.scene_builder import SceneBuildError, build_scene
@@ -53,9 +55,12 @@ from .preview_video_dialog import open_preview_video
 from .preview_video_progress_dialog import PreviewVideoProgressDialog
 from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
+    KEY_CAMERA_SPEED,
+    KEY_FRUSTUM_MARGIN_KM,
     KEY_GPX_MAX_GAP_S,
     KEY_GPX_MAX_JUMP_KM,
     KEY_GPX_MAX_SPEED_KMH,
+    KEY_GPX_OSRM_PROFILE,
     KEY_GPX_REPAIR_MODE,
     KEY_HEIGHT_OFFSET,
     KEY_IMAGERY_API_KEY,
@@ -87,6 +92,15 @@ _MATCH_MODES = [
     ("Both (GPS + timestamp)", "both"),
 ]
 
+# Flythrough speed presets (label, m/s).  80 m/s ≈ right for a 25 km hike
+# producing ~5 min video at 30 fps.  Cycling and driving cover more ground so
+# a higher speed keeps the video a sensible length.
+_SPEED_PRESETS = [
+    ("Hiking",   80.0),
+    ("Cycling", 120.0),
+    ("Driving", 160.0),
+]
+
 
 class _SaveWorker(QObject):
     """Runs save_project in a background thread."""
@@ -107,6 +121,50 @@ class _SaveWorker(QObject):
             self.failed.emit(str(e))
 
 
+class _LoadWorker(QObject):
+    """Runs load_project in a background thread."""
+
+    finished = Signal(object)   # ProjectState
+    failed   = Signal(str)
+
+    def __init__(self, path: str):
+        super().__init__()
+        self._path = path
+
+    def run(self):
+        try:
+            state = load_project(self._path)
+            self.finished.emit(state)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class _InjectWorker(QObject):
+    """Runs inject_camera_and_open headlessly in a background thread."""
+
+    finished = Signal()
+    failed   = Signal(str)
+
+    def __init__(self, exe: str, blend_path: str, keyframes, resolution: str, fps: int = 30):
+        super().__init__()
+        self._exe        = exe
+        self._blend_path = blend_path
+        self._keyframes  = keyframes
+        self._resolution = resolution
+        self._fps        = fps
+
+    def run(self):
+        from georeel.core.open_in_blender import OpenInBlenderError, inject_camera_and_open
+        try:
+            inject_camera_and_open(
+                self._exe, self._blend_path, self._keyframes, self._resolution,
+                fps=self._fps,
+            )
+            self.finished.emit()
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -120,6 +178,8 @@ class MainWindow(QMainWindow):
         self._cached_satellite_texture: SatelliteTexture | None = None
         self._dirty = False
         self._suppress_dirty = False
+        self._tilde_fresh = False           # True when path~ is ready to rename on save
+        self._autosave_thread: threading.Thread | None = None
         self._scene_stale = True  # True → stage 5 must rerun in _start()
         self._scene_prep_worker: ScenePrepWorker | None = None
         self._keyframe_calc_worker: KeyframeCalcWorker | None = None
@@ -127,8 +187,13 @@ class MainWindow(QMainWindow):
         self._pending_preview: str = "map"  # "map" or "video"
         self._pending_close: bool = False
         self._save_thread: QThread | None = None
+        self._load_thread: QThread | None = None
+        self._load_worker: _LoadWorker | None = None
+        self._inject_thread: QThread | None = None
+        self._inject_worker: _InjectWorker | None = None
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
+        self._restore_window_geometry()
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -163,6 +228,12 @@ class MainWindow(QMainWindow):
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
+
+        self._fetch_progress_bar = QProgressBar()
+        self._fetch_progress_bar.setRange(0, 0)  # indeterminate initially
+        self._fetch_progress_bar.setMaximumWidth(200)
+        self._fetch_progress_bar.hide()
+        self._status.addPermanentWidget(self._fetch_progress_bar)
 
         self._save_progress_bar = QProgressBar()
         self._save_progress_bar.setRange(0, 0)  # indeterminate
@@ -276,18 +347,25 @@ class MainWindow(QMainWindow):
         worker.dem_fetched.connect(self._on_worker_dem_fetched)
         worker.keyframes_ready.connect(self._on_keyframes_ready)
         worker.error.connect(self._on_keyframe_calc_error)
+        worker.progress.connect(self._on_worker_fetch_progress)
         self._keyframe_calc_worker = worker
         worker.start()
 
     def _on_keyframes_ready(self, keyframes, match_results, trackpoints):
+        self._fetch_progress_bar.hide()
         self._photo_area.set_calc_kf_running(False)
         self._photo_area.update_match_statuses(match_results)
         self._photo_area.update_pipeline_info(
             trackpoints=trackpoints, keyframes=keyframes
         )
         self._status_show(f"Keyframes calculated: {len(keyframes)} frames total.")
+        # Cache cleaned trackpoints so ScenePrepWorker can reuse them without
+        # re-parsing and re-cleaning the GPX file.
+        if trackpoints:
+            self._pipeline.trackpoints = list(trackpoints)
 
     def _on_keyframe_calc_error(self, message: str):
+        self._fetch_progress_bar.hide()
         self._photo_area.set_calc_kf_running(False)
         self._status_show(
             f"Keyframe calculation failed: {message}", level=logging.ERROR
@@ -325,6 +403,25 @@ class MainWindow(QMainWindow):
             "falls back to ground when the route is unavailable."
         )
         form.addRow("Hole repair:", self._gpx_repair_combo)
+
+        # ── OSRM profile combo (shown only when mode == street) ───────
+        self._gpx_osrm_profile_combo = QComboBox()
+        self._gpx_osrm_profile_combo.addItem("Driving", "driving")
+        self._gpx_osrm_profile_combo.addItem("Cycling", "cycling")
+        self._gpx_osrm_profile_combo.addItem("Walking", "walking")
+        saved_profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
+        pidx = self._gpx_osrm_profile_combo.findData(saved_profile)
+        if pidx >= 0:
+            self._gpx_osrm_profile_combo.setCurrentIndex(pidx)
+        self._gpx_osrm_profile_combo.setToolTip(
+            "Routing profile sent to the OSRM API."
+        )
+        self._gpx_osrm_profile_widget = QWidget()
+        profile_row = QHBoxLayout(self._gpx_osrm_profile_widget)
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.addWidget(self._gpx_osrm_profile_combo)
+        profile_row.addStretch()
+        form.addRow("OSRM profile:", self._gpx_osrm_profile_widget)
 
         # ── Threshold row (hidden when mode == none) ──────────────────
         thresh_row = QHBoxLayout()
@@ -365,12 +462,12 @@ class MainWindow(QMainWindow):
         self._gpx_thresh_widget.setLayout(thresh_row)
         form.addRow("", self._gpx_thresh_widget)
 
-        # Show/hide thresholds based on mode.
+        # Show/hide thresholds and profile based on mode.
         def _update_thresh_visibility():
-            visible = self._gpx_repair_combo.currentData() != "none"
-            self._gpx_thresh_widget.setVisible(visible)
-            self._settings.setValue(KEY_GPX_REPAIR_MODE,
-                                    self._gpx_repair_combo.currentData())
+            mode = self._gpx_repair_combo.currentData()
+            self._gpx_thresh_widget.setVisible(mode != "none")
+            self._gpx_osrm_profile_widget.setVisible(mode == "street")
+            self._settings.setValue(KEY_GPX_REPAIR_MODE, mode)
 
         _update_thresh_visibility()
         self._gpx_repair_combo.currentIndexChanged.connect(_update_thresh_visibility)
@@ -379,6 +476,11 @@ class MainWindow(QMainWindow):
         )
         self._gpx_gap_spin.valueChanged.connect(
             lambda v: self._settings.setValue(KEY_GPX_MAX_GAP_S, v)
+        )
+        self._gpx_osrm_profile_combo.currentIndexChanged.connect(
+            lambda: self._settings.setValue(
+                KEY_GPX_OSRM_PROFILE, self._gpx_osrm_profile_combo.currentData()
+            )
         )
 
         return container
@@ -392,6 +494,14 @@ class MainWindow(QMainWindow):
             self._gpx_repair_combo.setCurrentIndex(idx)
         self._gpx_repair_combo.blockSignals(False)
         self._gpx_thresh_widget.setVisible(mode != "none")
+        self._gpx_osrm_profile_widget.setVisible(mode == "street")
+
+        profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
+        pidx = self._gpx_osrm_profile_combo.findData(profile)
+        self._gpx_osrm_profile_combo.blockSignals(True)
+        if pidx >= 0:
+            self._gpx_osrm_profile_combo.setCurrentIndex(pidx)
+        self._gpx_osrm_profile_combo.blockSignals(False)
 
         self._gpx_speed_spin.blockSignals(True)
         self._gpx_speed_spin.setValue(int(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
@@ -400,6 +510,16 @@ class MainWindow(QMainWindow):
         self._gpx_gap_spin.blockSignals(True)
         self._gpx_gap_spin.setValue(float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
         self._gpx_gap_spin.blockSignals(False)
+
+    def _reload_speed_control(self) -> None:
+        """Sync flythrough speed widgets from QSettings (called after project load)."""
+        speed = float(self._settings.value(KEY_CAMERA_SPEED, 80.0))
+        self._speed_spin.blockSignals(True)
+        self._speed_spin.setValue(speed)
+        self._speed_spin.blockSignals(False)
+        self._speed_preset_combo.blockSignals(True)
+        self._speed_preset_combo.setCurrentIndex(self._speed_preset_index(speed))
+        self._speed_preset_combo.blockSignals(False)
 
     def _build_photos_group(self) -> QGroupBox:
         group = QGroupBox("Photos")
@@ -461,7 +581,66 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         self._output_selector = OutputFileSelector()
         layout.addWidget(self._output_selector)
+
+        # ── Flythrough speed ────────────────────────────────────────────
+        speed_row = QHBoxLayout()
+        speed_row.setSpacing(6)
+
+        self._speed_preset_combo = QComboBox()
+        for label, _ in _SPEED_PRESETS:
+            self._speed_preset_combo.addItem(label)
+        self._speed_preset_combo.addItem("Custom")
+
+        self._speed_spin = QDoubleSpinBox()
+        self._speed_spin.setRange(10.0, 1000.0)
+        self._speed_spin.setSingleStep(10.0)
+        self._speed_spin.setDecimals(0)
+        self._speed_spin.setSuffix(" m/s")
+        self._speed_spin.setToolTip(
+            "How fast the camera flies through the 3D scene.\n"
+            "Higher = shorter video.\n"
+            "Hiking ~80 m/s · Cycling ~120 m/s · Driving ~160 m/s"
+        )
+
+        saved_speed = float(self._settings.value(KEY_CAMERA_SPEED, 80.0))
+        self._speed_spin.setValue(saved_speed)
+        self._speed_preset_combo.setCurrentIndex(self._speed_preset_index(saved_speed))
+
+        def _on_preset_changed(idx):
+            presets = [v for _, v in _SPEED_PRESETS]
+            if idx < len(presets):
+                self._speed_spin.blockSignals(True)
+                self._speed_spin.setValue(presets[idx])
+                self._speed_spin.blockSignals(False)
+                self._settings.setValue(KEY_CAMERA_SPEED, presets[idx])
+                self._invalidate_scene()
+                self._mark_dirty()
+
+        def _on_speed_changed(value):
+            self._speed_preset_combo.blockSignals(True)
+            self._speed_preset_combo.setCurrentIndex(self._speed_preset_index(value))
+            self._speed_preset_combo.blockSignals(False)
+            self._settings.setValue(KEY_CAMERA_SPEED, value)
+            self._invalidate_scene()
+            self._mark_dirty()
+
+        self._speed_preset_combo.currentIndexChanged.connect(_on_preset_changed)
+        self._speed_spin.valueChanged.connect(_on_speed_changed)
+
+        speed_row.addWidget(QLabel("Flythrough speed:"))
+        speed_row.addWidget(self._speed_preset_combo)
+        speed_row.addWidget(self._speed_spin)
+        speed_row.addStretch()
+        layout.addLayout(speed_row)
+
         return group
+
+    def _speed_preset_index(self, value: float) -> int:
+        """Return the combo index matching *value*, or the 'Custom' index."""
+        for i, (_, v) in enumerate(_SPEED_PRESETS):
+            if abs(value - v) < 0.5:
+                return i
+        return len(_SPEED_PRESETS)   # "Custom"
 
     def _build_action_buttons(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -511,6 +690,11 @@ class MainWindow(QMainWindow):
     # Dirty tracking
     # ------------------------------------------------------------------
 
+    def _camera_path_progress(self, current: int, total: int) -> None:
+        self._fetch_progress_bar.setRange(0, total)
+        self._fetch_progress_bar.setValue(current)
+        QApplication.processEvents()
+
     def _status_show(self, message: str, level: int = logging.INFO) -> None:
         """Show *message* in the status bar and log it to the terminal."""
         _log.log(level, message)
@@ -519,6 +703,33 @@ class MainWindow(QMainWindow):
     def _mark_dirty(self, *_):
         if not self._suppress_dirty:
             self._dirty = True
+            self._tilde_fresh = False
+
+    def _autosave_tilde(self, *, update_dem: bool = False, update_sat: bool = False) -> None:
+        """Fire-and-forget write of current DEM/satellite to project_path~.
+
+        Skipped when no project has been saved/loaded yet.  Runs in a daemon
+        thread so the UI stays responsive during the (potentially large) write.
+        Sets _tilde_fresh=True on success so the next Save can just rename.
+        """
+        if not self._project_path:
+            return
+        path  = self._project_path
+        state = self._current_state()
+
+        # Wait for any previous autosave before starting a new one.
+        if self._autosave_thread and self._autosave_thread.is_alive():
+            self._autosave_thread.join()
+
+        def _run() -> None:
+            try:
+                autosave_tilde(state, path, update_dem=update_dem, update_sat=update_sat)
+                self._tilde_fresh = True
+            except Exception:
+                pass  # autosave failure is silent; user can always do a full save
+
+        self._autosave_thread = threading.Thread(target=_run, daemon=True)
+        self._autosave_thread.start()
 
     def _invalidate_scene(self, *_):
         """Mark the cached scene as stale so _start() will rebuild it."""
@@ -552,22 +763,36 @@ class MainWindow(QMainWindow):
             cached_satellite_texture=self._cached_satellite_texture,
             api_key=self._settings.value("imagery/api_key", ""),
             custom_url=self._settings.value("imagery/custom_url", ""),
+            cleaned_trackpoints=self._pipeline.trackpoints or None,
         )
         worker.status.connect(self._status_show)
         worker.dem_fetched.connect(self._on_worker_dem_fetched)
         worker.satellite_fetched.connect(self._on_worker_satellite_fetched)
         worker.scene_ready.connect(self._on_worker_scene_ready)
         worker.error.connect(self._on_worker_error)
+        worker.progress.connect(self._on_worker_fetch_progress)
         self._scene_prep_worker = worker
         worker.start()
 
+    def _on_worker_fetch_progress(self, current: int, total: int) -> None:
+        if total > 0:
+            self._fetch_progress_bar.setRange(0, total)
+            self._fetch_progress_bar.setValue(current)
+        else:
+            self._fetch_progress_bar.setRange(0, 0)
+        self._fetch_progress_bar.show()
+
     def _on_worker_dem_fetched(self, grid):
+        self._fetch_progress_bar.hide()
         self._cached_elevation_grid = grid
         self._mark_dirty()
+        self._autosave_tilde(update_dem=True)
 
     def _on_worker_satellite_fetched(self, texture):
+        self._fetch_progress_bar.hide()
         self._cached_satellite_texture = texture
         self._mark_dirty()
+        self._autosave_tilde(update_sat=True)
 
     def _on_worker_scene_ready(self, blend_path: str, pipeline):
         self._pipeline = pipeline
@@ -586,6 +811,7 @@ class MainWindow(QMainWindow):
             self._show_preview_map()
 
     def _on_worker_error(self, message: str):
+        self._fetch_progress_bar.hide()
         self._status_show(f"Auto-build failed: {message}", level=logging.ERROR)
 
     def _current_state(self) -> ProjectState:
@@ -616,6 +842,13 @@ class MainWindow(QMainWindow):
             from georeel.core.gpx_parser import parse_gpx
 
             trackpoints, _ = parse_gpx(path)
+            trackpoints, _ = detect_and_repair(
+                trackpoints,
+                str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
+                max_speed_mps=float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6,
+                max_gap_s=float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)),
+                max_jump_m=float(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)) * 1_000,
+            )
             self._gpx_stats.update_stats(trackpoints)
         except Exception:
             self._gpx_stats.clear()
@@ -719,16 +952,21 @@ class MainWindow(QMainWindow):
         # Build camera path if not already done (fast, synchronous)
         if not self._pipeline.camera_keyframes:
             self._status_show("Computing camera path…")
+            self._fetch_progress_bar.setRange(0, 0)
+            self._fetch_progress_bar.show()
             try:
                 from georeel.core.camera_path import CameraPathError, build_camera_path
 
                 self._pipeline.camera_keyframes = build_camera_path(
-                    self._pipeline, render_settings
+                    self._pipeline, render_settings,
+                    progress_callback=self._camera_path_progress,
                 )
             except CameraPathError as e:
+                self._fetch_progress_bar.hide()
                 QMessageBox.critical(self, "Camera path error", str(e))
                 self._status_show("Preview video failed: camera path error.")
                 return
+            self._fetch_progress_bar.hide()
 
         blender_exe = self._settings.value("blender/executable_path") or None
         self._status_show("Rendering preview video…")
@@ -786,34 +1024,63 @@ class MainWindow(QMainWindow):
         # Compute camera path if not yet done
         if not self._pipeline.camera_keyframes:
             self._status_show("Computing camera path…")
+            self._fetch_progress_bar.setRange(0, 0)
+            self._fetch_progress_bar.show()
             try:
                 from georeel.core.camera_path import CameraPathError, build_camera_path
 
                 self._pipeline.camera_keyframes = build_camera_path(
-                    self._pipeline, render_settings
+                    self._pipeline, render_settings,
+                    progress_callback=self._camera_path_progress,
                 )
             except CameraPathError as e:
+                self._fetch_progress_bar.hide()
                 QMessageBox.critical(self, "Camera path error", str(e))
                 self._status_show("Open in Blender failed: camera path error.")
                 return
+            self._fetch_progress_bar.hide()
 
-        # Inject camera keyframes into a copy of the .blend
-        self._status_show("Injecting camera into scene…")
-        try:
-            from georeel.core.open_in_blender import inject_camera_and_open
-
-            inject_camera_and_open(
-                exe,
-                self._pipeline.scene,
-                self._pipeline.camera_keyframes,
-                resolution=render_settings.get("render/resolution", "1080p"),
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Open in Blender failed", str(e))
-            self._status_show("Open in Blender failed.")
+        # Inject camera keyframes into a copy of the .blend (runs headlessly —
+        # can take tens of seconds for long tracks; run in a background thread
+        # so the UI stays responsive and the progress bar is visible).
+        if self._inject_thread and self._inject_thread.isRunning():
+            self._status_show("Already injecting camera — please wait.")
             return
 
-        self._status_show(f"Opened in Blender: {self._pipeline.scene}")
+        self._status_show("Injecting camera into scene…")
+        self._fetch_progress_bar.setRange(0, 0)   # indeterminate spinner
+        self._fetch_progress_bar.show()
+        self.centralWidget().setEnabled(False)
+
+        worker = _InjectWorker(
+            exe,
+            self._pipeline.scene,
+            self._pipeline.camera_keyframes,
+            render_settings.get("render/resolution", "1080p"),
+            fps=int(render_settings.get("render/fps", 30)),
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_inject_finished)
+        worker.failed.connect(self._on_inject_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        self._inject_thread = thread
+        self._inject_worker = worker   # keep reference alive
+        thread.start()
+
+    def _on_inject_finished(self):
+        self._fetch_progress_bar.hide()
+        self.centralWidget().setEnabled(True)
+        self._status_show("Blender opened successfully.")
+
+    def _on_inject_failed(self, message: str):
+        self._fetch_progress_bar.hide()
+        self.centralWidget().setEnabled(True)
+        self._status_show("Open in Blender failed.", level=logging.ERROR)
+        QMessageBox.critical(self, "Open in Blender failed", message)
 
     def _start(self):
         if not self._gpx_path:
@@ -877,6 +1144,7 @@ class MainWindow(QMainWindow):
         # GPX hole repair (optional, controlled by render settings)
         repair_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE))
         if repair_mode != REPAIR_NONE:
+            osrm_profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
             self._status_show(f"Repairing GPX holes ({repair_mode} mode)…")
             max_speed_mps = float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6
             max_gap_s     = float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))
@@ -887,6 +1155,7 @@ class MainWindow(QMainWindow):
                 max_speed_mps=max_speed_mps,
                 max_gap_s=max_gap_s,
                 max_jump_m=max_jump_m,
+                osrm_profile=osrm_profile,
             )
             _repair_msg = (
                 f"GPX repaired: {_cs.nullified_removed} bad points removed, "
@@ -936,6 +1205,7 @@ class MainWindow(QMainWindow):
         margin_m = frustum_margin(
             height_m=render_settings.get(KEY_HEIGHT_OFFSET, 200),
             tilt_deg=render_settings.get(KEY_TILT_DEG, 45),
+            max_view_m=float(render_settings.get(KEY_FRUSTUM_MARGIN_KM, 50)) * 1_000,
         )
         track_bbox = self._pipeline.bounding_box
         fetch_bbox = track_bbox.expand(margin_m)
@@ -955,15 +1225,26 @@ class MainWindow(QMainWindow):
             )
         else:
             self._status_show(f"Fetching DEM (SRTM, {margin_m / 1000:.1f} km margin)…")
+            self._fetch_progress_bar.setRange(0, 0)
+            self._fetch_progress_bar.show()
+
+            def _dem_progress(current: int, total: int) -> None:
+                self._fetch_progress_bar.setRange(0, total)
+                self._fetch_progress_bar.setValue(current)
+                QApplication.processEvents()
+
             try:
-                grid = fetch_dem(fetch_bbox)
+                grid = fetch_dem(fetch_bbox, progress_callback=_dem_progress)
             except DemFetchError as e:
+                self._fetch_progress_bar.hide()
                 QMessageBox.critical(self, "DEM error", str(e))
                 self._status_show("Pipeline stopped: DEM fetch failed.")
                 return
+            self._fetch_progress_bar.hide()
             self._pipeline.elevation_grid = grid
             self._cached_elevation_grid = grid
             self._mark_dirty()
+            self._autosave_tilde(update_dem=True)
             self._status_show(
                 f"DEM fetched: {grid.rows}×{grid.cols} points "
                 f"({grid.rows * grid.cols:,} total)."
@@ -989,6 +1270,14 @@ class MainWindow(QMainWindow):
             )
         else:
             self._status_show("Fetching satellite imagery…")
+            self._fetch_progress_bar.setRange(0, 0)
+            self._fetch_progress_bar.show()
+
+            def _sat_progress(current: int, total: int) -> None:
+                self._fetch_progress_bar.setRange(0, total)
+                self._fetch_progress_bar.setValue(current)
+                QApplication.processEvents()
+
             try:
                 source = build_source(
                     provider_id=provider_id,
@@ -996,14 +1285,17 @@ class MainWindow(QMainWindow):
                     custom_url=self._settings.value("imagery/custom_url", ""),
                     quality=img_quality,
                 )
-                texture = source.fetch(fetch_bbox)
+                texture = source.fetch(fetch_bbox, progress_callback=_sat_progress)
             except Exception as e:
+                self._fetch_progress_bar.hide()
                 QMessageBox.critical(self, "Satellite imagery error", str(e))
                 self._status_show("Pipeline stopped: satellite fetch failed.")
                 return
+            self._fetch_progress_bar.hide()
             self._pipeline.satellite_texture = texture
             self._cached_satellite_texture = texture
             self._mark_dirty()
+            self._autosave_tilde(update_sat=True)
             self._status_show(
                 f"Satellite imagery fetched: {texture.width}×{texture.height} px."
             )
@@ -1033,12 +1325,17 @@ class MainWindow(QMainWindow):
 
         # Stage 6 — Camera Path Generator
         self._status_show("Computing camera path…")
+        self._fetch_progress_bar.setRange(0, 0)
+        self._fetch_progress_bar.show()
         try:
-            keyframes = build_camera_path(self._pipeline, render_settings)
+            keyframes = build_camera_path(self._pipeline, render_settings,
+                                          progress_callback=self._camera_path_progress)
         except CameraPathError as e:
+            self._fetch_progress_bar.hide()
             QMessageBox.critical(self, "Camera path error", str(e))
             self._status_show("Pipeline stopped: camera path failed.")
             return
+        self._fetch_progress_bar.hide()
         self._pipeline.camera_keyframes = keyframes
         self._photo_area.update_pipeline_info(keyframes=keyframes)
         fps = render_settings.get("render/fps", 30)
@@ -1153,7 +1450,43 @@ class MainWindow(QMainWindow):
             self._suppress_dirty = False
 
     def _save_to_path(self, path: str) -> None:
-        """Start an async save to *path*. UI is disabled until completion."""
+        """Start a save to *path*.
+
+        Fast path: if the tilde file is up-to-date (set after the last
+        DEM/satellite fetch and no subsequent _mark_dirty), simply rename
+        path~ → path.  Otherwise falls back to a full async rebuild.
+        """
+        # Clean up stale tilde from the previous project path on Save-As.
+        if self._project_path and self._project_path != path:
+            Path(self._project_path + "~").unlink(missing_ok=True)
+            self._tilde_fresh = False
+
+        # Wait for any in-progress autosave thread so the tilde is complete.
+        if self._autosave_thread and self._autosave_thread.is_alive():
+            self._autosave_thread.join()
+
+        tilde = path + "~"
+        if self._tilde_fresh and Path(tilde).is_file():
+            # Fast path — tilde is ready; just rename it.
+            try:
+                shutil.move(tilde, path)
+            except Exception as e:
+                QMessageBox.critical(self, "Save failed", str(e))
+                self._status_show("Save failed.")
+                return
+            self._tilde_fresh = False
+            self._save_last_project_dir(path)
+            self._add_recent_file(path)
+            self._project_path = path
+            self._suggest_output_from_project(path)
+            self._dirty = False
+            self._status_show(f"Project saved: {path}")
+            if self._pending_close:
+                self._pending_close = False
+                self._cleanup_temp_dir()
+                self.close()
+            return
+
         if self._save_thread and self._save_thread.isRunning():
             return  # already saving
 
@@ -1187,6 +1520,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", error)
             self._pending_close = False
         else:
+            # Full save completed — any tilde is now redundant.
+            Path(path + "~").unlink(missing_ok=True)
+            self._tilde_fresh = False
             self._save_last_project_dir(path)
             self._add_recent_file(path)
             self._project_path = path
@@ -1231,11 +1567,36 @@ class MainWindow(QMainWindow):
         self._load_from_path(path)
 
     def _load_from_path(self, path: str) -> None:
-        """Load the project at *path* without showing a file dialog."""
+        """Load *path* synchronously on the main thread (diagnostic: threading removed).
+
+        The UI freezes for the duration of the load.  This is intentional — we are
+        testing whether the SIGSEGV in QFontEngineFT::loadGlyphSet is caused by the
+        background QThread that previously ran load_project().
+        """
+        if self._load_thread and self._load_thread.isRunning():
+            return
+
+        self.centralWidget().setEnabled(False)
+        self.menuBar().setEnabled(False)
+        self._fetch_progress_bar.setRange(0, 0)
+        self._fetch_progress_bar.show()
+        self._status.showMessage(f"Loading project: {Path(path).name}…")
+
         try:
             state = load_project(path)
+            self._on_load_complete(path, state, None)
         except Exception as e:
-            QMessageBox.critical(self, "Load failed", str(e))
+            self._on_load_complete(path, None, str(e))
+
+    def _on_load_complete(self, path: str, state, error: str | None) -> None:
+        self._fetch_progress_bar.hide()
+        self.centralWidget().setEnabled(True)
+        self.menuBar().setEnabled(True)
+        self._load_thread = None
+
+        if error:
+            QMessageBox.critical(self, "Load failed", error)
+            self._status_show("Load failed.")
             return
         self._apply_loaded_project(state, path)
 
@@ -1251,6 +1612,13 @@ class MainWindow(QMainWindow):
                 self._gpx_area.set_file(state.gpx_path)
                 try:
                     trackpoints, _ = parse_gpx(state.gpx_path)
+                    trackpoints, _ = detect_and_repair(
+                        trackpoints,
+                        str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
+                        max_speed_mps=float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6,
+                        max_gap_s=float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)),
+                        max_jump_m=float(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)) * 1_000,
+                    )
                     self._gpx_stats.update_stats(trackpoints)
                 except Exception:
                     self._gpx_stats.clear()
@@ -1273,6 +1641,7 @@ class MainWindow(QMainWindow):
             self._tz_offset_spin.blockSignals(False)
             self._photo_area.set_tz_offset(tz)
             self._reload_gpx_repair_controls()
+            self._reload_speed_control()
         if state.clip_effects:
             for key, value in state.clip_effects.items():
                 self._settings.setValue(key, value)
@@ -1289,6 +1658,13 @@ class MainWindow(QMainWindow):
             self._open_blender_btn.setEnabled(True)
 
     def _clear(self):
+        # Wait for any autosave in flight and discard the tilde.
+        if self._autosave_thread and self._autosave_thread.is_alive():
+            self._autosave_thread.join()
+        if self._project_path:
+            Path(self._project_path + "~").unlink(missing_ok=True)
+        self._tilde_fresh = False
+
         self._suppress_dirty = True
         try:
             self._gpx_path = None
@@ -1315,6 +1691,8 @@ class MainWindow(QMainWindow):
             self._scene_prep_worker.quit()
         if self._keyframe_calc_worker and self._keyframe_calc_worker.isRunning():
             self._keyframe_calc_worker.quit()
+        if self._load_thread and self._load_thread.isRunning():
+            self._load_thread.quit()
         self._dirty = False
         self._status_show("Cleared.")
 
@@ -1327,8 +1705,33 @@ class MainWindow(QMainWindow):
             shutil.rmtree(self._project_temp_dir, ignore_errors=True)
         self._project_temp_dir = None
 
+    def _restore_window_geometry(self) -> None:
+        geometry = self._settings.value("window/geometry")
+        restored = bool(geometry and self.restoreGeometry(geometry))
+        if restored:
+            # Validate: center must land on a known screen and the window must
+            # fit within that screen's available area (guards against lower-res
+            # displays or disconnected monitors).
+            screen = QApplication.screenAt(self.frameGeometry().center())
+            if screen is None:
+                restored = False
+            else:
+                avail = screen.availableGeometry()
+                fg = self.frameGeometry()
+                if fg.width() > avail.width() or fg.height() > avail.height():
+                    restored = False
+        if not restored:
+            self.resize(1100, 820)
+            screen = QApplication.primaryScreen()
+            if screen:
+                self.move(screen.availableGeometry().center() - self.rect().center())
+
+    def _save_window_geometry(self) -> None:
+        self._settings.setValue("window/geometry", self.saveGeometry())
+
     def closeEvent(self, event: QCloseEvent):
         if not self._dirty:
+            self._save_window_geometry()
             self._cleanup_temp_dir()
             event.accept()
             return
@@ -1347,6 +1750,7 @@ class MainWindow(QMainWindow):
                 self._save_to_path(self._project_path)
                 event.ignore()  # window stays open; close() fires in _on_save_complete
             elif answer == _SB.Discard:
+                self._save_window_geometry()
                 self._cleanup_temp_dir()
                 event.accept()
             else:
@@ -1374,6 +1778,7 @@ class MainWindow(QMainWindow):
                 else:
                     event.ignore()  # user cancelled the save dialog
             elif answer == _SB.Discard:
+                self._save_window_geometry()
                 self._cleanup_temp_dir()
                 event.accept()
             else:

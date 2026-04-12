@@ -19,6 +19,7 @@ from georeel.core.bounding_box import BoundingBox
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.frustum import frustum_margin
+from georeel.core.gpx_cleaner import detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
@@ -26,6 +27,7 @@ from georeel.core.pipeline import Pipeline
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_MAX_TILES
 from georeel.core.scene_builder import SceneBuildError, build_scene
+from georeel.core.trackpoint import Trackpoint
 
 
 def _quality_rank(q: str, order: dict) -> int:
@@ -38,6 +40,7 @@ class ScenePrepWorker(QThread):
     dem_fetched    = Signal(object)        # ElevationGrid
     satellite_fetched = Signal(object)     # SatelliteTexture
     error          = Signal(str)
+    progress       = Signal(int, int)      # (current, total)
 
     def __init__(
         self,
@@ -50,6 +53,7 @@ class ScenePrepWorker(QThread):
         cached_satellite_texture: SatelliteTexture | None,
         api_key: str,
         custom_url: str,
+        cleaned_trackpoints: list[Trackpoint] | None = None,
     ):
         super().__init__()
         self._gpx_path              = gpx_path
@@ -61,18 +65,51 @@ class ScenePrepWorker(QThread):
         self._cached_sat            = cached_satellite_texture
         self._api_key               = api_key
         self._custom_url            = custom_url
+        self._cleaned_trackpoints   = cleaned_trackpoints
         self._quality_order         = {q: i for i, q in enumerate(QUALITY_MAX_TILES)}
 
     def run(self) -> None:
         pipeline = Pipeline()
 
         # Stage 1 — GPX
-        self.status.emit("Auto-build: parsing GPX…")
-        try:
-            trackpoints, bbox = parse_gpx(self._gpx_path)
-        except GpxParseError as e:
-            self.error.emit(f"GPX parse error: {e}")
+        # Reuse pre-cleaned trackpoints from the keyframe calc worker when
+        # available — avoids re-parsing and re-cleaning the file, and ensures
+        # the DEM/satellite bbox is computed from the same clean data.
+        if self._cleaned_trackpoints:
+            trackpoints = self._cleaned_trackpoints
+            self.status.emit("Auto-build: reusing pre-cleaned GPX trackpoints.")
+        else:
+            self.status.emit("Auto-build: parsing GPX…")
+            try:
+                trackpoints, _ = parse_gpx(self._gpx_path)
+            except GpxParseError as e:
+                self.error.emit(f"GPX parse error: {e}")
+                return
+            # Apply the same cleaning as the keyframe worker so (0,0) holes
+            # and speed outliers don't inflate the bbox for DEM/satellite fetches.
+            repair_mode   = self._settings.get("gpx/repair_mode", "none")
+            max_speed_mps = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
+            max_gap_s     = float(self._settings.get("gpx/max_gap_s", 30.0))
+            max_jump_m    = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
+            osrm_profile  = self._settings.get("gpx/osrm_profile", "driving")
+            trackpoints, _ = detect_and_repair(
+                trackpoints, repair_mode,
+                max_speed_mps=max_speed_mps,
+                max_gap_s=max_gap_s,
+                max_jump_m=max_jump_m,
+                osrm_profile=osrm_profile,
+            )
+
+        if not trackpoints:
+            self.error.emit("No valid trackpoints after GPX cleaning.")
             return
+
+        bbox = BoundingBox(
+            min_lat=min(tp.latitude  for tp in trackpoints),
+            max_lat=max(tp.latitude  for tp in trackpoints),
+            min_lon=min(tp.longitude for tp in trackpoints),
+            max_lon=max(tp.longitude for tp in trackpoints),
+        )
         pipeline.trackpoints  = trackpoints
         pipeline.bounding_box = bbox
 
@@ -90,9 +127,11 @@ class ScenePrepWorker(QThread):
         # Expand bbox for DEM + imagery
         _distance_m = float(self._settings.get("render/camera_height_offset", 200))
         _tilt_deg   = float(self._settings.get("render/camera_tilt_deg", 45))
+        _max_view_m = float(self._settings.get("render/frustum_margin_km", 50)) * 1_000
         margin_m = frustum_margin(
             height_m=_distance_m * math.sin(math.radians(_tilt_deg)),
             tilt_deg=_tilt_deg,
+            max_view_m=_max_view_m,
         )
         fetch_bbox = bbox.expand(margin_m)
 
@@ -110,7 +149,8 @@ class ScenePrepWorker(QThread):
         else:
             self.status.emit("Auto-build: fetching DEM…")
             try:
-                grid = fetch_dem(fetch_bbox)
+                grid = fetch_dem(fetch_bbox,
+                                 progress_callback=lambda c, t: self.progress.emit(c, t))
             except DemFetchError as e:
                 self.error.emit(f"DEM fetch error: {e}")
                 return
@@ -142,7 +182,8 @@ class ScenePrepWorker(QThread):
                     custom_url=self._custom_url,
                     quality=img_quality,
                 )
-                texture = source.fetch(fetch_bbox)
+                texture = source.fetch(fetch_bbox,
+                                       progress_callback=lambda c, t: self.progress.emit(c, t))
             except Exception as e:
                 self.error.emit(f"Satellite fetch error: {e}")
                 return

@@ -16,7 +16,6 @@ from .camera_keyframe import CameraKeyframe
 
 _INJECT_SCRIPT        = Path(__file__).parent / "blender_scripts" / "inject_camera.py"
 _SETUP_VIEWPORT_SCRIPT = Path(__file__).parent / "blender_scripts" / "setup_viewport.py"
-_TIMEOUT_SECONDS = 120
 
 
 class OpenInBlenderError(Exception):
@@ -28,18 +27,24 @@ def inject_camera_and_open(
     blend_path: str,
     keyframes: list[CameraKeyframe],
     resolution: str = "1080p",
+    fps: int = 30,
 ) -> None:
     """Write keyframes into a sibling .blend and open it in Blender.
 
     The injection step runs headlessly (fast — no rendering).  Once the
     preview .blend is saved, Blender is launched interactively (no
     --background) so the user sees the full UI.
+
+    Keyframes are subsampled at one keyframe per second (stride=fps) and
+    Blender interpolates between them, which is far faster than inserting
+    a keyframe for every single frame.
     """
     blend = Path(blend_path)
     out_blend = blend.with_name("scene_with_camera.blend")
     kf_path   = blend.with_name("camera_keyframes.json")
 
-    # Write keyframes JSON
+    # Write keyframes JSON (include is_pause so inject_camera.py can apply
+    # CONSTANT interpolation during photo-pause segments)
     kf_data = [
         {
             "frame":      kf.frame,
@@ -49,12 +54,15 @@ def inject_camera_and_open(
             "look_at_x":  kf.look_at_x,
             "look_at_y":  kf.look_at_y,
             "look_at_z":  kf.look_at_z,
+            "is_pause":   kf.is_pause,
         }
         for kf in keyframes
     ]
     kf_path.write_text(json.dumps(kf_data))
 
-    # Run inject_camera.py headlessly to produce scene_with_camera.blend
+    # Run inject_camera.py headlessly to produce scene_with_camera.blend.
+    # No timeout: the async _InjectWorker in main_window.py already runs this
+    # in a background thread, and injection is now fast thanks to subsampling.
     cmd = [
         blender_exe,
         "--background", str(blend),
@@ -63,20 +71,15 @@ def inject_camera_and_open(
         str(kf_path),
         str(out_blend),
         resolution,
+        str(fps),
     ]
 
-    try:
-        result = subprocess.run(
-            shlex.join(cmd),
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_SECONDS,
-            shell=True,
-        )
-    except subprocess.TimeoutExpired:
-        raise OpenInBlenderError(
-            f"Camera injection timed out after {_TIMEOUT_SECONDS} seconds."
-        )
+    result = subprocess.run(
+        shlex.join(cmd),
+        capture_output=True,
+        text=True,
+        shell=True,
+    )
 
     if result.returncode != 0 or not out_blend.is_file():
         tail = (result.stderr + result.stdout)[-2000:]

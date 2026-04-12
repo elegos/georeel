@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Callable
 
 from ..bounding_box import BoundingBox
 from .texture import SatelliteTexture
@@ -16,5 +17,14 @@ class SatelliteSource(ABC):
         """Human-readable source name shown in the UI."""
 
     @abstractmethod
-    def fetch(self, bbox: BoundingBox) -> SatelliteTexture:
-        """Download imagery for *bbox* and return a stitched texture."""
+    def fetch(
+        self,
+        bbox: BoundingBox,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> SatelliteTexture:
+        """Download imagery for *bbox* and return a stitched texture.
+
+        If *progress_callback* is provided, it is called as
+        ``progress_callback(tiles_done, total_tiles)`` after each tile
+        is fetched and composited.
+        """

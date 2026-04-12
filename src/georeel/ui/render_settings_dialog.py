@@ -65,7 +65,9 @@ KEY_CODEC                 = "output/codec"                   # "h264" | "h265" |
 KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder name
 KEY_OUTPUT_CQ             = "output/cq"                      # int
 KEY_OUTPUT_PRESET         = "output/preset"                  # string
+KEY_FRUSTUM_MARGIN_KM     = "render/frustum_margin_km"       # float km — max terrain view distance
 KEY_GPX_REPAIR_MODE       = "gpx/repair_mode"                # "none" | "ground" | "street"
+KEY_GPX_OSRM_PROFILE      = "gpx/osrm_profile"               # "driving" | "cycling" | "walking"
 KEY_GPX_MAX_SPEED_KMH     = "gpx/max_speed_kmh"             # int km/h — above this is nullified
 KEY_GPX_MAX_GAP_S         = "gpx/max_gap_s"                 # float s — gaps longer than this are filled
 KEY_GPX_MAX_JUMP_KM       = "gpx/max_jump_km"               # float km — no-timestamp fallback distance
@@ -116,6 +118,7 @@ DEFAULTS = {
     KEY_PHOTO_TZ_OFFSET:      0.0,
     KEY_TANGENT_LOOKAHEAD_S:  60.0,
     KEY_TANGENT_WEIGHT:       "linear",
+    KEY_FRUSTUM_MARGIN_KM:    50.0,
     KEY_IMAGERY_PROVIDER:     "esri_world",
     KEY_IMAGERY_QUALITY:      "standard",
     KEY_IMAGERY_API_KEY:      "",
@@ -187,15 +190,6 @@ class RenderSettingsDialog(QDialog):
                    int(self._settings.value(KEY_FPS, DEFAULTS[KEY_FPS])))
         form.addRow("Frame rate:", self._fps_combo)
 
-        self._speed_spin = QDoubleSpinBox()
-        self._speed_spin.setRange(10.0, 500.0)
-        self._speed_spin.setSingleStep(10.0)
-        self._speed_spin.setSuffix(" m/s")
-        self._speed_spin.setValue(
-            float(self._settings.value(KEY_CAMERA_SPEED, DEFAULTS[KEY_CAMERA_SPEED]))
-        )
-        form.addRow("Camera speed:", self._speed_spin)
-
         layout.addWidget(group)
         layout.addStretch()
         return tab
@@ -247,6 +241,22 @@ class RenderSettingsDialog(QDialog):
             int(self._settings.value(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG]))
         )
         orient_form.addRow("Downward tilt:", self._tilt_spin)
+
+        self._frustum_spin = QDoubleSpinBox()
+        self._frustum_spin.setRange(1.0, 500.0)
+        self._frustum_spin.setSingleStep(10.0)
+        self._frustum_spin.setDecimals(0)
+        self._frustum_spin.setSuffix(" km")
+        self._frustum_spin.setValue(
+            float(self._settings.value(KEY_FRUSTUM_MARGIN_KM,
+                                       DEFAULTS[KEY_FRUSTUM_MARGIN_KM]))
+        )
+        self._frustum_spin.setToolTip(
+            "Maximum terrain fetch distance around the track.\n"
+            "Increase this if the terrain appears to end too close to the edges\n"
+            "of the frame (visible at shallow tilt / near-horizontal views)."
+        )
+        orient_form.addRow("Terrain view distance:", self._frustum_spin)
 
         self._lookahead_spin = QDoubleSpinBox()
         self._lookahead_spin.setRange(1.0, 300.0)
@@ -713,12 +723,12 @@ class RenderSettingsDialog(QDialog):
 
     def _save_and_accept(self):
         self._settings.setValue(KEY_FPS,                 self._fps_combo.currentData())
-        self._settings.setValue(KEY_CAMERA_SPEED,        self._speed_spin.value())
         self._settings.setValue(KEY_PATH_SMOOTHING,      self._path_combo.currentData())
         self._settings.setValue(KEY_HEIGHT_MODE,         self._height_combo.currentData())
         self._settings.setValue(KEY_HEIGHT_OFFSET,        self._height_spin.value())
         self._settings.setValue(KEY_ORIENTATION,          self._orient_combo.currentData())
         self._settings.setValue(KEY_TILT_DEG,             self._tilt_spin.value())
+        self._settings.setValue(KEY_FRUSTUM_MARGIN_KM,    self._frustum_spin.value())
         self._settings.setValue(KEY_TANGENT_LOOKAHEAD_S,  self._lookahead_spin.value())
         self._settings.setValue(KEY_TANGENT_WEIGHT,       self._tangent_weight_combo.currentData())
         self._settings.setValue(KEY_PHOTO_PAUSE_MODE,    self._pause_combo.currentData())

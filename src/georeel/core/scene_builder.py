@@ -15,6 +15,7 @@ from scipy.interpolate import splev, splprep
 
 from .blender_runtime import find_blender
 from .elevation_grid import ElevationGrid
+from .pil_lock import PIL_LOCK
 from .pipeline import Pipeline
 from .satellite import SatelliteTexture
 from .sun_position import sun_angles, sun_direction_vector
@@ -493,10 +494,12 @@ def _write_texture(
         left, right = max(0, left), min(w, right)
         top, bottom = max(0, top), min(h, bottom)
         if right > left and bottom > top:
-            img = img.crop((left, top, right, bottom))
+            with PIL_LOCK:
+                img = img.crop((left, top, right, bottom))
 
     tex_path = work_dir / "satellite.png"
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="PNG", optimize=False)
+    with PIL_LOCK:
+        img.convert("RGB").save(buf, format="PNG", optimize=False)
     tex_path.write_bytes(buf.getvalue())
     return tex_path

@@ -1,11 +1,13 @@
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
+from typing import Callable
 
 import requests
 from PIL import Image
 
 from ..bounding_box import BoundingBox
+from ..pil_lock import PIL_LOCK
 from .providers import PROVIDERS, ProviderConfig, QUALITY_MAX_TILES, get_provider
 from .source import SatelliteSource
 from .texture import SatelliteTexture
@@ -46,7 +48,11 @@ class XyzSource(SatelliteSource):
     def name(self) -> str:
         return self._provider.label
 
-    def fetch(self, bbox: BoundingBox) -> SatelliteTexture:
+    def fetch(
+        self,
+        bbox: BoundingBox,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> SatelliteTexture:
         zoom = _auto_zoom(bbox, self._max_tiles, self._max_zoom)
 
         x_min = _lon_to_x(bbox.min_lon, zoom)
@@ -56,6 +62,7 @@ class XyzSource(SatelliteSource):
 
         cols = x_max - x_min + 1
         rows = y_max - y_min + 1
+        total_tiles = cols * rows
 
         canvas = Image.new("RGB", (cols * _TILE_SIZE, rows * _TILE_SIZE))
 
@@ -66,9 +73,13 @@ class XyzSource(SatelliteSource):
             url = self._url_template.format(z=zoom, x=tx, y=ty)
             resp = session.get(url, timeout=_TIMEOUT)
             resp.raise_for_status()
-            tile = Image.open(BytesIO(resp.content)).convert("RGB")
+            # PIL_LOCK: PIL's C extension is not thread-safe; network fetch is
+            # outside the lock so parallel downloading is preserved.
+            with PIL_LOCK:
+                tile = Image.open(BytesIO(resp.content)).convert("RGB")
             return tx, ty, tile
 
+        completed = 0
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
             futures = {
                 pool.submit(_fetch_tile, tx, ty): (tx, ty)
@@ -80,6 +91,9 @@ class XyzSource(SatelliteSource):
                 px = (tx - x_min) * _TILE_SIZE
                 py = (ty - y_min) * _TILE_SIZE
                 canvas.paste(tile, (px, py))
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, total_tiles)
 
         # Crop to the exact bounding box
         nw_lat, nw_lon = _tile_nw(x_min,     y_min,     zoom)
