@@ -1,8 +1,9 @@
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QThreadPool, Signal
-from PySide6.QtGui import QColor, QDropEvent, QIcon, QImage, QKeyEvent, QPixmap
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QDropEvent, QIcon, QImage, QImageReader, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -29,7 +30,6 @@ from georeel.core.trackpoint import Trackpoint
 from .datetime_picker_dialog import DateTimePickerDialog
 from .drop_area import DropArea
 from .photo_preview_window import PhotoPreviewWindow
-from .thumbnail_loader import ThumbnailLoader
 
 _SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".heic"}
 _COLUMNS = ["File", "Timestamp", "GPS", "Status"]
@@ -52,10 +52,14 @@ class PhotoListArea(DropArea):
         # clipboard holds (timestamp | None, latitude | None, longitude | None)
         self._clipboard: tuple[datetime | None, float | None, float | None] | None = None
         self._preview_windows: list[PhotoPreviewWindow] = []
-        # Dedicated single-thread pool: libjpeg (used by libqjpeg.so) is not
-        # thread-safe under concurrent JPEG decodes — serialise to 1 thread.
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
+        # Thumbnail loading: decode one JPEG per event-loop tick on the main thread.
+        # Running QImageReader in any background thread races Qt's font engine
+        # (both touch shared FreeType/libjpeg state) and causes SIGSEGV.
+        self._thumbnail_queue: deque[str] = deque()
+        self._thumbnail_timer = QTimer(self)
+        self._thumbnail_timer.setSingleShot(True)
+        self._thumbnail_timer.setInterval(0)
+        self._thumbnail_timer.timeout.connect(self._process_next_thumbnail)
         # Cache original on-disk EXIF per path so _rebuild_table never re-reads files.
         self._original_exif: dict[str, PhotoMetadata] = {}
         self._match_results: dict[str, MatchResult] = {}
@@ -152,6 +156,10 @@ class PhotoListArea(DropArea):
         if self._tz_offset_hours != hours:
             self._tz_offset_hours = hours
             self._rebuild_table()
+
+    def preload_exif_cache(self, cache: dict) -> None:
+        """Seed the EXIF cache with pre-read metadata so _rebuild_table skips disk reads."""
+        self._original_exif.update(cache)
 
     def set_photos(self, photos):
         self._store.clear()
@@ -403,19 +411,30 @@ class PhotoListArea(DropArea):
         self.photos_changed.emit()
 
     def _submit_thumbnail(self, path: str):
-        loader = ThumbnailLoader(path, _THUMBNAIL_HEIGHT)
-        loader.signals.loaded.connect(self._on_thumbnail_ready)
-        self._thread_pool.start(loader)
+        self._thumbnail_queue.append(path)
+        if not self._thumbnail_timer.isActive():
+            self._thumbnail_timer.start()
 
-    def _on_thumbnail_ready(self, path: str, image: QImage):
-        if image.isNull():
+    def _process_next_thumbnail(self):
+        if not self._thumbnail_queue:
             return
-        icon = QIcon(QPixmap.fromImage(image))
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, _COL_NAME)
-            if item and item.data(Qt.ItemDataRole.UserRole) == path:
-                item.setIcon(icon)
-                break
+        path = self._thumbnail_queue.popleft()
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid() and size.height() > _THUMBNAIL_HEIGHT:
+            ratio = _THUMBNAIL_HEIGHT / size.height()
+            reader.setScaledSize(QSize(max(1, round(size.width() * ratio)), _THUMBNAIL_HEIGHT))
+        image = reader.read()
+        if not image.isNull():
+            icon = QIcon(QPixmap.fromImage(image))
+            for row in range(self._table.rowCount()):
+                item = self._table.item(row, _COL_NAME)
+                if item and item.data(Qt.ItemDataRole.UserRole) == path:
+                    item.setIcon(icon)
+                    break
+        if self._thumbnail_queue:
+            self._thumbnail_timer.start()
 
     def set_calc_kf_running(self, running: bool) -> None:
         """Disable/enable the Calculate keyframes button during a background run."""

@@ -32,6 +32,7 @@ from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.frustum import frustum_margin
+from georeel.core.exif_reader import read_photo_metadata
 from georeel.core.gpx_cleaner import REPAIR_NONE, detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.gpx_stats import compute_stats
@@ -123,20 +124,76 @@ class _SaveWorker(QObject):
             self.failed.emit(str(e))
 
 
+class _LoadResult:
+    """All pre-computed data produced by _LoadWorker so the main thread only does UI."""
+    __slots__ = ("state", "gpx_stats", "gpx_failed", "exif_cache")
+
+    def __init__(self, state, gpx_stats, gpx_failed, exif_cache):
+        self.state = state
+        self.gpx_stats = gpx_stats      # GpxStats | None
+        self.gpx_failed = gpx_failed
+        self.exif_cache = exif_cache
+
+
 class _LoadWorker(QObject):
-    """Runs load_project in a background thread."""
+    """Loads a project and pre-computes GPX + EXIF data in a background thread."""
 
-    finished = Signal(object)   # ProjectState
+    finished = Signal(object)   # _LoadResult
     failed   = Signal(str)
+    progress = Signal(str)      # status-bar message
 
-    def __init__(self, path: str):
+    def __init__(
+        self,
+        path: str,
+        repair_mode: str,
+        max_speed_mps: float,
+        max_gap_s: float,
+        max_jump_m: float,
+    ):
         super().__init__()
         self._path = path
+        self._repair_mode = repair_mode
+        self._max_speed_mps = max_speed_mps
+        self._max_gap_s = max_gap_s
+        self._max_jump_m = max_jump_m
 
     def run(self):
+        name = Path(self._path).name
         try:
+            self.progress.emit(f"Loading project: {name}…")
             state = load_project(self._path)
-            self.finished.emit(state)
+
+            gpx_stats = None
+            gpx_failed = False
+            if state.gpx_path:
+                self.progress.emit(f"Loading project: {name} — parsing GPX…")
+                try:
+                    trackpoints, _ = parse_gpx(state.gpx_path)
+                    trackpoints, _ = detect_and_repair(
+                        trackpoints,
+                        self._repair_mode,
+                        max_speed_mps=self._max_speed_mps,
+                        max_gap_s=self._max_gap_s,
+                        max_jump_m=self._max_jump_m,
+                    )
+                    gpx_stats = compute_stats(trackpoints)
+                except Exception:
+                    gpx_failed = True
+
+            exif_cache: dict = {}
+            photos = state.photos
+            n = len(photos)
+            for i, photo in enumerate(photos):
+                if i % 10 == 0:
+                    self.progress.emit(
+                        f"Loading project: {name} — reading photo metadata ({i}/{n})…"
+                    )
+                try:
+                    exif_cache[photo.path] = read_photo_metadata(photo.path)
+                except Exception:
+                    pass
+
+            self.finished.emit(_LoadResult(state, gpx_stats, gpx_failed, exif_cache))
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -191,6 +248,8 @@ class MainWindow(QMainWindow):
         self._save_thread: QThread | None = None
         self._load_thread: QThread | None = None
         self._load_worker: _LoadWorker | None = None
+        self._pending_load_path: str = ""
+        self._pending_save_path: str = ""
         self._inject_thread: QThread | None = None
         self._inject_worker: _InjectWorker | None = None
         self._track_length_m: float | None = None
@@ -1535,17 +1594,24 @@ class MainWindow(QMainWindow):
         self._save_progress_bar.show()
         self._status.showMessage("Saving project…")
 
+        self._pending_save_path = path
         worker = _SaveWorker(state, path)
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(lambda: self._on_save_complete(path, None))
-        worker.failed.connect(lambda msg: self._on_save_complete(path, msg))
+        worker.finished.connect(self._on_save_worker_finished)
+        worker.failed.connect(self._on_save_worker_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         self._save_thread = thread
         self._save_worker = worker  # keep reference alive
         thread.start()
+
+    def _on_save_worker_finished(self) -> None:
+        self._on_save_complete(self._pending_save_path, None)
+
+    def _on_save_worker_failed(self, msg: str) -> None:
+        self._on_save_complete(self._pending_save_path, msg)
 
     def _on_save_complete(self, path: str, error: str | None) -> None:
         self._save_progress_bar.hide()
@@ -1605,12 +1671,7 @@ class MainWindow(QMainWindow):
         self._load_from_path(path)
 
     def _load_from_path(self, path: str) -> None:
-        """Load *path* synchronously on the main thread (diagnostic: threading removed).
-
-        The UI freezes for the duration of the load.  This is intentional — we are
-        testing whether the SIGSEGV in QFontEngineFT::loadGlyphSet is caused by the
-        background QThread that previously ran load_project().
-        """
+        """Load *path* in a background QThread so the UI stays responsive."""
         if self._load_thread and self._load_thread.isRunning():
             return
 
@@ -1620,26 +1681,53 @@ class MainWindow(QMainWindow):
         self._fetch_progress_bar.show()
         self._status.showMessage(f"Loading project: {Path(path).name}…")
 
-        try:
-            state = load_project(path)
-            self._on_load_complete(path, state, None)
-        except Exception as e:
-            self._on_load_complete(path, None, str(e))
+        self._pending_load_path = path
+        worker = _LoadWorker(
+            path,
+            repair_mode=str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
+            max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6,
+            max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
+            max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000,
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # Use bound methods (not lambdas) so Qt sees these as slots of a QObject
+        # on the main thread and uses a queued connection automatically.
+        worker.finished.connect(self._on_load_worker_finished)
+        worker.failed.connect(self._on_load_worker_failed)
+        worker.progress.connect(self._on_load_worker_progress)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._load_thread = thread
+        self._load_worker = worker  # keep reference alive
+        thread.start()
 
-    def _on_load_complete(self, path: str, state, error: str | None) -> None:
+    def _on_load_worker_finished(self, result: object) -> None:
+        self._on_load_complete(self._pending_load_path, result, None)
+
+    def _on_load_worker_progress(self, msg: str) -> None:
+        self._status.showMessage(msg)
+
+    def _on_load_worker_failed(self, msg: str) -> None:
+        self._on_load_complete(self._pending_load_path, None, msg)
+
+    def _on_load_complete(self, path: str, result, error: str | None) -> None:
         self._fetch_progress_bar.hide()
         self.centralWidget().setEnabled(True)
         self.menuBar().setEnabled(True)
         self._load_thread = None
+        self._load_worker = None
 
         if error:
             QMessageBox.critical(self, "Load failed", error)
             self._status_show("Load failed.")
             return
-        self._apply_loaded_project(state, path)
+        self._apply_loaded_project(result, path)
 
-    def _apply_loaded_project(self, state, path: str) -> None:
-        """Apply a loaded ProjectState to the UI."""
+    def _apply_loaded_project(self, result: _LoadResult, path: str) -> None:
+        """Apply a loaded _LoadResult to the UI (main-thread UI work only)."""
+        state = result.state
         self._suppress_dirty = True
         try:
             self._clear()
@@ -1648,20 +1736,13 @@ class MainWindow(QMainWindow):
             if state.gpx_path:
                 self._gpx_path = state.gpx_path
                 self._gpx_area.set_file(state.gpx_path)
-                try:
-                    trackpoints, _ = parse_gpx(state.gpx_path)
-                    trackpoints, _ = detect_and_repair(
-                        trackpoints,
-                        str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-                        max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6,
-                        max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-                        max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000,
-                    )
-                    self._gpx_stats.update_stats(trackpoints)
-                    self._track_length_m = compute_stats(trackpoints).total_distance_m
-                except Exception:
+                if result.gpx_failed or result.gpx_stats is None:
                     self._gpx_stats.clear()
                     self._track_length_m = None
+                else:
+                    self._gpx_stats.apply_stats(result.gpx_stats)
+                    self._track_length_m = result.gpx_stats.total_distance_m
+            self._photo_area.preload_exif_cache(result.exif_cache)
             self._photo_area.set_photos(state.photos)
             if state.match_mode in self._match_buttons:
                 self._match_buttons[state.match_mode].setChecked(True)

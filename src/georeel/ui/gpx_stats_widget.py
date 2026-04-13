@@ -88,7 +88,11 @@ class GpxStatsWidget(QWidget):
     # ------------------------------------------------------------------
 
     def update_stats(self, trackpoints: list[Trackpoint]) -> None:
-        stats = compute_stats(trackpoints)
+        self._apply(compute_stats(trackpoints))
+        self.setVisible(True)
+
+    def apply_stats(self, stats: GpxStats) -> None:
+        """Apply a pre-computed GpxStats (avoids re-running compute_stats)."""
         self._apply(stats)
         self.setVisible(True)
 
