@@ -42,14 +42,17 @@ def main() -> None:
     # Compute scene bbox from Terrain mesh vertices                        #
     # (needed before pin placement so we know z_max)                      #
     # ------------------------------------------------------------------ #
-    terrain = next((o for o in bpy.data.objects if o.name == "Terrain"), None)
-    if terrain is None:
+    terrain_tiles = [o for o in bpy.data.objects
+                     if o.type == 'MESH' and o.name.startswith("Terrain")]
+    if not terrain_tiles:
         print("[georeel preview] No Terrain object found; aborting.", file=sys.stderr)
         sys.exit(1)
 
-    xs = [v.co.x for v in terrain.data.vertices]
-    ys = [v.co.y for v in terrain.data.vertices]
-    zs = [v.co.z for v in terrain.data.vertices]
+    xs, ys, zs = [], [], []
+    for tile in terrain_tiles:
+        xs.extend(v.co.x for v in tile.data.vertices)
+        ys.extend(v.co.y for v in tile.data.vertices)
+        zs.extend(v.co.z for v in tile.data.vertices)
 
     x_min, x_max = min(xs), max(xs)
     y_min, y_max = min(ys), max(ys)

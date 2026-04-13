@@ -468,14 +468,17 @@ def _report_scene_bounds(bpy) -> None:
     visible as holes in the wireframe.
     """
     # Collect terrain bounds first (the reference)
-    terrain = bpy.data.objects.get("Terrain")
-    if terrain and terrain.type == 'MESH':
-        zs = [v.co.z for v in terrain.data.vertices]
-        z_lo, z_hi = min(zs), max(zs)
-        xs = [v.co.x for v in terrain.data.vertices]
-        ys = [v.co.y for v in terrain.data.vertices]
+    terrain_tiles = [o for o in bpy.data.objects
+                     if o.type == 'MESH' and o.name.startswith("Terrain")]
+    if terrain_tiles:
+        xs, ys, zs = [], [], []
+        for t in terrain_tiles:
+            xs.extend(v.co.x for v in t.data.vertices)
+            ys.extend(v.co.y for v in t.data.vertices)
+            zs.extend(v.co.z for v in t.data.vertices)
         x_lo, x_hi = min(xs), max(xs)
         y_lo, y_hi = min(ys), max(ys)
+        z_lo, z_hi = min(zs), max(zs)
         print(f"[georeel] Terrain bounds  x=[{x_lo:.1f}, {x_hi:.1f}] "
               f"y=[{y_lo:.1f}, {y_hi:.1f}]  z=[{z_lo:.1f}, {z_hi:.1f}]",
               flush=True)
@@ -486,7 +489,7 @@ def _report_scene_bounds(bpy) -> None:
 
     print("[georeel] Per-object vertex bounds:", flush=True)
     for obj in sorted(bpy.data.objects, key=lambda o: o.name):
-        if obj.type != 'MESH' or obj.name == "Terrain":
+        if obj.type != 'MESH' or obj.name.startswith("Terrain"):
             continue
         verts = obj.data.vertices
         if not verts:

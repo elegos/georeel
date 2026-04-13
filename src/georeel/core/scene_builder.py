@@ -28,8 +28,14 @@ class SceneBuildError(Exception):
     pass
 
 
+_PREVIEW_MAX_TEXTURE_PIXELS = 8_000_000  # ~4K×2K — keeps Blender preview under ~100 MB
+
+
 def build_scene(
-    pipeline: Pipeline, blender_exe: str | None = None, settings: dict | None = None
+    pipeline: Pipeline,
+    blender_exe: str | None = None,
+    settings: dict | None = None,
+    max_texture_pixels: int | None = None,
 ) -> str:
     """Build a 3D terrain .blend from the pipeline's elevation grid and satellite texture.
 
@@ -58,7 +64,8 @@ def build_scene(
     atexit.register(shutil.rmtree, work_dir, True)
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
     manifest_path = _write_texture_tiles(
-        pipeline.satellite_texture, pipeline.elevation_grid, work_dir
+        pipeline.satellite_texture, pipeline.elevation_grid, work_dir,
+        max_texture_pixels=max_texture_pixels,
     )
     settings = settings or {}
     fps = float(settings.get("render/fps", 30))
@@ -482,7 +489,8 @@ _MAX_TILE_PIXELS = 400_000_000  # ~1.2 GB as RGB — safely below Blender's 2 GB
 
 
 def _write_texture_tiles(
-    texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path
+    texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
+    max_texture_pixels: int | None = None,
 ) -> Path:
     """Save the satellite texture as tiled PNG files and write a manifest JSON.
 
@@ -525,6 +533,21 @@ def _write_texture_tiles(
 
     W, H = img.size
     total_pixels = W * H
+
+    # Downscale for preview if requested
+    if max_texture_pixels is not None and total_pixels > max_texture_pixels:
+        scale = _math.sqrt(max_texture_pixels / total_pixels)
+        new_w = max(1, int(W * scale))
+        new_h = max(1, int(H * scale))
+        _log.info(
+            "[satellite] Preview downscale: %dx%d → %dx%d px",
+            W, H, new_w, new_h,
+        )
+        from PIL.Image import Resampling
+        with PIL_LOCK:
+            img = img.resize((new_w, new_h), resample=Resampling.BICUBIC)
+        W, H = new_w, new_h
+        total_pixels = W * H
 
     # Determine tile grid dimensions — aim for roughly square tiles
     n_tiles_needed = _math.ceil(total_pixels / _MAX_TILE_PIXELS)

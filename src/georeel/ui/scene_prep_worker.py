@@ -26,7 +26,7 @@ from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
-from georeel.core.scene_builder import SceneBuildError, build_scene
+from georeel.core.scene_builder import SceneBuildError, build_scene, _PREVIEW_MAX_TEXTURE_PIXELS
 from georeel.core.trackpoint import Trackpoint
 
 
@@ -194,7 +194,8 @@ class ScenePrepWorker(QThread):
         self.status.emit("Auto-build: building 3D scene (Blender)…")
         try:
             blend_path = build_scene(pipeline, blender_exe=self._blender_exe,
-                                     settings=self._settings)
+                                     settings=self._settings,
+                                     max_texture_pixels=_PREVIEW_MAX_TEXTURE_PIXELS)
         except SceneBuildError as e:
             self.error.emit(f"Scene build error: {e}")
             return
