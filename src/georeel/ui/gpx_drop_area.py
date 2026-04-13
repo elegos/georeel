@@ -17,14 +17,14 @@ class GpxDropArea(DropArea):
         layout.setContentsMargins(8, 8, 8, 8)
 
         self._label = QLabel("Drop GPX file here or click Browse")
-        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet("color: palette(placeholder-text);")
 
         self._browse_btn = QPushButton("Browse…")
         self._browse_btn.clicked.connect(self._browse)
 
         layout.addWidget(self._label)
-        layout.addWidget(self._browse_btn, alignment=Qt.AlignCenter)
+        layout.addWidget(self._browse_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.setStyleSheet(
             "GpxDropArea { border: 2px dashed palette(mid); border-radius: 6px; }"

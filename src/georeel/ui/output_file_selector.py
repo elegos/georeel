@@ -35,7 +35,7 @@ class OutputFileSelector(QWidget):
 
     def _browse(self):
         settings = QSettings("georeel", "georeel")
-        last_dir = settings.value(_SETTINGS_KEY, "")
+        last_dir = str(settings.value(_SETTINGS_KEY, ""))
 
         current = self._path_edit.text().strip()
         if current:

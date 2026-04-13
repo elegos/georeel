@@ -61,10 +61,10 @@ class BlenderDownloadDialog(QDialog):
         self._bar.setRange(0, 0)   # indeterminate until we have Content-Length
         layout.addWidget(self._bar)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self._cancel)
         layout.addWidget(buttons)
-        self._cancel_btn = buttons.button(QDialogButtonBox.Cancel)
+        self._cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
 
         # Worker + thread
         self._thread = QThread(self)

@@ -125,7 +125,7 @@ def _process_frame_task(task: dict) -> int | None:
     out_w, out_h = task["out_w"], task["out_h"]
     terrain = Image.open(str(src_path)).convert("RGB")
     if terrain.size != (out_w, out_h):
-        terrain = terrain.resize((out_w, out_h), Image.LANCZOS)
+        terrain = terrain.resize((out_w, out_h), Image.Resampling.LANCZOS)
     Image.blend(terrain, photo_img, task["alpha"]).save(str(out_path))
     return None
 
@@ -440,12 +440,12 @@ def _fit_photo(photo: Image.Image, out_w: int, out_h: int, fill: str) -> Image.I
     photo = ImageOps.exif_transpose(photo).convert("RGB")
 
     if fill == "blurred":
-        bg = ImageOps.fit(photo.copy(), (out_w, out_h), method=Image.LANCZOS)
+        bg = ImageOps.fit(photo.copy(), (out_w, out_h), method=Image.Resampling.LANCZOS)
         bg = bg.filter(ImageFilter.GaussianBlur(radius=out_h // 20))
     else:
         bg = Image.new("RGB", (out_w, out_h), (0, 0, 0))
 
-    scaled = ImageOps.contain(photo, (out_w, out_h), method=Image.LANCZOS)
+    scaled = ImageOps.contain(photo, (out_w, out_h), method=Image.Resampling.LANCZOS)
     x = (out_w - scaled.width)  // 2
     y = (out_h - scaled.height) // 2
     result = bg.copy()

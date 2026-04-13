@@ -55,10 +55,10 @@ def _match_by_timestamp(
     trackpoints: list[Trackpoint],
     tz: timezone,
 ) -> MatchResult:
-    if not photo.has_timestamp:
+    if not photo.has_timestamp or photo.timestamp is None:
         return MatchResult(photo_path=photo.path, error="No timestamp in EXIF")
 
-    timed = [(i, tp) for i, tp in enumerate(trackpoints) if tp.timestamp]
+    timed = [(i, tp) for i, tp in enumerate(trackpoints) if tp.timestamp is not None]
     if not timed:
         return MatchResult(photo_path=photo.path, error="No trackpoints have timestamps")
 
@@ -66,9 +66,10 @@ def _match_by_timestamp(
     # subtraction against the UTC-aware GPX timestamps is unambiguous.
     photo_utc = photo.timestamp.replace(tzinfo=tz)
 
-    timed_sorted = sorted(timed, key=lambda x: x[1].timestamp)
+    timed_sorted = sorted(timed, key=lambda x: x[1].timestamp)  # type: ignore[arg-type]
     first_time = timed_sorted[0][1].timestamp
     last_time  = timed_sorted[-1][1].timestamp
+    assert first_time is not None and last_time is not None
     sort_key   = (photo_utc - first_time).total_seconds()
 
     if photo_utc < first_time:
@@ -88,7 +89,7 @@ def _match_by_timestamp(
 
     best_i, _ = min(
         timed,
-        key=lambda x: abs((x[1].timestamp - photo_utc).total_seconds()),
+        key=lambda x: abs((x[1].timestamp - photo_utc).total_seconds()),  # type: ignore[operator]
     )
     return MatchResult(photo_path=photo.path, trackpoint_index=best_i, sort_key=sort_key)
 
@@ -100,10 +101,12 @@ def _match_by_gps(
     if not photo.has_gps:
         return MatchResult(photo_path=photo.path, error="No GPS coordinates in EXIF")
 
+    assert photo.latitude is not None and photo.longitude is not None
     best_i = min(
         range(len(trackpoints)),
         key=lambda i: _haversine(
-            photo.latitude, photo.longitude,
+            photo.latitude,  # type: ignore[arg-type]
+            photo.longitude,  # type: ignore[arg-type]
             trackpoints[i].latitude, trackpoints[i].longitude,
         ),
     )
@@ -136,14 +139,17 @@ def _match_by_both(
 
     warning = None
     if gps_result.trackpoint_index != ts_result.trackpoint_index:
-        gps_tp = trackpoints[gps_result.trackpoint_index]
-        ts_tp = trackpoints[ts_result.trackpoint_index]
-        dist = _haversine(
-            gps_tp.latitude, gps_tp.longitude,
-            ts_tp.latitude, ts_tp.longitude,
-        )
-        if dist > _DISAGREEMENT_THRESHOLD_M:
-            warning = f"GPS and timestamp matches disagree by {dist:.0f} m"
+        gps_idx = gps_result.trackpoint_index
+        ts_idx = ts_result.trackpoint_index
+        if gps_idx is not None and ts_idx is not None:
+            gps_tp = trackpoints[gps_idx]
+            ts_tp = trackpoints[ts_idx]
+            dist = _haversine(
+                gps_tp.latitude, gps_tp.longitude,
+                ts_tp.latitude, ts_tp.longitude,
+            )
+            if dist > _DISAGREEMENT_THRESHOLD_M:
+                warning = f"GPS and timestamp matches disagree by {dist:.0f} m"
 
     return MatchResult(
         photo_path=photo.path,

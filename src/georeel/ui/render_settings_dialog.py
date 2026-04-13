@@ -158,7 +158,7 @@ class RenderSettingsDialog(QDialog):
         root.setContentsMargins(16, 16, 16, 16)
 
         tabs = QTabWidget()
-        tabs.setTabPosition(QTabWidget.West)
+        tabs.setTabPosition(QTabWidget.TabPosition.West)
         tabs.addTab(self._build_playback_tab(),  "Playback")
         tabs.addTab(self._build_camera_tab(),    "Camera")
         tabs.addTab(self._build_rendering_tab(), "Rendering")
@@ -168,7 +168,7 @@ class RenderSettingsDialog(QDialog):
         tabs.addTab(self._build_output_tab(),    "Output")
         root.addWidget(tabs)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._save_and_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -187,7 +187,7 @@ class RenderSettingsDialog(QDialog):
         for fps in (24, 30, 60):
             self._fps_combo.addItem(f"{fps} fps", fps)
         _set_combo(self._fps_combo,
-                   int(self._settings.value(KEY_FPS, DEFAULTS[KEY_FPS])))
+                   int(str(self._settings.value(KEY_FPS, DEFAULTS[KEY_FPS]))))
         form.addRow("Frame rate:", self._fps_combo)
 
         layout.addWidget(group)
@@ -204,7 +204,7 @@ class RenderSettingsDialog(QDialog):
         self._path_combo.addItem("B-spline through all trackpoints", "spline")
         self._path_combo.addItem("Douglas-Peucker simplification + B-spline", "dp_spline")
         _set_combo(self._path_combo,
-                   self._settings.value(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING]))
+                   str(self._settings.value(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING])))
         path_form.addRow("Method:", self._path_combo)
 
         # Height
@@ -221,7 +221,7 @@ class RenderSettingsDialog(QDialog):
         self._height_spin.setSingleStep(10)
         self._height_spin.setSuffix(" m")
         self._height_spin.setValue(
-            int(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET]))
+            int(str(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET])))
         )
         height_form.addRow("Distance to track:", self._height_spin)
 
@@ -238,7 +238,7 @@ class RenderSettingsDialog(QDialog):
         self._tilt_spin.setRange(0, 89)
         self._tilt_spin.setSuffix("°")
         self._tilt_spin.setValue(
-            int(self._settings.value(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG]))
+            int(str(self._settings.value(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG])))
         )
         orient_form.addRow("Downward tilt:", self._tilt_spin)
 
@@ -248,8 +248,8 @@ class RenderSettingsDialog(QDialog):
         self._frustum_spin.setDecimals(0)
         self._frustum_spin.setSuffix(" km")
         self._frustum_spin.setValue(
-            float(self._settings.value(KEY_FRUSTUM_MARGIN_KM,
-                                       DEFAULTS[KEY_FRUSTUM_MARGIN_KM]))
+            float(str(self._settings.value(KEY_FRUSTUM_MARGIN_KM,
+                                       DEFAULTS[KEY_FRUSTUM_MARGIN_KM])))
         )
         self._frustum_spin.setToolTip(
             "Maximum terrain fetch distance around the track.\n"
@@ -264,8 +264,8 @@ class RenderSettingsDialog(QDialog):
         self._lookahead_spin.setDecimals(0)
         self._lookahead_spin.setSuffix(" s")
         self._lookahead_spin.setValue(
-            float(self._settings.value(KEY_TANGENT_LOOKAHEAD_S,
-                                       DEFAULTS[KEY_TANGENT_LOOKAHEAD_S]))
+            float(str(self._settings.value(KEY_TANGENT_LOOKAHEAD_S,
+                                       DEFAULTS[KEY_TANGENT_LOOKAHEAD_S])))
         )
         orient_form.addRow("Look-ahead:", self._lookahead_spin)
 
@@ -291,8 +291,8 @@ class RenderSettingsDialog(QDialog):
         self._pause_spin.setSingleStep(0.5)
         self._pause_spin.setSuffix(" s")
         self._pause_spin.setValue(
-            float(self._settings.value(KEY_PHOTO_PAUSE_DURATION,
-                                       DEFAULTS[KEY_PHOTO_PAUSE_DURATION]))
+            float(str(self._settings.value(KEY_PHOTO_PAUSE_DURATION,
+                                       DEFAULTS[KEY_PHOTO_PAUSE_DURATION])))
         )
         pause_form.addRow("Duration per photo:", self._pause_spin)
 
@@ -320,12 +320,12 @@ class RenderSettingsDialog(QDialog):
         self._aspect_combo.addItem("Landscape (16:9)", "landscape")
         self._aspect_combo.addItem("Portrait (9:16)",  "portrait")
         self._aspect_combo.addItem("Square (1:1)",     "square")
-        saved_aspect = self._settings.value(KEY_ASPECT_RATIO, DEFAULTS[KEY_ASPECT_RATIO])
+        saved_aspect = str(self._settings.value(KEY_ASPECT_RATIO, DEFAULTS[KEY_ASPECT_RATIO]))
         _set_combo(self._aspect_combo, saved_aspect)
         form.addRow("Aspect ratio:", self._aspect_combo)
 
         self._resolution_combo = QComboBox()
-        saved_resolution = self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION])
+        saved_resolution = str(self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION]))
         self._populate_resolution_combo(saved_aspect, saved_resolution)
         form.addRow("Resolution:", self._resolution_combo)
 
@@ -385,8 +385,8 @@ class RenderSettingsDialog(QDialog):
         self._fade_dur_spin.setDecimals(1)
         self._fade_dur_spin.setSuffix(" s")
         self._fade_dur_spin.setValue(
-            float(self._settings.value(KEY_PHOTO_FADE_DURATION,
-                                       DEFAULTS[KEY_PHOTO_FADE_DURATION]))
+            float(str(self._settings.value(KEY_PHOTO_FADE_DURATION,
+                                       DEFAULTS[KEY_PHOTO_FADE_DURATION])))
         )
         form.addRow("Fade duration:", self._fade_dur_spin)
 
@@ -418,8 +418,8 @@ class RenderSettingsDialog(QDialog):
         self._api_key_label = QLabel("API key:")
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setPlaceholderText("Paste your API key here…")
-        self._api_key_edit.setEchoMode(QLineEdit.Password)
-        saved_key = self._settings.value(KEY_IMAGERY_API_KEY, "")
+        self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        saved_key = str(self._settings.value(KEY_IMAGERY_API_KEY, ""))
         self._api_key_edit.setText(saved_key)
         form.addRow(self._api_key_label, self._api_key_edit)
 
@@ -427,7 +427,7 @@ class RenderSettingsDialog(QDialog):
         self._custom_url_edit = QLineEdit()
         self._custom_url_edit.setPlaceholderText("https://…/{z}/{x}/{y}.png")
         self._custom_url_edit.setText(
-            self._settings.value(KEY_IMAGERY_CUSTOM_URL, "")
+            str(self._settings.value(KEY_IMAGERY_CUSTOM_URL, ""))
         )
         form.addRow(self._custom_url_label, self._custom_url_edit)
 
@@ -446,8 +446,8 @@ class RenderSettingsDialog(QDialog):
         marker_group = QGroupBox("Track marker")
         marker_form = QFormLayout(marker_group)
 
-        self._marker_color_name   = self._settings.value(KEY_MARKER_COLOR,        DEFAULTS[KEY_MARKER_COLOR])
-        self._marker_custom_color = self._settings.value(KEY_MARKER_CUSTOM_COLOR, DEFAULTS[KEY_MARKER_CUSTOM_COLOR])
+        self._marker_color_name = str(self._settings.value(KEY_MARKER_COLOR,        DEFAULTS[KEY_MARKER_COLOR]))
+        self._marker_custom_color = str(self._settings.value(KEY_MARKER_CUSTOM_COLOR, DEFAULTS[KEY_MARKER_CUSTOM_COLOR]))
 
         marker_swatch_row = QWidget()
         marker_swatch_layout = QHBoxLayout(marker_swatch_row)
@@ -472,8 +472,8 @@ class RenderSettingsDialog(QDialog):
         group = QGroupBox("Photo waypoint pins")
         form = QFormLayout(group)
 
-        saved_name   = self._settings.value(KEY_PIN_COLOR,        DEFAULTS[KEY_PIN_COLOR])
-        saved_custom = self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
+        saved_name = str(self._settings.value(KEY_PIN_COLOR,        DEFAULTS[KEY_PIN_COLOR]))
+        saved_custom = str(self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR]))
 
         self._pin_color_name   = saved_name
         self._pin_custom_color = saved_custom
@@ -524,7 +524,7 @@ class RenderSettingsDialog(QDialog):
             current_custom_hex=self._marker_custom_color,
             parent=self,
         )
-        if dlg.exec() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             self._marker_color_name   = dlg.selected_name()
             self._marker_custom_color = dlg.custom_hex()
             self._refresh_marker_swatch()
@@ -546,7 +546,7 @@ class RenderSettingsDialog(QDialog):
             current_custom_hex=self._pin_custom_color,
             parent=self,
         )
-        if dlg.exec() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             self._pin_color_name   = dlg.selected_name()
             self._pin_custom_color = dlg.custom_hex()
             self._refresh_pin_swatch()
@@ -631,9 +631,9 @@ class RenderSettingsDialog(QDialog):
         # Populate encoder combo for the current codec (blocks signals during init)
         self._refreshing = False
         self._refresh_encoders(
-            saved_encoder=self._settings.value(KEY_ENCODER, DEFAULTS[KEY_ENCODER]),
-            saved_cq=int(self._settings.value(KEY_OUTPUT_CQ, DEFAULTS[KEY_OUTPUT_CQ])),
-            saved_preset=self._settings.value(KEY_OUTPUT_PRESET, DEFAULTS[KEY_OUTPUT_PRESET]),
+            saved_encoder = str(self._settings.value(KEY_ENCODER, DEFAULTS[KEY_ENCODER])),
+            saved_cq=int(str(self._settings.value(KEY_OUTPUT_CQ, DEFAULTS[KEY_OUTPUT_CQ]))),
+            saved_preset = str(self._settings.value(KEY_OUTPUT_PRESET, DEFAULTS[KEY_OUTPUT_PRESET])),
         )
 
         # Connect signals after init to avoid spurious resets
@@ -769,7 +769,7 @@ def _make_tab() -> tuple[QWidget, QVBoxLayout]:
     return tab, layout
 
 
-def _set_combo(combo: QComboBox, value: str) -> None:
+def _set_combo(combo: QComboBox, value: object) -> None:  # type: ignore[misc]
     idx = combo.findData(value)
     if idx >= 0:
         combo.setCurrentIndex(idx)

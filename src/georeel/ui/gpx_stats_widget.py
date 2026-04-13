@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHeaderView,
     QTableWidget,
     QTableWidgetItem,
@@ -57,22 +58,22 @@ class GpxStatsWidget(QWidget):
         self._table = QTableWidget(len(_ROWS), 2)
         self._table.setHorizontalHeaderLabels(["Stat", "Value"])
         self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setSelectionMode(QTableWidget.NoSelection)
-        self._table.setFocusPolicy(Qt.NoFocus)
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.setShowGrid(False)
         self._table.setAlternatingRowColors(True)
 
         # Populate stat-name column (never changes)
         for i, name in enumerate(_ROWS):
             item = QTableWidgetItem(name)
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            item.setFlags(Qt.ItemIsEnabled)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self._table.setItem(i, 0, item)
             val = QTableWidgetItem("—")
-            val.setFlags(Qt.ItemIsEnabled)
+            val.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self._table.setItem(i, 1, val)
 
         # Compact row height; cap the widget so it doesn't push other widgets away
@@ -94,12 +95,16 @@ class GpxStatsWidget(QWidget):
     def clear(self) -> None:
         self.setVisible(False)
         for i in range(len(_ROWS)):
-            self._table.item(i, 1).setText("—")
+            item = self._table.item(i, 1)
+            if item is not None:
+                item.setText("—")
 
     # ------------------------------------------------------------------
 
     def _set(self, row: int, text: str) -> None:
-        self._table.item(row, 1).setText(text)
+        item = self._table.item(row, 1)
+        if item is not None:
+            item.setText(text)
 
     def _apply(self, s: GpxStats) -> None:
         fmt_ts = lambda ts: ts.strftime("%Y-%m-%d %H:%M:%S UTC") if ts else "—"

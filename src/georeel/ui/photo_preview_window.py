@@ -32,7 +32,7 @@ class PhotoPreviewWindow(QMainWindow):
         layout.setSpacing(0)
 
         self._label = QLabel()
-        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet("background-color: palette(window);")
         layout.addWidget(self._label, stretch=1)
 
@@ -51,19 +51,19 @@ class PhotoPreviewWindow(QMainWindow):
         row.setContentsMargins(8, 6, 8, 6)
 
         self._prev_btn = QPushButton("← Previous")
-        self._prev_btn.setFocusPolicy(Qt.NoFocus)
+        self._prev_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._prev_btn.clicked.connect(self._go_prev)
 
         self._next_btn = QPushButton("Next →")
-        self._next_btn.setFocusPolicy(Qt.NoFocus)
+        self._next_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._next_btn.clicked.connect(self._go_next)
 
         self._del_btn = QPushButton("Delete")
-        self._del_btn.setFocusPolicy(Qt.NoFocus)
+        self._del_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._del_btn.clicked.connect(self._delete_current)
 
         self._exit_btn = QPushButton("Exit")
-        self._exit_btn.setFocusPolicy(Qt.NoFocus)
+        self._exit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._exit_btn.clicked.connect(self.close)
 
         row.addWidget(self._prev_btn)
@@ -74,10 +74,10 @@ class PhotoPreviewWindow(QMainWindow):
         return bar
 
     def _register_shortcuts(self):
-        QShortcut(QKeySequence(Qt.Key_Left),   self, self._go_prev)
-        QShortcut(QKeySequence(Qt.Key_Right),  self, self._go_next)
-        QShortcut(QKeySequence(Qt.Key_Delete), self, self._delete_current)
-        QShortcut(QKeySequence(Qt.Key_Escape), self, self.close)
+        QShortcut(QKeySequence(Qt.Key.Key_Left),   self, self._go_prev)
+        QShortcut(QKeySequence(Qt.Key.Key_Right),  self, self._go_next)
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self, self._delete_current)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.close)
 
     # ------------------------------------------------------------------
     # Navigation
@@ -128,7 +128,7 @@ class PhotoPreviewWindow(QMainWindow):
             self._label.setText("Cannot load image.")
             return
         scaled = self._pixmap.scaled(
-            self._label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            self._label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         )
         self._label.setPixmap(scaled)
 

@@ -50,8 +50,8 @@ def _fill_voids(grid: np.ndarray) -> np.ndarray:
 
     # distance_transform_edt returns, for each void cell, the index of the
     # nearest valid cell — cheapest correct nearest-neighbour fill.
-    _, nearest = distance_transform_edt(~valid, return_distances=True,
-                                        return_indices=True)
+    nearest = np.asarray(distance_transform_edt(~valid, return_distances=False,
+                                                return_indices=True))
     filled = grid.copy()
     filled[~valid] = grid[tuple(nearest[:, ~valid])]
     return filled

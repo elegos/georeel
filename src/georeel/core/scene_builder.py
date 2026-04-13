@@ -210,7 +210,8 @@ def _write_track(
 
     # Compute total arc length on a dense evaluation
     t_fine = np.linspace(0, 1, max(10_000, len(pts) * 100))
-    xs_fine, ys_fine = splev(t_fine, tck)
+    _ev_fine = splev(t_fine, tck)
+    xs_fine, ys_fine = np.asarray(_ev_fine[0], dtype=float), np.asarray(_ev_fine[1], dtype=float)
     dx = np.diff(xs_fine)
     dy = np.diff(ys_fine)
     cumlen = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
@@ -221,9 +222,11 @@ def _write_track(
     sample_dists = np.linspace(0, total_length, n_samples)
     sample_t = np.interp(sample_dists, cumlen, t_fine)
 
-    xs, ys = splev(sample_t, tck)
+    _ev = splev(sample_t, tck)
+    xs, ys = np.asarray(_ev[0], dtype=float), np.asarray(_ev[1], dtype=float)
     # Derivatives for slope computation
-    dxs, dys = splev(sample_t, tck, der=1)
+    _dev = splev(sample_t, tck, der=1)
+    dxs, dys = np.asarray(_dev[0], dtype=float), np.asarray(_dev[1], dtype=float)
 
     points: list[dict] = []
     for i in range(n_samples):

@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor, QDropEvent, QIcon, QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from georeel.core.camera_keyframe import CameraKeyframe
 from georeel.core.exif_reader import read_photo_metadata
+from georeel.core.photo_metadata import PhotoMetadata
 from georeel.core.match_result import MatchResult
 from georeel.core.photo_store import PhotoStore
 from georeel.core.trackpoint import Trackpoint
@@ -55,7 +57,7 @@ class PhotoListArea(DropArea):
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(1)
         # Cache original on-disk EXIF per path so _rebuild_table never re-reads files.
-        self._original_exif: dict[str, object] = {}
+        self._original_exif: dict[str, PhotoMetadata] = {}
         self._match_results: dict[str, MatchResult] = {}
         self._trackpoints: list[Trackpoint] = []
         self._pause_frames: dict[str, list[int]] = {}  # photo_path → [first_frame, last_frame]
@@ -66,12 +68,12 @@ class PhotoListArea(DropArea):
 
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
-        self._table.setSelectionBehavior(QTableWidget.SelectRows)
-        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_TS, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_GPS, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeToContents)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(_COL_TS, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(_COL_GPS, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
         self._table.verticalHeader().setVisible(False)
         # Icon size set but thumbnails currently disabled (see _rebuild_table).
         self._table.setIconSize(QSize(_THUMBNAIL_HEIGHT * 2, _THUMBNAIL_HEIGHT))
@@ -79,7 +81,7 @@ class PhotoListArea(DropArea):
         self._table.keyPressEvent = self._table_key_press
 
         drop_hint = QLabel("or drag & drop images here")
-        drop_hint.setAlignment(Qt.AlignCenter)
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_hint.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
 
         btn_row = QHBoxLayout()
@@ -116,14 +118,14 @@ class PhotoListArea(DropArea):
     def update_match_statuses(self, results: list[MatchResult]) -> None:
         self._match_results = {r.photo_path: r for r in results}
         for row in range(self._table.rowCount()):
-            path = self._table.item(row, _COL_NAME).data(Qt.UserRole)
+            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
             result = self._match_results.get(path)
             if result is None:
                 continue
             item = QTableWidgetItem(result.status_text)
-            item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             if result.error:
-                item.setForeground(Qt.red)
+                item.setForeground(Qt.GlobalColor.red)
             elif result.warning:
                 item.setForeground(_COLOR_WARNING)
             self._table.setItem(row, _COL_STATUS, item)
@@ -211,7 +213,7 @@ class PhotoListArea(DropArea):
         if not selected_rows:
             return
         for row in selected_rows:
-            path = self._table.item(row, 0).data(Qt.UserRole)
+            path = (self._table.item(row, 0) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
             self._store.remove(path)
             self._original_exif.pop(path, None)
         self._rebuild_table()
@@ -220,7 +222,7 @@ class PhotoListArea(DropArea):
     def _update_keyframe_statuses(self) -> None:
         """Overwrite the Status column with keyframe-range info for each photo."""
         for row in range(self._table.rowCount()):
-            path = self._table.item(row, _COL_NAME).data(Qt.UserRole)
+            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
             frames = self._pause_frames.get(path)
             result = self._match_results.get(path)
 
@@ -237,17 +239,17 @@ class PhotoListArea(DropArea):
                 else:
                     text = f"frames {first}–{last}{pos_label}"
                 item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, _COL_STATUS, item)
 
     def _table_key_press(self, event: QKeyEvent):
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._remove_selected()
-        elif event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_A:
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_A:
             self._table.selectAll()
-        elif event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_C:
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
             self._copy_metadata()
-        elif event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_V:
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
             self._paste_metadata()
         else:
             QTableWidget.keyPressEvent(self._table, event)
@@ -256,7 +258,7 @@ class PhotoListArea(DropArea):
         selected_rows = sorted({idx.row() for idx in self._table.selectedIndexes()})
         if not selected_rows:
             return
-        path = self._table.item(selected_rows[0], _COL_NAME).data(Qt.UserRole)
+        path = (self._table.item(selected_rows[0], _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
         metadata = next((p for p in self._store.all() if p.path == path), None)
         if metadata:
             self._clipboard = (metadata.timestamp, metadata.latitude, metadata.longitude)
@@ -269,7 +271,7 @@ class PhotoListArea(DropArea):
         if not selected_rows:
             return
         for row in selected_rows:
-            path = self._table.item(row, _COL_NAME).data(Qt.UserRole)
+            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
             if ts is not None:
                 self._store.update_timestamp(path, ts)
             if lat is not None and lon is not None:
@@ -278,7 +280,7 @@ class PhotoListArea(DropArea):
         self.photos_changed.emit()
 
     def _on_cell_double_clicked(self, row: int, col: int):
-        path = self._table.item(row, _COL_NAME).data(Qt.UserRole)
+        path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
         self._show_exif_dialog(path)
 
     def _show_exif_dialog(self, path: str):
@@ -294,7 +296,7 @@ class PhotoListArea(DropArea):
 
         group = QGroupBox("EXIF data")
         form = QFormLayout(group)
-        form.setLabelAlignment(Qt.AlignRight)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         _COLOR_OVERRIDE = "#E07800"
 
@@ -349,9 +351,9 @@ class PhotoListArea(DropArea):
 
         # Buttons
         btn_box = QDialogButtonBox()
-        edit_ts_btn  = btn_box.addButton("Edit timestamp…", QDialogButtonBox.ActionRole)
-        view_btn     = btn_box.addButton("View photo",      QDialogButtonBox.ActionRole)
-        close_btn    = btn_box.addButton(QDialogButtonBox.Close)
+        edit_ts_btn  = btn_box.addButton("Edit timestamp…", QDialogButtonBox.ButtonRole.ActionRole)
+        view_btn     = btn_box.addButton("View photo",      QDialogButtonBox.ButtonRole.ActionRole)
+        close_btn    = btn_box.addButton(QDialogButtonBox.StandardButton.Close)
 
         def _edit_ts():
             dlg.accept()
@@ -373,7 +375,7 @@ class PhotoListArea(DropArea):
         if metadata is None:
             return
         dlg = DateTimePickerDialog(Path(path).name, metadata.timestamp, parent=self)
-        if dlg.exec() != DateTimePickerDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._store.update_timestamp(path, dlg.selected_datetime())
         self._rebuild_table()
@@ -381,13 +383,13 @@ class PhotoListArea(DropArea):
 
     def _open_preview(self, path: str):
         paths = [
-            self._table.item(r, _COL_NAME).data(Qt.UserRole)
+            (self._table.item(r, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
             for r in range(self._table.rowCount())
         ]
         index = paths.index(path) if path in paths else 0
         window = PhotoPreviewWindow(paths, index, parent=None)
         self._preview_windows.append(window)
-        window.setAttribute(Qt.WA_DeleteOnClose)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(
             lambda: self._preview_windows.remove(window)
             if window in self._preview_windows else None
@@ -411,7 +413,7 @@ class PhotoListArea(DropArea):
         icon = QIcon(QPixmap.fromImage(image))
         for row in range(self._table.rowCount()):
             item = self._table.item(row, _COL_NAME)
-            if item and item.data(Qt.UserRole) == path:
+            if item and item.data(Qt.ItemDataRole.UserRole) == path:
                 item.setIcon(icon)
                 break
 
@@ -435,7 +437,7 @@ class PhotoListArea(DropArea):
 
             name_item = QTableWidgetItem(Path(metadata.path).name)
             name_item.setToolTip(metadata.path)
-            name_item.setData(Qt.UserRole, metadata.path)
+            name_item.setData(Qt.ItemDataRole.UserRole, metadata.path)
             self._table.setRowHeight(row, _THUMBNAIL_HEIGHT + 4)
             self._submit_thumbnail(metadata.path)
 
@@ -463,11 +465,11 @@ class PhotoListArea(DropArea):
                 display = "—"
                 tooltip = ""
             ts_item = QTableWidgetItem(display)
-            ts_item.setTextAlignment(Qt.AlignCenter)
+            ts_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if tooltip:
                 ts_item.setToolTip(tooltip)
             if not ts:
-                ts_item.setForeground(Qt.red)
+                ts_item.setForeground(Qt.GlobalColor.red)
             elif ts_overridden:
                 ts_item.setForeground(_COLOR_WARNING)
 
@@ -480,14 +482,14 @@ class PhotoListArea(DropArea):
             else:
                 gps_text = "—"
             gps_item = QTableWidgetItem(gps_text)
-            gps_item.setTextAlignment(Qt.AlignCenter)
+            gps_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if not metadata.has_gps:
-                gps_item.setForeground(Qt.red)
+                gps_item.setForeground(Qt.GlobalColor.red)
             elif gps_overridden:
                 gps_item.setForeground(_COLOR_WARNING)
 
             status_item = QTableWidgetItem("—")
-            status_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
             self._table.setItem(row, _COL_NAME, name_item)
             self._table.setItem(row, _COL_TS, ts_item)

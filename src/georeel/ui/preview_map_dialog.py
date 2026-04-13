@@ -45,11 +45,11 @@ class PreviewMapDialog(QDialog):
         # Scroll area + image label                                           #
         # ------------------------------------------------------------------ #
         self._img_label = QLabel()
-        self._img_label.setAlignment(Qt.AlignCenter)
-        self._img_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._img_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self._scroll = QScrollArea()
-        self._scroll.setAlignment(Qt.AlignCenter)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll.setWidget(self._img_label)
         self._scroll.setWidgetResizable(False)
 
@@ -77,7 +77,7 @@ class PreviewMapDialog(QDialog):
         toolbar.addStretch()
         toolbar.addWidget(self._save_btn)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         toolbar.addWidget(buttons)
 
@@ -93,7 +93,7 @@ class PreviewMapDialog(QDialog):
         # Install event filter on the scroll area's viewport for mouse/wheel
         vp = self._scroll.viewport()
         vp.installEventFilter(self)
-        vp.setCursor(Qt.OpenHandCursor)
+        vp.setCursor(Qt.CursorShape.OpenHandCursor)
 
     # ------------------------------------------------------------------
     # Qt overrides
@@ -112,22 +112,22 @@ class PreviewMapDialog(QDialog):
         if obj is self._scroll.viewport():
             if isinstance(event, QWheelEvent):
                 mods = event.modifiers()
-                if mods & Qt.ControlModifier:
+                if mods & Qt.KeyboardModifier.ControlModifier:
                     delta = event.angleDelta().y()
                     if delta > 0:
                         self._zoom_by(self._ZOOM_STEP, event.position().toPoint())
                     elif delta < 0:
                         self._zoom_by(1.0 / self._ZOOM_STEP, event.position().toPoint())
                     return True
-                if mods & Qt.ShiftModifier:
+                if mods & Qt.KeyboardModifier.ShiftModifier:
                     delta = event.angleDelta().y()
                     bar = self._scroll.horizontalScrollBar()
                     bar.setValue(bar.value() - delta)
                     return True
             elif isinstance(event, QMouseEvent):
-                if event.type() == event.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+                if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                     self._drag_origin = event.position().toPoint()
-                    self._scroll.viewport().setCursor(Qt.ClosedHandCursor)
+                    self._scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
                     return True
                 elif event.type() == event.Type.MouseMove and self._drag_origin is not None:
                     delta = event.position().toPoint() - self._drag_origin
@@ -137,9 +137,9 @@ class PreviewMapDialog(QDialog):
                     self._scroll.verticalScrollBar().setValue(
                         self._scroll.verticalScrollBar().value() - delta.y())
                     return True
-                elif event.type() == event.Type.MouseButtonRelease and event.button() == Qt.LeftButton:
+                elif event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                     self._drag_origin = None
-                    self._scroll.viewport().setCursor(Qt.OpenHandCursor)
+                    self._scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
                     return True
         return super().eventFilter(obj, event)
 
@@ -163,17 +163,19 @@ class PreviewMapDialog(QDialog):
         if new_zoom == self._zoom:
             return
 
+        bar_h = self._scroll.horizontalScrollBar()
+        bar_v = self._scroll.verticalScrollBar()
+        old_x: float | None = None
+        old_y: float | None = None
         if anchor is not None:
             # Scroll position correction so the point under the cursor stays fixed
-            bar_h = self._scroll.horizontalScrollBar()
-            bar_v = self._scroll.verticalScrollBar()
             old_x = (bar_h.value() + anchor.x()) / self._zoom
             old_y = (bar_v.value() + anchor.y()) / self._zoom
 
         self._zoom = new_zoom
         self._render_at_zoom()
 
-        if anchor is not None:
+        if anchor is not None and old_x is not None and old_y is not None:
             bar_h.setValue(int(old_x * self._zoom - anchor.x()))
             bar_v.setValue(int(old_y * self._zoom - anchor.y()))
 
@@ -184,7 +186,7 @@ class PreviewMapDialog(QDialog):
             return
         w = max(1, int(self._pixmap.width()  * self._zoom))
         h = max(1, int(self._pixmap.height() * self._zoom))
-        scaled = self._pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled = self._pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self._img_label.setPixmap(scaled)
         self._img_label.resize(scaled.size())
         self._update_zoom_label()

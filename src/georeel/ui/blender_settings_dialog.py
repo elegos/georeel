@@ -88,7 +88,7 @@ class BlenderSettingsDialog(QDialog):
         layout.addWidget(path_group)
 
         # --- Dialog buttons ---
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.accept)
         layout.addWidget(buttons)
 
@@ -128,7 +128,7 @@ class BlenderSettingsDialog(QDialog):
         self._settings.setValue(_SETTINGS_KEY_VERSION, version.version)
         dlg = BlenderDownloadDialog(version, parent=self)
 
-        if dlg.exec() == BlenderDownloadDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             exe = dlg.executable()
             if exe:
                 save_blender_path(self._settings, exe)

@@ -87,6 +87,7 @@ def render_frames(
         # pass per frame (rendering, compositing, saving).  We deduplicate
         # by frame number so the progress bar advances once per frame.
         last_reported_fra = -1
+        assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip()
             if line.startswith("Fra:"):

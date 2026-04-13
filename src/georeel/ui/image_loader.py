@@ -16,12 +16,12 @@ def load_qimage(path: str, max_height: int | None = None) -> QImage:
                 ratio = max_height / img.height
                 img = img.resize(
                     (max(1, round(img.width * ratio)), max_height),
-                    Image.LANCZOS,
+                    Image.Resampling.LANCZOS,
                 )
             img = img.convert("RGBA")
             data = img.tobytes("raw", "RGBA")
             return QImage(
-                data, img.width, img.height, img.width * 4, QImage.Format_RGBA8888
+                data, img.width, img.height, img.width * 4, QImage.Format.Format_RGBA8888
             ).copy()
     except (UnidentifiedImageError, OSError, Exception):
         return QImage()

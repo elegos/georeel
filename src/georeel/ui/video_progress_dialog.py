@@ -71,10 +71,10 @@ class VideoProgressDialog(QDialog):
         self._bar.setRange(0, max(total_frames, 1))
         layout.addWidget(self._bar)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self._cancel)
         layout.addWidget(buttons)
-        self._cancel_btn = buttons.button(QDialogButtonBox.Cancel)
+        self._cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
 
         self._thread = QThread(self)
         self._worker = _Worker(frames_dir, output_path, settings, total_frames, gpx_path)

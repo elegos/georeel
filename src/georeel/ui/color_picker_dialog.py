@@ -250,7 +250,7 @@ class _ColorSwatch(QFrame):
         self._on_select = on_select
 
         self.setFixedWidth(_CELL_W)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(f"{name}\n{hex_color}\n{_hsl_label(hex_color)}")
 
         layout = QVBoxLayout(self)
@@ -272,7 +272,7 @@ class _ColorSwatch(QFrame):
         for text in (name, hex_color.upper(), _hsl_label(hex_color)):
             lbl = QLabel(text)
             lbl.setFont(small)
-            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setWordWrap(True)
             layout.addWidget(lbl)
 
@@ -284,27 +284,27 @@ class _ColorSwatch(QFrame):
 
     def _update_border(self) -> None:
         from PySide6.QtWidgets import QApplication
-        self.setFrameShape(QFrame.NoFrame)
+        self.setFrameShape(QFrame.Shape.NoFrame)
         self.setStyleSheet("")  # never let stylesheets cascade to children
         p = self.palette()
         if self._selected:
             # Compute an absolute contrasting background regardless of palette role names
-            window_lum = QApplication.palette().color(QPalette.Window).lightness()
+            window_lum = QApplication.palette().color(QPalette.ColorRole.Window).lightness()
             target_lum = 220 if window_lum < 128 else 60  # light on dark, dark on light
             bg = QColor.fromHsl(0, 0, target_lum)
             fg = QColor.fromHsl(0, 0, 30 if target_lum > 128 else 220)
-            p.setColor(QPalette.Window, bg)
-            p.setColor(QPalette.WindowText, fg)
+            p.setColor(QPalette.ColorRole.Window, bg)
+            p.setColor(QPalette.ColorRole.WindowText, fg)
             self.setAutoFillBackground(True)
         else:
             app_palette = QApplication.palette()
-            p.setColor(QPalette.Window,     app_palette.color(QPalette.Window))
-            p.setColor(QPalette.WindowText, app_palette.color(QPalette.WindowText))
+            p.setColor(QPalette.ColorRole.Window,     app_palette.color(QPalette.ColorRole.Window))
+            p.setColor(QPalette.ColorRole.WindowText, app_palette.color(QPalette.ColorRole.WindowText))
             self.setAutoFillBackground(False)
         self.setPalette(p)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self._on_select(self)
 
 
@@ -367,7 +367,7 @@ class ColorPickerDialog(QDialog):
         bottom.addWidget(self._preview_label)
         bottom.addSpacing(12)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         bottom.addWidget(buttons)
@@ -380,7 +380,8 @@ class ColorPickerDialog(QDialog):
 
     def _populate(self) -> None:
         for i in reversed(range(self._grid.count())):
-            w = self._grid.itemAt(i).widget()
+            item = self._grid.itemAt(i)
+            w = item.widget() if item is not None else None
             if w:
                 w.setParent(None)
         self._swatches.clear()

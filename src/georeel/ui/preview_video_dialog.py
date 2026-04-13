@@ -9,6 +9,7 @@ falls back to opening the video in the system default player otherwise.
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
@@ -22,9 +23,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-try:
+if TYPE_CHECKING:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
     from PySide6.QtMultimediaWidgets import QVideoWidget
+
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # noqa: F811
+    from PySide6.QtMultimediaWidgets import QVideoWidget  # noqa: F811
     _HAS_MULTIMEDIA = True
 except ImportError:
     _HAS_MULTIMEDIA = False
@@ -58,7 +63,7 @@ class _PlayerDialog(QDialog):
 
         # Video surface
         self._video_widget = QVideoWidget()
-        self._video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Player
         self._player = QMediaPlayer(self)
@@ -80,7 +85,7 @@ class _PlayerDialog(QDialog):
 
         self._time_label = QLabel("0:00 / 0:00")
 
-        self._seek_bar = QSlider(Qt.Horizontal)
+        self._seek_bar = QSlider(Qt.Orientation.Horizontal)
         self._seek_bar.setRange(0, 0)
         self._seek_bar.sliderMoved.connect(self._player.setPosition)
 
@@ -91,7 +96,7 @@ class _PlayerDialog(QDialog):
         ctrl.addWidget(self._seek_bar, 1)
         ctrl.addWidget(self._time_label)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         ctrl.addWidget(buttons)
 
@@ -118,13 +123,13 @@ class _PlayerDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _toggle_play(self):
-        if self._player.playbackState() == QMediaPlayer.PlayingState:
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
         else:
             self._player.play()
 
     def _on_state_changed(self, state):
-        if state == QMediaPlayer.PlayingState:
+        if state == QMediaPlayer.PlaybackState.PlayingState:
             self._play_btn.setText("⏸")
         else:
             self._play_btn.setText("▶")

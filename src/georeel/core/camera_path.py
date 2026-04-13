@@ -196,7 +196,8 @@ def build_camera_path(
     sample_t = np.interp(sample_dists, cumlen, t_fine)
     del t_fine, cumlen, sample_dists  # no longer needed
 
-    xs, ys = splev(sample_t, tck)
+    _ev = splev(sample_t, tck)
+    xs, ys = np.asarray(_ev[0], dtype=float), np.asarray(_ev[1], dtype=float)
 
     _step(2, f"resampled  n_fine={n_fine}  n_frames={n_frames}  length={total_length/1000:.1f} km")
 
@@ -227,7 +228,8 @@ def build_camera_path(
             progress_base=3, progress_total=7,
         )
     else:
-        dx_dt, dy_dt = splev(sample_t, tck, der=1)
+        _dev = splev(sample_t, tck, der=1)
+        dx_dt, dy_dt = np.asarray(_dev[0], dtype=float), np.asarray(_dev[1], dtype=float)
         del sample_t
         if progress_callback is not None:
             progress_callback(4, 7)
@@ -656,7 +658,7 @@ def _insert_pauses(
         insertions.sort(key=lambda e: e[0], reverse=True)
         for idx, pause_kf in insertions:
             keyframes = (keyframes[: idx + 1]
-                         + _make_pause_block(pause_kf, pause_kf.photo_path, pause_frames)
+                         + _make_pause_block(pause_kf, pause_kf.photo_path or "", pause_frames)
                          + keyframes[idx + 1:])
 
     # ── Post-track: camera holds at the last fly frame ───────────────────

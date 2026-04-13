@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -257,7 +258,7 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
 
         self._photo_area.set_tz_offset(
-            float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+            float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
         )
         self._photo_area.photos_changed.connect(self._on_photos_changed)
         self._photo_area.photos_changed.connect(self._mark_dirty)
@@ -336,7 +337,7 @@ class MainWindow(QMainWindow):
         self._status_show("Calculating keyframes…")
 
         render_settings = get_render_settings(self._settings)
-        tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+        tz_offset = float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
 
         worker = KeyframeCalcWorker(
             gpx_path=self._gpx_path,
@@ -433,7 +434,7 @@ class MainWindow(QMainWindow):
         self._gpx_speed_spin.setSingleStep(10)
         self._gpx_speed_spin.setSuffix(" km/h")
         self._gpx_speed_spin.setValue(
-            int(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+            int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
         )
         self._gpx_speed_spin.setToolTip(
             "Points implying a speed above this are treated as bad GPS readings "
@@ -446,7 +447,7 @@ class MainWindow(QMainWindow):
         self._gpx_gap_spin.setDecimals(1)
         self._gpx_gap_spin.setSuffix(" s gap")
         self._gpx_gap_spin.setValue(
-            float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))
+            float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
         )
         self._gpx_gap_spin.setToolTip(
             "Time gaps longer than this between two valid points are filled "
@@ -506,16 +507,16 @@ class MainWindow(QMainWindow):
         self._gpx_osrm_profile_combo.blockSignals(False)
 
         self._gpx_speed_spin.blockSignals(True)
-        self._gpx_speed_spin.setValue(int(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+        self._gpx_speed_spin.setValue(int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))))
         self._gpx_speed_spin.blockSignals(False)
 
         self._gpx_gap_spin.blockSignals(True)
-        self._gpx_gap_spin.setValue(float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+        self._gpx_gap_spin.setValue(float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))))
         self._gpx_gap_spin.blockSignals(False)
 
     def _reload_speed_control(self) -> None:
         """Sync flythrough speed widgets from QSettings (called after project load)."""
-        speed = float(self._settings.value(KEY_CAMERA_SPEED, 80.0))
+        speed = float(str(self._settings.value(KEY_CAMERA_SPEED, 80.0)))
         self._speed_spin.blockSignals(True)
         self._speed_spin.setValue(speed)
         self._speed_spin.blockSignals(False)
@@ -568,7 +569,7 @@ class MainWindow(QMainWindow):
             "(e.g. +2.0 for UTC+2 / CEST)."
         )
         self._tz_offset_spin.setValue(
-            float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+            float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
         )
         self._tz_offset_spin.valueChanged.connect(self._on_tz_offset_changed)
         tz_row.addWidget(tz_label)
@@ -604,7 +605,7 @@ class MainWindow(QMainWindow):
             "Hiking ~80 m/s · Cycling ~120 m/s · Driving ~320 m/s"
         )
 
-        saved_speed = float(self._settings.value(KEY_CAMERA_SPEED, 80.0))
+        saved_speed = float(str(self._settings.value(KEY_CAMERA_SPEED, 80.0)))
         self._speed_spin.setValue(saved_speed)
         self._speed_preset_combo.setCurrentIndex(self._speed_preset_index(saved_speed))
 
@@ -659,7 +660,7 @@ class MainWindow(QMainWindow):
         if speed <= 0:
             self._duration_label.setText("")
             return
-        pause_duration_s = float(self._settings.value("render/photo_pause_duration", 3.0))
+        pause_duration_s = float(str(self._settings.value("render/photo_pause_duration", 3.0)))
         n_photos = len(self._store.all())
         total_s = self._track_length_m / speed + n_photos * pause_duration_s
         mins = int(total_s) // 60
@@ -778,7 +779,7 @@ class MainWindow(QMainWindow):
             self._scene_prep_worker.quit()
 
         render_settings = get_render_settings(self._settings)
-        tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+        tz_offset = float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
         blender_exe = self._settings.value("blender/executable_path") or None
 
         worker = ScenePrepWorker(
@@ -789,8 +790,8 @@ class MainWindow(QMainWindow):
             blender_exe=blender_exe,
             cached_elevation_grid=self._cached_elevation_grid,
             cached_satellite_texture=self._cached_satellite_texture,
-            api_key=self._settings.value("imagery/api_key", ""),
-            custom_url=self._settings.value("imagery/custom_url", ""),
+            api_key=str(self._settings.value("imagery/api_key", "")),
+            custom_url=str(self._settings.value("imagery/custom_url", "")),
             cleaned_trackpoints=self._pipeline.trackpoints or None,
         )
         worker.status.connect(self._status_show)
@@ -873,9 +874,9 @@ class MainWindow(QMainWindow):
             trackpoints, _ = detect_and_repair(
                 trackpoints,
                 str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-                max_speed_mps=float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6,
-                max_gap_s=float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)),
-                max_jump_m=float(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)) * 1_000,
+                max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6,
+                max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
+                max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000,
             )
             self._gpx_stats.update_stats(trackpoints)
             self._track_length_m = compute_stats(trackpoints).total_distance_m
@@ -988,8 +989,6 @@ class MainWindow(QMainWindow):
             self._fetch_progress_bar.setRange(0, 0)
             self._fetch_progress_bar.show()
             try:
-                from georeel.core.camera_path import CameraPathError, build_camera_path
-
                 self._pipeline.camera_keyframes = build_camera_path(
                     self._pipeline, render_settings,
                     progress_callback=self._camera_path_progress,
@@ -1013,7 +1012,7 @@ class MainWindow(QMainWindow):
             blender_exe=blender_exe,
             parent=self,
         )
-        if dlg.exec() != PreviewVideoProgressDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             self._status_show("Preview video cancelled or failed.")
             return
 
@@ -1060,8 +1059,6 @@ class MainWindow(QMainWindow):
             self._fetch_progress_bar.setRange(0, 0)
             self._fetch_progress_bar.show()
             try:
-                from georeel.core.camera_path import CameraPathError, build_camera_path
-
                 self._pipeline.camera_keyframes = build_camera_path(
                     self._pipeline, render_settings,
                     progress_callback=self._camera_path_progress,
@@ -1135,10 +1132,10 @@ class MainWindow(QMainWindow):
                 self,
                 "Overwrite file?",
                 f"The file already exists:\n{output_path}\n\nOverwrite it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
-            if answer != QMessageBox.Yes:
+            if answer != QMessageBox.StandardButton.Yes:
                 self._status_show("Pipeline stopped: output file not overwritten.")
                 return
 
@@ -1179,9 +1176,9 @@ class MainWindow(QMainWindow):
         if repair_mode != REPAIR_NONE:
             osrm_profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
             self._status_show(f"Repairing GPX holes ({repair_mode} mode)…")
-            max_speed_mps = float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6
-            max_gap_s     = float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))
-            max_jump_m    = float(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)) * 1_000
+            max_speed_mps = float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6
+            max_gap_s     = float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+            max_jump_m    = float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000
             trackpoints, _cs = detect_and_repair(
                 trackpoints,
                 repair_mode,
@@ -1207,7 +1204,7 @@ class MainWindow(QMainWindow):
         photos = self._store.all()
         if photos:
             self._status_show("Matching photos to trackpoints…")
-            tz_offset = float(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0))
+            tz_offset = float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
             results = match_photos(
                 photos, trackpoints, self._match_mode(), tz_offset_hours=tz_offset
             )
@@ -1284,8 +1281,8 @@ class MainWindow(QMainWindow):
             )
 
         # Stage 4 — Satellite Imagery Fetcher
-        provider_id = self._settings.value("imagery/provider", "esri_world")
-        img_quality = self._settings.value("imagery/quality", "standard")
+        provider_id = str(self._settings.value("imagery/provider", "esri_world"))
+        img_quality = str(self._settings.value("imagery/quality", "standard"))
         cached_sat = self._cached_satellite_texture
         if (
             cached_sat is not None
@@ -1314,8 +1311,8 @@ class MainWindow(QMainWindow):
             try:
                 source = build_source(
                     provider_id=provider_id,
-                    api_key=self._settings.value("imagery/api_key", ""),
-                    custom_url=self._settings.value("imagery/custom_url", ""),
+                    api_key=str(self._settings.value("imagery/api_key", "")),
+                    custom_url=str(self._settings.value("imagery/custom_url", "")),
                     quality=img_quality,
                 )
                 texture = source.fetch(fetch_bbox, progress_callback=_sat_progress)
@@ -1385,7 +1382,7 @@ class MainWindow(QMainWindow):
             blender_exe=blender_exe,
             parent=self,
         )
-        if dlg.exec() != RenderProgressDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: rendering cancelled or failed.")
             return
@@ -1394,7 +1391,7 @@ class MainWindow(QMainWindow):
 
         # Stage 8 — Photo Overlay Compositor
         dlg = CompositorProgressDialog(self._pipeline, render_settings, parent=self)
-        if dlg.exec() != CompositorProgressDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: compositing cancelled or failed.")
             return
@@ -1409,14 +1406,14 @@ class MainWindow(QMainWindow):
             **self._clip_effects_widget.get_settings(),
         }
         dlg = VideoProgressDialog(
-            self._pipeline.composited_frames_dir,
-            output_path,
+            self._pipeline.composited_frames_dir or "",
+            output_path or "",
             assemble_settings,
             total_frames,
             gpx_path=self._gpx_path,
             parent=self,
         )
-        if dlg.exec() != VideoProgressDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: video encoding cancelled or failed.")
             return
@@ -1429,7 +1426,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _last_project_dir(self) -> str:
-        return self._settings.value("project/last_dir", "")
+        return str(self._settings.value("project/last_dir", ""))
 
     def _save_last_project_dir(self, path: str):
         self._settings.setValue("project/last_dir", str(Path(path).parent))
@@ -1444,14 +1441,22 @@ class MainWindow(QMainWindow):
         """Return recent project paths that still exist, most-recent first."""
         raw = self._settings.value("project/recent_files", [])
         if isinstance(raw, str):  # QSettings may deserialise a single item as str
-            raw = [raw]
-        return [p for p in (raw or []) if Path(p).is_file()]
+            entries: list[str] = [raw]
+        elif isinstance(raw, list):
+            entries = [str(x) for x in raw]
+        else:
+            entries = []
+        return [p for p in entries if Path(p).is_file()]
 
     def _add_recent_file(self, path: str) -> None:
         raw = self._settings.value("project/recent_files", [])
         if isinstance(raw, str):
-            raw = [raw]
-        paths = [p for p in (raw or []) if p != path]
+            entries: list[str] = [raw]
+        elif isinstance(raw, list):
+            entries = [str(x) for x in raw]
+        else:
+            entries = []
+        paths = [p for p in entries if p != path]
         paths.insert(0, path)
         self._settings.setValue("project/recent_files", paths[: self._MAX_RECENT])
 
@@ -1648,9 +1653,9 @@ class MainWindow(QMainWindow):
                     trackpoints, _ = detect_and_repair(
                         trackpoints,
                         str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-                        max_speed_mps=float(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)) / 3.6,
-                        max_gap_s=float(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)),
-                        max_jump_m=float(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)) * 1_000,
+                        max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6,
+                        max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
+                        max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000,
                     )
                     self._gpx_stats.update_stats(trackpoints)
                     self._track_length_m = compute_stats(trackpoints).total_distance_m
