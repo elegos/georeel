@@ -1,13 +1,10 @@
 """Tests for satellite.xyz_source coordinate helpers and build_source."""
 
-import math
 import pytest
-from georeel.core.bounding_box import BoundingBox
 from georeel.core.satellite.xyz_source import (
     _lon_to_x,
     _lat_to_y,
     _tile_nw,
-    _auto_zoom,
     build_source,
     XyzSource,
 )
@@ -78,42 +75,6 @@ class TestTileNw:
         lat0, _ = _tile_nw(0, 0, 5)
         lat1, _ = _tile_nw(0, 1, 5)
         assert lat1 < lat0  # Y increases southward
-
-
-class TestAutoZoom:
-    def _small_bbox(self):
-        # Small area ≈ 1km²
-        return BoundingBox(min_lat=48.85, max_lat=48.86, min_lon=2.34, max_lon=2.36)
-
-    def _large_bbox(self):
-        # Large area ≈ Europe
-        return BoundingBox(min_lat=35.0, max_lat=72.0, min_lon=-25.0, max_lon=45.0)
-
-    def test_small_area_gets_high_zoom(self):
-        zoom = _auto_zoom(self._small_bbox(), max_tiles=200, max_zoom=19)
-        assert zoom >= 14
-
-    def test_large_area_gets_lower_zoom(self):
-        zoom = _auto_zoom(self._large_bbox(), max_tiles=200, max_zoom=19)
-        small_zoom = _auto_zoom(self._small_bbox(), max_tiles=200, max_zoom=19)
-        assert zoom < small_zoom
-
-    def test_tile_count_within_limit(self):
-        bbox = self._small_bbox()
-        max_tiles = 200
-        zoom = _auto_zoom(bbox, max_tiles=max_tiles, max_zoom=19)
-        cols = _lon_to_x(bbox.max_lon, zoom) - _lon_to_x(bbox.min_lon, zoom) + 1
-        rows = _lat_to_y(bbox.min_lat, zoom) - _lat_to_y(bbox.max_lat, zoom) + 1
-        assert cols * rows <= max_tiles
-
-    def test_fallback_to_9_for_huge_area(self):
-        bbox = BoundingBox(min_lat=-85.0, max_lat=85.0, min_lon=-180.0, max_lon=180.0)
-        zoom = _auto_zoom(bbox, max_tiles=1, max_zoom=19)
-        assert zoom == 9
-
-    def test_respects_max_zoom_cap(self):
-        zoom = _auto_zoom(self._small_bbox(), max_tiles=100_000, max_zoom=12)
-        assert zoom <= 12
 
 
 class TestBuildSource:

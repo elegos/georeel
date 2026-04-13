@@ -5,7 +5,7 @@ from georeel.core.satellite.providers import (
     PROVIDERS,
     ProviderConfig,
     get_provider,
-    QUALITY_MAX_TILES,
+    QUALITY_ZOOM,
 )
 
 
@@ -66,20 +66,20 @@ class TestGetProvider:
             assert result.id == provider.id
 
 
-class TestQualityMaxTiles:
+class TestQualityZoom:
     def test_standard_present(self):
-        assert "standard" in QUALITY_MAX_TILES
+        assert "standard" in QUALITY_ZOOM
 
     def test_high_present(self):
-        assert "high" in QUALITY_MAX_TILES
+        assert "high" in QUALITY_ZOOM
 
     def test_very_high_present(self):
-        assert "very_high" in QUALITY_MAX_TILES
+        assert "very_high" in QUALITY_ZOOM
 
-    def test_increasing_quality_more_tiles(self):
-        assert QUALITY_MAX_TILES["standard"] < QUALITY_MAX_TILES["high"]
-        assert QUALITY_MAX_TILES["high"] < QUALITY_MAX_TILES["very_high"]
+    def test_increasing_quality_higher_zoom(self):
+        assert QUALITY_ZOOM["standard"] < QUALITY_ZOOM["high"]
+        assert QUALITY_ZOOM["high"] < QUALITY_ZOOM["very_high"]
 
     def test_all_positive(self):
-        for v in QUALITY_MAX_TILES.values():
+        for v in QUALITY_ZOOM.values():
             assert v > 0

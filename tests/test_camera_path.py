@@ -200,22 +200,22 @@ class TestComputeForwardDirsTangent:
 
     def test_straight_east_dirs_are_east(self):
         xs, ys = self._straight_east(10)
-        dirs = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=3, weight_mode="linear")
-        for dx, dy in dirs[:-1]:  # last may be special-cased
+        dirs_x, dirs_y = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=3, weight_mode="linear")
+        for dx, dy in zip(dirs_x[:-1], dirs_y[:-1]):  # last may be special-cased
             assert dx > 0.9  # mostly east
             assert abs(dy) < 0.1
 
     def test_output_length_matches_input(self):
         xs = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
         ys = np.zeros(5)
-        dirs = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=2, weight_mode="uniform")
-        assert len(dirs) == 5
+        dirs_x, dirs_y = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=2, weight_mode="uniform")
+        assert len(dirs_x) == 5
 
     def test_unit_vectors(self):
         xs = np.array([0.0, 1.0, 2.0, 3.0])
         ys = np.array([0.0, 1.0, 2.0, 3.0])
-        dirs = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=2, weight_mode="linear")
-        for dx, dy in dirs:
+        dirs_x, dirs_y = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=2, weight_mode="linear")
+        for dx, dy in zip(dirs_x, dirs_y):
             length = math.sqrt(dx * dx + dy * dy)
             assert length == pytest.approx(1.0, abs=1e-9)
 
@@ -223,8 +223,8 @@ class TestComputeForwardDirsTangent:
         xs = np.arange(10, dtype=float)
         ys = np.zeros(10)
         for mode in ("linear", "uniform", "exponential"):
-            dirs = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=3, weight_mode=mode)
-            assert len(dirs) == 10
+            dirs_x, dirs_y = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=3, weight_mode=mode)
+            assert len(dirs_x) == 10
 
 
 # ── _compute_forward_dirs_spline ─────────────────────────────────
@@ -239,13 +239,13 @@ class TestComputeForwardDirsSpline:
 
     def test_output_length_matches_input(self):
         xs, ys, dx_dt, dy_dt = self._straight_data(8)
-        dirs = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="tangent")
-        assert len(dirs) == 8
+        dirs_x, dirs_y = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="tangent")
+        assert len(dirs_x) == 8
 
     def test_straight_east_tangent_mode(self):
         xs, ys, dx_dt, dy_dt = self._straight_data(8)
-        dirs = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="tangent")
-        for dx, dy in dirs:
+        dirs_x, dirs_y = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="tangent")
+        for dx, dy in zip(dirs_x, dirs_y):
             assert dx == pytest.approx(1.0, abs=1e-9)
             assert dy == pytest.approx(0.0, abs=1e-9)
 
@@ -254,19 +254,18 @@ class TestComputeForwardDirsSpline:
         ys = np.array([0.0, 1.0, 0.0, 1.0])
         dx_dt = np.ones(4)
         dy_dt = np.zeros(4)
-        dirs = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="lookat")
+        dirs_x, dirs_y = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="lookat")
         # First direction should point toward (1,1) from (0,0)
-        dx0, dy0 = dirs[0]
-        assert dx0 > 0  # east component
-        assert dy0 > 0  # north component
+        assert dirs_x[0] > 0  # east component
+        assert dirs_y[0] > 0  # north component
 
     def test_unit_vectors(self):
         xs = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
         ys = np.array([0.0, 0.5, 1.0, 0.5, 0.0])
         dx_dt = np.diff(xs, append=xs[-1])
         dy_dt = np.diff(ys, append=ys[-1])
-        dirs = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="tangent")
-        for dx, dy in dirs:
+        dirs_x, dirs_y = _compute_forward_dirs_spline(xs, ys, dx_dt, dy_dt, orient_mode="tangent")
+        for dx, dy in zip(dirs_x, dirs_y):
             length = math.sqrt(dx * dx + dy * dy)
             assert length == pytest.approx(1.0, abs=1e-6)
 

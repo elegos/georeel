@@ -116,14 +116,16 @@ class TestComputeStatsSpeed:
         )
 
     def test_max_speed_over_fastest_segment(self):
-        tp1 = _tp(0.0, 0.0, ts=_utc(10, 0, 0))
-        tp2 = _tp(0.01, 0.0, ts=_utc(10, 0, 30))  # fast
-        tp3 = _tp(0.011, 0.0, ts=_utc(10, 5, 0))  # slow
-        stats = compute_stats([tp1, tp2, tp3])
+        # Build a track with many uniform segments and one fast outlier.
+        # p99 should reflect near-max speed while filtering single-point jumps.
+        tps = [_tp(i * 0.01, 0.0, ts=_utc(10, i, 0)) for i in range(50)]
+        # Inject a very fast outlier at the end: it will be beyond p99 threshold.
+        tps.append(_tp(0.50 + 1.0, 0.0, ts=_utc(10, 50, 1)))  # huge jump in 1 s
+        stats = compute_stats(tps)
         assert stats.max_speed_kmh is not None
-        # Max speed should be from first segment (short time, some distance)
-        seg1_kmh = (_haversine(0, 0, 0.01, 0) / 30) * 3.6
-        assert stats.max_speed_kmh == pytest.approx(seg1_kmh, rel=1e-5)
+        # p99 should filter the outlier; reported max should be reasonable, not insane
+        assert stats.max_speed_kmh < 500  # not the outlier (would be thousands km/h)
+        assert stats.max_speed_kmh > 0
 
     def test_zero_time_delta_skipped_for_speed(self):
         # Two points with same timestamp: should not cause division by zero
