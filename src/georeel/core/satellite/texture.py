@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 from PIL import Image
 
+from ..pil_lock import PIL_LOCK
+
 
 @dataclass
 class SatelliteTexture:
@@ -30,7 +32,8 @@ class SatelliteTexture:
 
     def to_png_bytes(self) -> bytes:
         buf = io.BytesIO()
-        self.image.convert("RGB").save(buf, format="PNG", optimize=False)
+        with PIL_LOCK:
+            self.image.convert("RGB").save(buf, format="PNG", optimize=False)
         return buf.getvalue()
 
     @classmethod
@@ -45,10 +48,12 @@ class SatelliteTexture:
         quality: str = "standard",
     ) -> "SatelliteTexture":
         buf = io.BytesIO(data)
-        image = Image.open(buf)
-        image.load()
+        with PIL_LOCK:
+            image = Image.open(buf)
+            image.load()
+            image = image.convert("RGB")
         return cls(
-            image=image.convert("RGB"),
+            image=image,
             min_lat=min_lat,
             max_lat=max_lat,
             min_lon=min_lon,

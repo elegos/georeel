@@ -67,6 +67,7 @@ def detect_and_repair(
     max_speed_mps: float = 83.3,   # 300 km/h — above this is almost certainly bad data
     max_gap_s: float = 30.0,       # gaps longer than this get synthetic points
     max_jump_m: float = 50_000.0,  # fallback for timestamp-less tracks (50 km)
+    osrm_profile: str = "driving",
 ) -> tuple[list[Trackpoint], CleanStats]:
     """Return a cleaned trackpoint list and statistics about what changed.
 
@@ -115,7 +116,7 @@ def detect_and_repair(
         if gap_s is not None and gap_s > max_gap_s:
             # Number of synthetic points to insert (≥1).
             n = max(1, round(gap_s / typical_s) - 1)
-            synthetic, fell_back = _fill_hole(a, b, n, mode)
+            synthetic, fell_back = _fill_hole(a, b, n, mode, osrm_profile)
             result.extend(synthetic)
             stats.holes_filled += len(synthetic)
             if fell_back:
@@ -187,6 +188,7 @@ def _fill_hole(
     b: Trackpoint,
     n: int,
     mode: str,
+    osrm_profile: str = "driving",
 ) -> tuple[list[Trackpoint], bool]:
     """Synthesise *n* Trackpoints between *a* and *b* (exclusive).
 
@@ -195,7 +197,8 @@ def _fill_hole(
     fell_back = False
 
     if mode == REPAIR_STREET:
-        route = route_waypoints(a.latitude, a.longitude, b.latitude, b.longitude)
+        route = route_waypoints(a.latitude, a.longitude, b.latitude, b.longitude,
+                                profile=osrm_profile)
         if route and len(route) >= 2:
             latlon_pts = _resample_route(route, n)
         else:

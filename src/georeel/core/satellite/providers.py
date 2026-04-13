@@ -67,9 +67,12 @@ def get_provider(provider_id: str) -> ProviderConfig:
     return _BY_ID.get(provider_id, PROVIDERS[0])
 
 
-# Quality tier → maximum tile count fed to the auto-zoom algorithm
-QUALITY_MAX_TILES: dict[str, int] = {
-    "standard":  200,
-    "high":      500,
-    "very_high": 1200,
+# Quality tier → target XYZ zoom level.
+# Each step doubles resolution: zoom 13 ≈ 19 m/px, 15 ≈ 5 m/px, 17 ≈ 1.2 m/px.
+# The same zoom is used regardless of track size, so "Very High" always means
+# the same ground resolution whether the track is 5 km or 500 km.
+QUALITY_ZOOM: dict[str, int] = {
+    "standard":  13,
+    "high":      15,
+    "very_high": 17,
 }

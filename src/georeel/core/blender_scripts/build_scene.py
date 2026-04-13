@@ -2,9 +2,12 @@
 Blender script: builds a 3D terrain scene and saves it as a .blend file.
 
 Invoked headlessly by scene_builder.py:
-    blender --background --python build_scene.py -- <meta.json> <data.bin> <texture.png> <output.blend>
+    blender --background --python build_scene.py -- <meta.json> <data.bin> <sat_manifest.json> <output.blend>
 
 Row 0 of the elevation grid is the northernmost row (max_lat).
+The satellite texture is split into tiles (see sat_manifest.json) so each tile
+stays under Blender's 2 GB pack limit.  Textures are kept as external files
+(no bpy.ops.file.pack_all) — the work directory persists for the session.
 """
 
 import json
@@ -20,17 +23,17 @@ def main() -> None:
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     if len(argv) < 4:
-        print("Usage: build_scene.py -- meta.json data.bin texture.png output.blend",
+        print("Usage: build_scene.py -- meta.json data.bin sat_manifest.json output.blend",
               file=sys.stderr)
         sys.exit(1)
 
     if len(argv) < 7:
-        print("Usage: build_scene.py -- meta.json data.bin texture.png output.blend "
+        print("Usage: build_scene.py -- meta.json data.bin sat_manifest.json output.blend "
               "track.json pins.json pin_color [sun_x sun_y sun_z]",
               file=sys.stderr)
         sys.exit(1)
 
-    meta_path, data_path, texture_path, output_path, track_path, pins_path, pin_color = argv[:7]
+    meta_path, data_path, manifest_path, output_path, track_path, pins_path, pin_color = argv[:7]
 
     height_offset = float(argv[7]) if len(argv) > 7  else 200.0
     fps           = float(argv[8]) if len(argv) > 8  else 30.0
@@ -89,33 +92,12 @@ def main() -> None:
     lon_m = (max_lon - min_lon) * 111_320.0 * math.cos(mean_lat_rad)
 
     # ------------------------------------------------------------------ #
-    # Build vertex list                                                    #
-    # ------------------------------------------------------------------ #
-    # Y axis → north (row 0 = max_lat → Y = lat_m; last row = min_lat → Y = 0)
-    # X axis → east  (col 0 = min_lon → X = 0;     last col = max_lon → X = lon_m)
-    # Z axis → elevation (metres)
-
-    verts = []
-    for r in range(rows):
-        y = (1.0 - r / (rows - 1)) * lat_m
-        for c in range(cols):
-            x = (c / (cols - 1)) * lon_m
-            z = elev[r * cols + c]
-            verts.append((x, y, z))
-
-    # ------------------------------------------------------------------ #
-    # Build quad faces                                                     #
+    # Load satellite tile manifest                                         #
     # ------------------------------------------------------------------ #
 
-    faces = []
-    for r in range(rows - 1):
-        for c in range(cols - 1):
-            v0 = r * cols + c            # NW
-            v1 = r * cols + (c + 1)     # NE
-            v2 = (r + 1) * cols + (c + 1)  # SE
-            v3 = (r + 1) * cols + c     # SW
-            # CCW winding from above → face normal points +Z (upward)
-            faces.append((v0, v3, v2, v1))
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    tile_list = manifest["tiles"]
 
     # ------------------------------------------------------------------ #
     # Start a clean Blender scene                                          #
@@ -124,76 +106,23 @@ def main() -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
     # ------------------------------------------------------------------ #
-    # Create terrain mesh                                                  #
+    # Build terrain tiles                                                  #
     # ------------------------------------------------------------------ #
+    # Each tile covers a sub-region of the DEM grid and gets its own mesh
+    # and satellite material so no single texture exceeds 2 GB.
+    # Adjacent tiles share their boundary row/column of DEM vertices so
+    # the terrain is seamless.
+    #
+    # Coordinate axes:
+    #   Y → north  (row 0 = max_lat → Y = lat_m; last row = min_lat → Y = 0)
+    #   X → east   (col 0 = min_lon → X = 0;     last col = max_lon → X = lon_m)
+    #   Z → elevation (metres)
 
-    mesh = bpy.data.meshes.new("Terrain")
-    mesh.from_pydata(verts, [], faces)
-    mesh.update()
-
-    # UV layer: U = col / (cols-1), V = 1 - row / (rows-1)
-    # V=1 = north (row 0), V=0 = south (last row) — matches standard map orientation
-    uv_layer = mesh.uv_layers.new(name="UVMap")
-    for poly in mesh.polygons:
-        for loop_idx in poly.loop_indices:
-            vi = mesh.loops[loop_idx].vertex_index
-            r = vi // cols
-            c = vi % cols
-            uv_layer.data[loop_idx].uv = (
-                c / (cols - 1),
-                1.0 - r / (rows - 1),
-            )
-
-    obj = bpy.data.objects.new("Terrain", mesh)
-    bpy.context.scene.collection.objects.link(obj)
-
-    # ------------------------------------------------------------------ #
-    # Satellite texture material                                           #
-    # ------------------------------------------------------------------ #
-
-    mat = bpy.data.materials.new("Satellite")
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    nodes.clear()
-
-    tex_node = nodes.new("ShaderNodeTexImage")
-    tex_node.image = bpy.data.images.load(texture_path)
-    tex_node.location = (-300, 0)
-
-    out_node = nodes.new("ShaderNodeOutputMaterial")
-    out_node.location = (300, 0)
-
-    if sun_vec is not None:
-        # Sun position known: mix a dominant Emission (preserves satellite
-        # colours) with a small Diffuse component (adds topographic shading).
-        # This avoids the washout / desaturation of a pure Principled BSDF
-        # while still letting the sun reveal terrain relief subtly.
-        emit_node = nodes.new("ShaderNodeEmission")
-        emit_node.inputs["Strength"].default_value = 1.0
-        emit_node.location = (-150, 100)
-        links.new(tex_node.outputs["Color"], emit_node.inputs["Color"])
-
-        diff_node = nodes.new("ShaderNodeBsdfDiffuse")
-        diff_node.inputs["Roughness"].default_value = 1.0
-        diff_node.location = (-150, -100)
-        links.new(tex_node.outputs["Color"], diff_node.inputs["Color"])
-
-        mix_node = nodes.new("ShaderNodeMixShader")
-        mix_node.inputs["Fac"].default_value = 0.25   # 75% emission, 25% diffuse
-        mix_node.location = (100, 0)
-        links.new(emit_node.outputs["Emission"], mix_node.inputs[1])
-        links.new(diff_node.outputs["BSDF"],     mix_node.inputs[2])
-        links.new(mix_node.outputs["Shader"],    out_node.inputs["Surface"])
-    else:
-        # No timestamp available: flat emission so the terrain is always visible.
-        emit_node = nodes.new("ShaderNodeEmission")
-        emit_node.inputs["Strength"].default_value = 1.0
-        emit_node.location = (0, 0)
-        links.new(tex_node.outputs["Color"], emit_node.inputs["Color"])
-        links.new(emit_node.outputs["Emission"], out_node.inputs["Surface"])
-
-    mesh.materials.append(mat)
+    for tile_info in tile_list:
+        _build_terrain_tile(bpy, tile_info,
+                            rows=rows, cols=cols,
+                            lat_m=lat_m, lon_m=lon_m,
+                            elev=elev, sun_vec=sun_vec)
 
     # ------------------------------------------------------------------ #
     # Sun lamp + sky background (only when sun position is known)         #
@@ -280,16 +209,137 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     _report_scene_bounds(bpy)
 
-    # Pack the texture so the .blend is self-contained
-    bpy.ops.file.pack_all()
-
     # ------------------------------------------------------------------ #
     # Save                                                                 #
     # ------------------------------------------------------------------ #
+    # Textures are kept as external files (absolute paths in the .blend).
+    # bpy.ops.file.pack_all() is intentionally skipped — it fails for
+    # files larger than 2 GB.  The work directory persists for the session
+    # so all tile PNGs remain accessible during rendering.
 
-    bpy.ops.wm.save_as_mainfile(filepath=output_path)
+    # compress=False: textures are external so the .blend is just mesh/graph data.
+    # Uncompressed write is I/O-bound and near-instant vs. single-threaded zlib.
+    bpy.ops.wm.save_as_mainfile(filepath=output_path, compress=False)
+    n_tiles = len(tile_list)
     print(f"[georeel] Scene saved: {output_path} "
-          f"({rows}×{cols} vertices, {len(faces)} quads)")
+          f"({rows}×{cols} DEM, {n_tiles} terrain tile(s))")
+
+
+def _build_terrain_tile(
+    bpy,
+    tile_info: dict,
+    rows: int,
+    cols: int,
+    lat_m: float,
+    lon_m: float,
+    elev: list,
+    sun_vec,
+) -> None:
+    """Create one terrain mesh tile with its own UV-mapped satellite material.
+
+    *tile_info* is one entry from the sat_manifest.json tiles list:
+      - ti, tj          : tile row/column indices (used for naming)
+      - path            : absolute path to the tile PNG file
+      - dem_r_start/end : inclusive DEM row range covered by this tile
+      - dem_c_start/end : inclusive DEM col range covered by this tile
+
+    Adjacent tiles share their boundary DEM row/column so the terrain surface
+    is seamless.  UV [0,1] × [0,1] maps exactly to the tile's pixel extent.
+    """
+    ti          = tile_info["ti"]
+    tj          = tile_info["tj"]
+    tile_path   = tile_info["path"]
+    dem_r_start = tile_info["dem_r_start"]
+    dem_r_end   = tile_info["dem_r_end"]
+    dem_c_start = tile_info["dem_c_start"]
+    dem_c_end   = tile_info["dem_c_end"]
+
+    tile_rows = dem_r_end - dem_r_start + 1   # number of vertex rows in this tile
+    tile_cols = dem_c_end - dem_c_start + 1   # number of vertex cols in this tile
+    r_span    = max(1, dem_r_end - dem_r_start)
+    c_span    = max(1, dem_c_end - dem_c_start)
+
+    # Vertices
+    verts = []
+    for r in range(dem_r_start, dem_r_end + 1):
+        y = (1.0 - r / (rows - 1)) * lat_m
+        for c in range(dem_c_start, dem_c_end + 1):
+            x = (c / (cols - 1)) * lon_m
+            z = elev[r * cols + c]
+            verts.append((x, y, z))
+
+    # Quad faces (CCW from above → normal points +Z)
+    faces = []
+    for lr in range(tile_rows - 1):
+        for lc in range(tile_cols - 1):
+            v0 = lr * tile_cols + lc          # NW
+            v1 = lr * tile_cols + (lc + 1)   # NE
+            v2 = (lr + 1) * tile_cols + (lc + 1)  # SE
+            v3 = (lr + 1) * tile_cols + lc   # SW
+            faces.append((v0, v3, v2, v1))
+
+    mesh_name = f"Terrain_{ti}_{tj}"
+    mesh = bpy.data.meshes.new(mesh_name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+
+    # UV: u=0 → west edge of tile, u=1 → east; v=1 → north, v=0 → south
+    uv_layer = mesh.uv_layers.new(name="UVMap")
+    for poly in mesh.polygons:
+        for loop_idx in poly.loop_indices:
+            vi  = mesh.loops[loop_idx].vertex_index
+            lr  = vi // tile_cols
+            lc  = vi % tile_cols
+            u   = lc / c_span
+            v   = 1.0 - lr / r_span
+            uv_layer.data[loop_idx].uv = (u, v)
+
+    obj = bpy.data.objects.new(mesh_name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+
+    # Material with tile texture (external reference, not packed)
+    mat_name = f"Satellite_{ti}_{tj}"
+    mat = bpy.data.materials.new(mat_name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+
+    tex_node = nodes.new("ShaderNodeTexImage")
+    tex_node.image = bpy.data.images.load(tile_path)
+    tex_node.location = (-300, 0)
+
+    out_node = nodes.new("ShaderNodeOutputMaterial")
+    out_node.location = (300, 0)
+
+    if sun_vec is not None:
+        # Mix dominant Emission (preserves satellite colours) with a small
+        # Diffuse component (adds topographic shading from sun direction).
+        emit_node = nodes.new("ShaderNodeEmission")
+        emit_node.inputs["Strength"].default_value = 1.0
+        emit_node.location = (-150, 100)
+        links.new(tex_node.outputs["Color"], emit_node.inputs["Color"])
+
+        diff_node = nodes.new("ShaderNodeBsdfDiffuse")
+        diff_node.inputs["Roughness"].default_value = 1.0
+        diff_node.location = (-150, -100)
+        links.new(tex_node.outputs["Color"], diff_node.inputs["Color"])
+
+        mix_node = nodes.new("ShaderNodeMixShader")
+        mix_node.inputs["Fac"].default_value = 0.25   # 75% emission, 25% diffuse
+        mix_node.location = (100, 0)
+        links.new(emit_node.outputs["Emission"], mix_node.inputs[1])
+        links.new(diff_node.outputs["BSDF"],     mix_node.inputs[2])
+        links.new(mix_node.outputs["Shader"],    out_node.inputs["Surface"])
+    else:
+        # No timestamp: flat emission so terrain is always visible.
+        emit_node = nodes.new("ShaderNodeEmission")
+        emit_node.inputs["Strength"].default_value = 1.0
+        emit_node.location = (0, 0)
+        links.new(tex_node.outputs["Color"], emit_node.inputs["Color"])
+        links.new(emit_node.outputs["Emission"], out_node.inputs["Surface"])
+
+    mesh.materials.append(mat)
 
 
 def _smooth_dem_outliers(elev: list[float], rows: int, cols: int,
@@ -714,7 +764,9 @@ def _build_marker(bpy, track_data: list[dict],
     if n < 1:
         return
 
-    ribbon_spacing_m  = 5.0
+    # ribbon_spacing_m is set by scene_builder._write_track and stored in the
+    # pause schedule so marker timing matches the ribbon face rate exactly.
+    ribbon_spacing_m  = (pause_schedule or {}).get("ribbon_spacing_m", 5.0)
     frames_per_point  = max(1.0, ribbon_spacing_m * fps / speed_mps)
     pauses            = (pause_schedule or {}).get("pauses", [])
     pre_total         = (pause_schedule or {}).get("pre_total_frames", 0)
@@ -944,9 +996,11 @@ def _build_ribbon(bpy, track_data: list[dict],
     # frame_start is keyframed to advance during pauses so the ribbon freezes.
     # Pre-photo frames are handled by setting frame_start > 1 so the ribbon
     # shows 0 faces while pre-track photos are displayed.
-    ribbon_spacing_m = 5.0  # must match _RIBBON_SAMPLE_SPACING_M in scene_builder.py
-    frames_per_face = max(1.0, ribbon_spacing_m * fps / speed_mps)
+    # ribbon_spacing_m is set by scene_builder._write_track; reading from the
+    # schedule keeps the Build modifier rate identical to the marker keyframe rate.
     sched      = pause_schedule or {}
+    ribbon_spacing_m = sched.get("ribbon_spacing_m", 5.0)
+    frames_per_face = max(1.0, ribbon_spacing_m * fps / speed_mps)
     pre_total  = sched.get("pre_total_frames", 0)
     fly_total  = sched.get("fly_total_frames", int((n - 1) * frames_per_face))
 

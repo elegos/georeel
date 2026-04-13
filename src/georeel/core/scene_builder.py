@@ -15,6 +15,7 @@ from scipy.interpolate import splev, splprep
 
 from .blender_runtime import find_blender
 from .elevation_grid import ElevationGrid
+from .pil_lock import PIL_LOCK
 from .pipeline import Pipeline
 from .satellite import SatelliteTexture
 from .sun_position import sun_angles, sun_direction_vector
@@ -56,11 +57,18 @@ def build_scene(
     work_dir = Path(tempfile.mkdtemp(prefix="georeel_scene_"))
     atexit.register(shutil.rmtree, work_dir, True)
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
-    tex_path = _write_texture(
+    manifest_path = _write_texture_tiles(
         pipeline.satellite_texture, pipeline.elevation_grid, work_dir
     )
     settings = settings or {}
-    track_path, ribbon_points = _write_track(pipeline, work_dir)
+    fps = float(settings.get("render/fps", 30))
+    speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
+    # Ribbon spacing must be at least speed_mps/fps so the Build modifier can
+    # reveal exactly one face per camera frame — the camera, ribbon, and marker
+    # all advance the same metres-per-frame regardless of the chosen speed.
+    effective_ribbon_spacing = max(_RIBBON_SAMPLE_SPACING_M, speed_mps / fps)
+    track_path, ribbon_points = _write_track(pipeline, work_dir,
+                                             ribbon_spacing_m=effective_ribbon_spacing)
     pins_path = _write_pins(pipeline, work_dir, settings)
     pause_schedule = _compute_pause_schedule(pipeline, settings, ribbon_points)
     pauses_path = work_dir / "pauses.json"
@@ -70,8 +78,6 @@ def build_scene(
     pin_color = _resolve_pin_color(settings)
     marker_color = _resolve_marker_color(settings)
     height_offset = float(settings.get("render/camera_height_offset", 200))
-    fps = float(settings.get("render/fps", 30))
-    speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
 
     cmd = [
         exe,
@@ -81,7 +87,7 @@ def build_scene(
         "--",
         str(meta_path),
         str(data_path),
-        str(tex_path),
+        str(manifest_path),
         str(blend_path),
         str(track_path),
         str(pins_path),
@@ -150,12 +156,20 @@ def _sun_args(pipeline: "Pipeline") -> list[str]:
     return [str(sx), str(sy), str(sz)]
 
 
-_RIBBON_SAMPLE_SPACING_M = 5.0  # resample every 5 m for smooth curves
+_RIBBON_SAMPLE_SPACING_M = 5.0  # minimum ribbon sample spacing (metres)
 
 
-def _write_track(pipeline: "Pipeline", work_dir: Path) -> tuple[Path, list[dict]]:
-    """Project trackpoints onto a B-spline, resample at 5 m intervals,
+def _write_track(
+    pipeline: "Pipeline",
+    work_dir: Path,
+    ribbon_spacing_m: float = _RIBBON_SAMPLE_SPACING_M,
+) -> tuple[Path, list[dict]]:
+    """Project trackpoints onto a B-spline, resample at *ribbon_spacing_m* intervals,
     sample elevation from the DEM, compute slope, and write JSON.
+
+    *ribbon_spacing_m* is normally the module constant (5 m) but is widened when
+    the flythrough speed requires more than 5 m per animation frame so that the
+    ribbon Build modifier can advance exactly one face per frame.
 
     Returns (track_path, ribbon_points) where ribbon_points is the list of
     {x, y, z, slope} dicts — used by _compute_pause_schedule without re-parsing.
@@ -203,7 +217,7 @@ def _write_track(pipeline: "Pipeline", work_dir: Path) -> tuple[Path, list[dict]
     total_length = cumlen[-1]
 
     # Resample at equal spacing
-    n_samples = max(2, int(total_length / _RIBBON_SAMPLE_SPACING_M) + 1)
+    n_samples = max(2, int(total_length / ribbon_spacing_m) + 1)
     sample_dists = np.linspace(0, total_length, n_samples)
     sample_t = np.interp(sample_dists, cumlen, t_fine)
 
@@ -217,7 +231,7 @@ def _write_track(pipeline: "Pipeline", work_dir: Path) -> tuple[Path, list[dict]
         z = _elev_at_xy(x, y, grid, lat_m, lon_m)
         # Slope: rise over run using spline tangent and DEM elevation difference
         # Sample elevation slightly ahead and behind for accurate grade
-        eps = _RIBBON_SAMPLE_SPACING_M / 2
+        eps = ribbon_spacing_m / 2
         horiz = math.sqrt(float(dxs[i]) ** 2 + float(dys[i]) ** 2)
         if horiz > 1e-6 and i > 0 and i < n_samples - 1:
             z_prev = _elev_at_xy(float(xs[i - 1]), float(ys[i - 1]), grid, lat_m, lon_m)
@@ -339,13 +353,14 @@ def _compute_pause_schedule(
     speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
     pause_dur = float(settings.get("render/photo_pause_duration", 3.0))
     pause_frames = max(1, round(pause_dur * fps))
-    dist_per_frame = speed_mps / fps
+    # Dynamic ribbon spacing (mirrors the value chosen in build_scene()):
+    # widened so the Build modifier always reveals exactly 1 face per camera frame,
+    # keeping the ribbon, marker, and camera speed-locked at any chosen speed.
+    effective_ribbon_spacing = max(_RIBBON_SAMPLE_SPACING_M, speed_mps / fps)
+    frames_per_ribbon_point = max(1.0, effective_ribbon_spacing * fps / speed_mps)
 
     n_ribbon = len(ribbon_points)
-    total_ribbon_len = (
-        (n_ribbon - 1) * _RIBBON_SAMPLE_SPACING_M if n_ribbon > 1 else 0.0
-    )
-    fly_total = max(2, int(total_ribbon_len / dist_per_frame))
+    fly_total = max(2, round((n_ribbon - 1) * frames_per_ribbon_point))
 
     pre_total = 0
     post_total = 0
@@ -380,8 +395,8 @@ def _compute_pause_schedule(
             dists = np.sqrt((ribbon_xy[:, 0] - x) ** 2 + (ribbon_xy[:, 1] - y) ** 2)
             nearest_idx = int(np.argmin(dists))
             fly_frame = max(
-                0, round(nearest_idx * _RIBBON_SAMPLE_SPACING_M / dist_per_frame)
-            )
+                0, round(nearest_idx * frames_per_ribbon_point)
+            )  # consistent with _build_marker's round(i * frames_per_point)
             waypoints.append((fly_frame, r.photo_path or ""))
 
         waypoints.sort(key=lambda w: w[0])
@@ -418,6 +433,9 @@ def _compute_pause_schedule(
         "post_total_frames": post_total,
         "total_scene_frames": total_scene_frames,
         "pauses": pauses,
+        # Communicated to build_scene.py so _build_ribbon/_build_marker use the
+        # same spacing that _write_track used when sampling the ribbon geometry.
+        "ribbon_spacing_m": effective_ribbon_spacing,
     }
 
 
@@ -457,19 +475,26 @@ def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
     return meta_path, data_path
 
 
-def _write_texture(
+_MAX_TILE_PIXELS = 400_000_000  # ~1.2 GB as RGB — safely below Blender's 2 GB pack limit
+
+
+def _write_texture_tiles(
     texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path
 ) -> Path:
-    """Save the satellite texture, cropped to the DEM grid's geographic bounds.
+    """Save the satellite texture as tiled PNG files and write a manifest JSON.
+
+    Splits the image into an N×M grid so each tile stays under _MAX_TILE_PIXELS,
+    working around Blender's 2 GB pack limit.  Adjacent tiles share their border
+    row/column of DEM vertices so no seam appears in the rendered terrain.
 
     The satellite and DEM may cover slightly different extents when cached data
-    from a previous run (with a different frustum margin) is reused.  Without
-    cropping, the terrain UV mapping [0,1] spans the DEM extent while the PNG
-    covers a different extent, causing the imagery to appear spatially offset.
+    from a previous run is reused; the image is cropped to the DEM extent first
+    so UV [0,1] maps correctly.
+
+    Returns the path to the manifest JSON consumed by build_scene.py.
     """
     import io
-
-    from PIL import Image as _PILImage
+    import math as _math
 
     img = texture.image
 
@@ -484,19 +509,85 @@ def _write_texture(
         w, h = img.size
         lat_span = texture.max_lat - texture.min_lat
         lon_span = texture.max_lon - texture.min_lon
-        # Convert DEM geographic bounds to pixel coordinates within the satellite image.
         # Satellite image: row 0 = max_lat (north), col 0 = min_lon (west).
-        left = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
-        right = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
-        top = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
+        left   = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
+        right  = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
+        top    = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
         bottom = int(round((texture.max_lat - grid.min_lat) / lat_span * h))
         left, right = max(0, left), min(w, right)
         top, bottom = max(0, top), min(h, bottom)
         if right > left and bottom > top:
-            img = img.crop((left, top, right, bottom))
+            with PIL_LOCK:
+                img = img.crop((left, top, right, bottom))
 
-    tex_path = work_dir / "satellite.png"
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="PNG", optimize=False)
-    tex_path.write_bytes(buf.getvalue())
-    return tex_path
+    W, H = img.size
+    total_pixels = W * H
+
+    # Determine tile grid dimensions — aim for roughly square tiles
+    n_tiles_needed = _math.ceil(total_pixels / _MAX_TILE_PIXELS)
+    if n_tiles_needed <= 1:
+        n_tile_cols, n_tile_rows = 1, 1
+    else:
+        n_tile_cols = max(1, _math.ceil(_math.sqrt(n_tiles_needed * W / H)))
+        n_tile_rows = max(1, _math.ceil(n_tiles_needed / n_tile_cols))
+        # Adjust until each tile fits
+        while True:
+            tile_w = _math.ceil(W / n_tile_cols)
+            tile_h = _math.ceil(H / n_tile_rows)
+            if tile_w * tile_h <= _MAX_TILE_PIXELS:
+                break
+            if n_tile_cols * H < n_tile_rows * W:
+                n_tile_cols += 1
+            else:
+                n_tile_rows += 1
+
+    _log.info(
+        "[satellite] Splitting %dx%d px texture into %d×%d tiles",
+        W, H, n_tile_rows, n_tile_cols,
+    )
+
+    tiles_dir = work_dir / "sat_tiles"
+    tiles_dir.mkdir(exist_ok=True)
+
+    dem_rows = grid.rows
+    dem_cols = grid.cols
+
+    tiles = []
+    for ti in range(n_tile_rows):
+        for tj in range(n_tile_cols):
+            # Image pixel bounds (PIL crop: exclusive right/bottom)
+            px_left   = tj * W // n_tile_cols
+            px_right  = (tj + 1) * W // n_tile_cols
+            px_top    = ti * H // n_tile_rows
+            px_bottom = (ti + 1) * H // n_tile_rows
+
+            # DEM row/col bounds (inclusive both ends so adjacent tiles share boundary)
+            dem_c_start = round(px_left   / W * (dem_cols - 1))
+            dem_c_end   = round(px_right  / W * (dem_cols - 1))
+            dem_r_start = round(px_top    / H * (dem_rows - 1))
+            dem_r_end   = round(px_bottom / H * (dem_rows - 1))
+
+            tile_path = tiles_dir / f"{ti}_{tj}.png"
+            buf = io.BytesIO()
+            with PIL_LOCK:
+                tile_img = img.crop((px_left, px_top, px_right, px_bottom))
+                tile_img.convert("RGB").save(buf, format="PNG", optimize=False)
+            tile_path.write_bytes(buf.getvalue())
+
+            tiles.append({
+                "ti": ti, "tj": tj,
+                "path": str(tile_path),
+                "dem_r_start": dem_r_start,
+                "dem_r_end":   dem_r_end,
+                "dem_c_start": dem_c_start,
+                "dem_c_end":   dem_c_end,
+            })
+
+    manifest = {
+        "n_tile_rows": n_tile_rows,
+        "n_tile_cols": n_tile_cols,
+        "tiles": tiles,
+    }
+    manifest_path = work_dir / "sat_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    return manifest_path

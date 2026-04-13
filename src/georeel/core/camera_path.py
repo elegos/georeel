@@ -10,12 +10,31 @@ scene coordinate system used by the 3D scene builder:
     Z = elevation (metres)
 """
 
+import gc
+import logging
 import math
-from typing import Sequence
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Sequence
 
 import numpy as np
 from scipy.interpolate import splev, splprep
 from scipy.ndimage import gaussian_filter1d
+from scipy.signal import fftconvolve
+
+_log = logging.getLogger(__name__)
+
+
+def _rss_mb() -> float:
+    """Resident memory of this process in MB (psutil optional)."""
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss / 1024 / 1024
+    except Exception:
+        return float("nan")
+
+
+def _mem(label: str) -> None:
+    _log.debug("[camera_path mem] %s — RSS %.0f MB", label, _rss_mb())
 
 from .bounding_box import BoundingBox
 from .camera_keyframe import CameraKeyframe
@@ -39,7 +58,11 @@ class CameraPathError(Exception):
 # Public entry point
 # ------------------------------------------------------------------
 
-def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe]:
+def build_camera_path(
+    pipeline: Pipeline,
+    settings: dict,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[CameraKeyframe]:
     """Generate CameraKeyframes for the fly-through.
 
     *settings* is the dict returned by ``get_render_settings(QSettings)``
@@ -77,6 +100,31 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     # 1. Trackpoints → scene XY                                           #
     # ------------------------------------------------------------------ #
 
+    def _step(n: int, label: str) -> None:
+        _log.info("[camera_path] step %d/7 — %s  (RSS %.0f MB)", n, label, _rss_mb())
+        if progress_callback is not None:
+            progress_callback(n, 7)
+
+    _log.info("[camera_path] starting  trackpoints=%d  fps=%d  speed=%.1f m/s  (RSS %.0f MB)",
+              len(pipeline.trackpoints), fps, speed_mps, _rss_mb())
+
+    # Log the geographic bounding box so bad coordinates (e.g. residual 0,0
+    # holes) are immediately visible as an implausible extent.
+    lats = [tp.latitude  for tp in pipeline.trackpoints]
+    lons = [tp.longitude for tp in pipeline.trackpoints]
+    _log.info(
+        "[camera_path] trackpoint bbox  lat [%.6f, %.6f]  lon [%.6f, %.6f]"
+        "  scene %.1f km × %.1f km",
+        min(lats), max(lats), min(lons), max(lons),
+        lat_m / 1_000, lon_m / 1_000,
+    )
+    # Count any residual (0,0) points that the cleaner missed.
+    zero_pts = sum(1 for tp in pipeline.trackpoints if tp.latitude == 0.0 and tp.longitude == 0.0)
+    if zero_pts:
+        _log.warning("[camera_path] %d trackpoint(s) still have (0,0) coordinates — "
+                     "re-run GPX cleaning to remove them.", zero_pts)
+    del lats, lons
+
     pts = np.array([_tp_to_xy(tp, bbox, lat_m, lon_m) for tp in pipeline.trackpoints])
     pts = _remove_duplicates(pts)
 
@@ -95,25 +143,62 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
         pts = simplified if len(simplified) >= 4 else pts
 
     # Fit parametric cubic B-spline (s=0 → passes through every point)
+    n_pts = len(pts)
     tck, _ = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
+    del pts
+
+    _step(1, f"spline fitted  n_pts={n_pts}")
 
     # ------------------------------------------------------------------ #
     # 3. Resample at equal arc-length (one sample per frame)              #
     # ------------------------------------------------------------------ #
 
-    t_fine = np.linspace(0, 1, max(10_000, len(pts) * 100))
+    # Cap the fine-grid size: 2 M points is more than enough arc-length
+    # accuracy for any track length, and avoids gigabytes of temporaries.
+    n_fine = min(max(10_000, n_pts * 100), 2_000_000)
+    t_fine = np.linspace(0, 1, n_fine)
     xs_fine, ys_fine = splev(t_fine, tck)
     dx_fine = np.diff(xs_fine)
     dy_fine = np.diff(ys_fine)
     cumlen = np.concatenate([[0.0], np.cumsum(np.sqrt(dx_fine**2 + dy_fine**2))])
     total_length = cumlen[-1]
+    del dx_fine, dy_fine, xs_fine, ys_fine  # free ~4 × n_fine floats
+
+    # Sanity-check the computed track length before using it to size arrays.
+    # A track longer than 2,000 km almost certainly contains uncleaned bad GPS
+    # points (teleportation jumps).  Warn but continue — the user can re-clean
+    # the GPX with a stricter jump threshold.
+    _TRACK_WARN_KM = 2_000.0
+    if total_length > _TRACK_WARN_KM * 1_000:
+        _log.warning(
+            "[camera_path] Track arc-length is %.0f km — this is almost certainly "
+            "caused by bad GPS points that were not removed by the GPX cleaner.  "
+            "Re-run GPX cleaning with a stricter max-jump or max-speed threshold.",
+            total_length / 1_000,
+        )
 
     dist_per_frame = speed_mps / fps
-    n_frames = max(2, int(total_length / dist_per_frame))
+    n_frames_raw = max(2, int(total_length / dist_per_frame))
+
+    # Hard cap: no more than 2 hours of video at the chosen fps.
+    # Beyond this the memory cost of Python keyframe objects becomes extreme
+    # (each CameraKeyframe is ~350 bytes; 100 M objects = ~35 GB).
+    _MAX_VIDEO_S = 7_200          # 2 hours
+    n_frames_max = fps * _MAX_VIDEO_S
+    if n_frames_raw > n_frames_max:
+        _log.warning(
+            "[camera_path] Clamping n_frames from %d to %d (%.1f h cap). "
+            "The track length (%.0f km) is likely inflated by bad GPS data.",
+            n_frames_raw, n_frames_max, _MAX_VIDEO_S / 3600, total_length / 1_000,
+        )
+    n_frames = min(n_frames_raw, n_frames_max)
     sample_dists = np.linspace(0, total_length, n_frames)
     sample_t = np.interp(sample_dists, cumlen, t_fine)
+    del t_fine, cumlen, sample_dists  # no longer needed
 
     xs, ys = splev(sample_t, tck)
+
+    _step(2, f"resampled  n_fine={n_fine}  n_frames={n_frames}  length={total_length/1000:.1f} km")
 
     # ------------------------------------------------------------------ #
     # 4. Terrain heights and tilt                                         #
@@ -121,10 +206,10 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
 
     tilt_rad = math.radians(tilt_deg)
 
-    terrain_zs = np.array([
-        _height_at(xs[i], ys[i], grid, bbox, lat_m, lon_m, height_mode, 0.0)
-        for i in range(n_frames)
-    ])
+    # Vectorised: convert all frame positions to lat/lon, then batch-interpolate.
+    terrain_zs = _height_at_batch(xs, ys, grid, bbox, lat_m, lon_m, height_mode)
+
+    _step(3, "terrain heights done")
 
     # ------------------------------------------------------------------ #
     # 5. Forward directions (horizontal heading at each frame)            #
@@ -133,14 +218,25 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     lookahead_frames = max(1, round(lookahead_s * fps))
 
     if orient_mode == "tangent":
-        forward_dirs = _compute_forward_dirs_tangent(
+        del sample_t  # not needed for tangent mode; free before large array ops
+        _log.info("[camera_path] computing tangent directions  lookahead_frames=%d  (RSS %.0f MB)",
+                  lookahead_frames, _rss_mb())
+        nxs, nys = _compute_forward_dirs_tangent(
             xs, ys, lookahead_frames, tangent_weight,
+            progress_callback=progress_callback,
+            progress_base=3, progress_total=7,
         )
     else:
         dx_dt, dy_dt = splev(sample_t, tck, der=1)
-        forward_dirs = _compute_forward_dirs_spline(
+        del sample_t
+        if progress_callback is not None:
+            progress_callback(4, 7)
+        nxs, nys = _compute_forward_dirs_spline(
             xs, ys, dx_dt, dy_dt, orient_mode,
         )
+        del dx_dt, dy_dt
+
+    _step(5, "forward directions done")
 
     # ------------------------------------------------------------------ #
     # 6. Camera positions and look-at points                              #
@@ -155,47 +251,69 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
     horiz_back = height_offset * math.cos(tilt_rad)
     height_above = height_offset * math.sin(tilt_rad)
 
-    # Smooth the forward direction components with a 2-second window before
-    # computing camera offsets.  This removes end-of-track rotation jumps
-    # (where the lookahead window shrinks to 0 frames and the direction
-    # collapses to a single-point estimate) and any mid-track oscillations.
-    nxs = np.array([forward_dirs[i][0] for i in range(n_frames)])
-    nys = np.array([forward_dirs[i][1] for i in range(n_frames)])
+    # nxs/nys are already numpy arrays returned directly from the direction
+    # functions — no intermediate list-of-tuples conversion needed.
+    # Smooth direction and position arrays in parallel — all gaussian_filter1d
+    # calls are independent and release the GIL, so threading speeds them up.
     sigma_dir = max(1.0, fps * 2)
-    nxs = gaussian_filter1d(nxs, sigma=sigma_dir, mode="nearest")
-    nys = gaussian_filter1d(nys, sigma=sigma_dir, mode="nearest")
-    mags = np.hypot(nxs, nys)
-    mags = np.where(mags > 1e-10, mags, 1.0)
-    nxs /= mags
-    nys /= mags
+    sigma = max(1.0, fps / 2)
 
     cam_xs_raw = xs - nxs * horiz_back
     cam_ys_raw = ys - nys * horiz_back
     cam_zs_raw = terrain_zs + height_above
 
-    # Light positional smoothing to remove any remaining jitter from DEM noise.
-    sigma = max(1.0, fps / 2)
-    cam_xs = gaussian_filter1d(cam_xs_raw, sigma=sigma, mode="nearest")
-    cam_ys = gaussian_filter1d(cam_ys_raw, sigma=sigma, mode="nearest")
-    cam_zs = gaussian_filter1d(cam_zs_raw, sigma=sigma, mode="nearest")
+    _log.info("[camera_path] smoothing 6 arrays in parallel  (RSS %.0f MB)", _rss_mb())
+    with ThreadPoolExecutor(max_workers=6) as _gpool:
+        f_nxs       = _gpool.submit(gaussian_filter1d, nxs,       sigma_dir, mode="nearest")
+        f_nys       = _gpool.submit(gaussian_filter1d, nys,       sigma_dir, mode="nearest")
+        f_cam_xs    = _gpool.submit(gaussian_filter1d, cam_xs_raw, sigma,    mode="nearest")
+        f_cam_ys    = _gpool.submit(gaussian_filter1d, cam_ys_raw, sigma,    mode="nearest")
+        f_cam_zs    = _gpool.submit(gaussian_filter1d, cam_zs_raw, sigma,    mode="nearest")
+        f_look_at_z = _gpool.submit(gaussian_filter1d, terrain_zs, sigma,    mode="nearest")
+        nxs       = f_nxs.result()
+        nys       = f_nys.result()
+        cam_xs    = f_cam_xs.result()
+        cam_ys    = f_cam_ys.result()
+        cam_zs    = f_cam_zs.result()
+        look_at_zs = f_look_at_z.result()
 
-    # Also smooth look-at Z to suppress DEM noise (look-at XY stays on the spline)
-    look_at_zs = gaussian_filter1d(terrain_zs, sigma=sigma, mode="nearest")
+    del cam_xs_raw, cam_ys_raw, cam_zs_raw
+
+    mags = np.hypot(nxs, nys)
+    mags = np.where(mags > 1e-10, mags, 1.0)
+    nxs /= mags
+    nys /= mags
+    del mags
 
     # Frame numbers start at 1 to match Blender's default timeline origin and
     # the Build modifier's frame_start=1 in build_scene.py.
+    # Convert to plain Python arrays first so the list comprehension does
+    # cheap indexed lookups rather than per-element numpy scalar boxing.
+    _log.info("[camera_path] building %d keyframe objects  (RSS %.0f MB)", n_frames, _rss_mb())
+    _cam_xs     = cam_xs.tolist();     del cam_xs
+    _cam_ys     = cam_ys.tolist();     del cam_ys
+    _cam_zs     = cam_zs.tolist();     del cam_zs
+    _xs         = xs.tolist();          del xs
+    _ys         = ys.tolist();          del ys
+    _look_at_zs = look_at_zs.tolist(); del look_at_zs
+    del nxs, nys, terrain_zs
+
     keyframes: list[CameraKeyframe] = [
         CameraKeyframe(
             frame=i + 1,
-            x=float(cam_xs[i]),
-            y=float(cam_ys[i]),
-            z=float(cam_zs[i]),
-            look_at_x=float(xs[i]),
-            look_at_y=float(ys[i]),
-            look_at_z=float(look_at_zs[i]),
+            x=_cam_xs[i],
+            y=_cam_ys[i],
+            z=_cam_zs[i],
+            look_at_x=_xs[i],
+            look_at_y=_ys[i],
+            look_at_z=_look_at_zs[i],
         )
         for i in range(n_frames)
     ]
+    del _cam_xs, _cam_ys, _cam_zs, _xs, _ys, _look_at_zs
+    gc.collect()
+
+    _step(6, f"keyframes built  count={len(keyframes)}  (after gc.collect)")
 
     # ------------------------------------------------------------------ #
     # 7. Insert pause keyframes at photo waypoints                         #
@@ -207,6 +325,9 @@ def build_camera_path(pipeline: Pipeline, settings: dict) -> list[CameraKeyframe
             grid, height_mode, height_offset,
             fps, pause_duration, pause_mode,
         )
+
+
+    _step(7, f"done  total_keyframes={len(keyframes)}")
 
     return keyframes
 
@@ -273,6 +394,28 @@ def _height_at(x: float, y: float,
     return elev + height_offset
 
 
+def _height_at_batch(
+    xs: np.ndarray, ys: np.ndarray,
+    grid: ElevationGrid, bbox: BoundingBox,
+    lat_m: float, lon_m: float,
+    height_mode: str,
+) -> np.ndarray:
+    """Vectorised terrain-height lookup for all frames at once."""
+    lats = bbox.min_lat + ys / lat_m * (bbox.max_lat - bbox.min_lat)
+    lons = bbox.min_lon + xs / lon_m * (bbox.max_lon - bbox.min_lon)
+    if height_mode == "dem_smooth":
+        dlat = (grid.max_lat - grid.min_lat) / (grid.rows - 1) * 1.5
+        dlon = (grid.max_lon - grid.min_lon) / (grid.cols - 1) * 1.5
+        # 9 offset grids, each evaluated in one vectorised call.
+        samples = [
+            grid.elevation_at_batch(lats + r * dlat, lons + c * dlon)
+            for r in (-1, 0, 1)
+            for c in (-1, 0, 1)
+        ]
+        return np.mean(samples, axis=0)
+    return grid.elevation_at_batch(lats, lons)
+
+
 def _smooth_elevation(grid: ElevationGrid, lat: float, lon: float) -> float:
     """Mean elevation over a 3×3 neighbourhood (1.5× grid spacing)."""
     dlat = (grid.max_lat - grid.min_lat) / (grid.rows - 1) * 1.5
@@ -292,66 +435,144 @@ def _smooth_elevation(grid: ElevationGrid, lat: float, lon: float) -> float:
 def _compute_forward_dirs_tangent(
     xs: np.ndarray, ys: np.ndarray,
     lookahead_frames: int, weight_mode: str,
-) -> list[tuple[float, float]]:
-    """Weighted-average forward direction using upcoming track positions."""
+    progress_callback: Callable[[int, int], None] | None = None,
+    progress_base: int = 0, progress_total: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Weighted-average forward direction using upcoming track positions.
+
+    Bulk frames (where the full lookahead window fits) are handled with a
+    single vectorised matrix multiply via ``sliding_window_view``.  Only the
+    tail region — where the window shrinks because we are near the end of the
+    track — is computed in a small Python loop.
+    """
     n = len(xs)
-    dirs: list[tuple[float, float]] = []
+    L = min(lookahead_frames, n - 1)   # can't look past end of track
 
-    for i in range(n):
-        j_start = i + 1
-        j_end   = min(i + lookahead_frames + 1, n)
+    # Precompute normalised weights for a full-size window (constant across bulk).
+    t_full = np.linspace(0.0, 1.0, L) if L > 1 else np.zeros(1)
+    if weight_mode == "uniform":
+        w_full = np.ones(L) / L
+    elif weight_mode == "exponential":
+        w_full = np.exp(-3.0 * t_full)
+        w_full /= w_full.sum()
+    else:  # linear (default)
+        w_full = 1.0 - t_full
+        w_full /= w_full.sum()
 
-        if j_start >= n:
-            dirs.append(dirs[-1] if dirs else (0.0, 1.0))
+    # Number of frames whose lookahead window is fully populated.
+    # Frame i uses xs[i+1 : i+L+1]; that slice fits iff i+L+1 <= n, i.e. i < n-L.
+    n_bulk = max(0, n - L)
+
+    dirs_x = np.empty(n)
+    dirs_y = np.empty(n)
+
+    # ── Bulk region ──────────────────────────────────────────────────────────
+    if n_bulk > 0 and L > 0:
+        # The weighted window sum is a correlation: tx[i] = dot(xs[i+1:i+L+1], w_full).
+        # Replacing the O(n×L) sliding-window matrix multiply with an O(n log n)
+        # FFT-based convolution. x and y are independent so we run them in parallel.
+        seg_x = xs[1 : n_bulk + L]
+        seg_y = ys[1 : n_bulk + L]
+        kernel = w_full[::-1]   # fftconvolve computes convolution; kernel flip = correlation
+
+        with ThreadPoolExecutor(max_workers=2) as _pool:
+            fut_x = _pool.submit(fftconvolve, seg_x, kernel, "valid")
+            fut_y = _pool.submit(fftconvolve, seg_y, kernel, "valid")
+            tx = fut_x.result()
+            ty = fut_y.result()
+
+        dx = tx - xs[:n_bulk]
+        dy = ty - ys[:n_bulk]
+        norms = np.hypot(dx, dy)
+        valid = norms > 1e-6
+        safe_norms = np.where(valid, norms, 1.0)
+        dirs_x[:n_bulk] = np.where(valid, dx / safe_norms, np.nan)
+        dirs_y[:n_bulk] = np.where(valid, dy / safe_norms, np.nan)
+
+    if progress_callback is not None:
+        progress_callback(progress_base + 1, progress_total)   # bulk done
+
+    # ── Tail region (shrinking window) ───────────────────────────────────────
+    last_x, last_y = 0.0, 1.0   # fallback direction
+    # Carry forward the last valid bulk direction if available.
+    for i in range(n_bulk - 1, -1, -1):
+        if not math.isnan(dirs_x[i]):
+            last_x, last_y = dirs_x[i], dirs_y[i]
+            break
+
+    for i in range(n_bulk, n):
+        k = n - i - 1
+        if k <= 0:
+            dirs_x[i], dirs_y[i] = last_x, last_y
             continue
-
-        window = np.arange(j_start, j_end)
-        k = len(window)
         t = np.linspace(0.0, 1.0, k)
         if weight_mode == "uniform":
-            w = np.ones(k)
+            w = np.ones(k) / k
         elif weight_mode == "exponential":
-            w = np.exp(-3.0 * t)
-        else:  # linear
-            w = 1.0 - t
-        w /= w.sum()
-
-        tx = float(np.dot(w, xs[window]))
-        ty = float(np.dot(w, ys[window]))
-        dx = tx - float(xs[i])
-        dy = ty - float(ys[i])
+            w = np.exp(-3.0 * t); w /= w.sum()
+        else:
+            w = 1.0 - t; w /= w.sum()
+        tx = float(np.dot(w, xs[i + 1:]))
+        ty = float(np.dot(w, ys[i + 1:]))
+        dx, dy = tx - float(xs[i]), ty - float(ys[i])
         norm = math.sqrt(dx * dx + dy * dy)
         if norm > 1e-6:
-            dirs.append((dx / norm, dy / norm))
-        else:
-            dirs.append(dirs[-1] if dirs else (0.0, 1.0))
+            last_x, last_y = dx / norm, dy / norm
+        dirs_x[i], dirs_y[i] = last_x, last_y
 
-    return dirs
+    # Fix any NaN bulk entries (zero-length segment) by forward-filling.
+    # Vectorised: build an index array where each NaN position gets the index
+    # of the last preceding non-NaN value, then index-select in one shot.
+    nan_mask = np.isnan(dirs_x)
+    if nan_mask.any():
+        valid_mask = ~nan_mask
+        if not valid_mask.any():
+            dirs_x[:] = 0.0
+            dirs_y[:] = 1.0
+        else:
+            # Replace NaN indices with 0 so accumulate works, then propagate.
+            idx = np.where(valid_mask, np.arange(n), 0)
+            np.maximum.accumulate(idx, out=idx)
+            dirs_x = dirs_x[idx]
+            dirs_y = dirs_y[idx]
+
+    return dirs_x, dirs_y
 
 
 def _compute_forward_dirs_spline(
     xs: np.ndarray, ys: np.ndarray,
     dx_dt: np.ndarray, dy_dt: np.ndarray,
     orient_mode: str,
-) -> list[tuple[float, float]]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Forward direction from spline tangent or next-point vector."""
-    n = len(xs)
-    dirs: list[tuple[float, float]] = []
+    if orient_mode == "lookat":
+        dx = np.empty(len(xs))
+        dy = np.empty(len(xs))
+        dx[:-1] = np.diff(xs)
+        dy[:-1] = np.diff(ys)
+        dx[-1] = dx_dt[-1]
+        dy[-1] = dy_dt[-1]
+    else:
+        dx = dx_dt.copy()
+        dy = dy_dt.copy()
 
-    for i in range(n):
-        if orient_mode == "lookat" and i + 1 < n:
-            dx = float(xs[i + 1] - xs[i])
-            dy = float(ys[i + 1] - ys[i])
-        else:
-            dx, dy = float(dx_dt[i]), float(dy_dt[i])
+    norms = np.hypot(dx, dy)
+    valid = norms > 1e-10
+    safe_norms = np.where(valid, norms, 1.0)
+    dirs_x = np.where(valid, dx / safe_norms, np.nan)
+    dirs_y = np.where(valid, dy / safe_norms, np.nan)
 
-        norm = math.sqrt(dx * dx + dy * dy)
-        if norm > 1e-10:
-            dirs.append((dx / norm, dy / norm))
-        else:
-            dirs.append(dirs[-1] if dirs else (0.0, 1.0))
+    # Forward-fill any degenerate (zero-length) segments
+    nan_mask = np.isnan(dirs_x)
+    if nan_mask.any():
+        idx = np.where(~nan_mask, np.arange(len(xs)), 0)
+        np.maximum.accumulate(idx, out=idx)
+        dirs_x = dirs_x[idx]
+        dirs_y = dirs_y[idx]
+        if np.isnan(dirs_x[0]):
+            dirs_x[0], dirs_y[0] = 0.0, 1.0
 
-    return dirs
+    return dirs_x, dirs_y
 
 
 

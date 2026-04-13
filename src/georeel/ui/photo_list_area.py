@@ -50,7 +50,12 @@ class PhotoListArea(DropArea):
         # clipboard holds (timestamp | None, latitude | None, longitude | None)
         self._clipboard: tuple[datetime | None, float | None, float | None] | None = None
         self._preview_windows: list[PhotoPreviewWindow] = []
-        self._thread_pool = QThreadPool.globalInstance()
+        # Dedicated single-thread pool: libjpeg (used by libqjpeg.so) is not
+        # thread-safe under concurrent JPEG decodes — serialise to 1 thread.
+        self._thread_pool = QThreadPool()
+        self._thread_pool.setMaxThreadCount(1)
+        # Cache original on-disk EXIF per path so _rebuild_table never re-reads files.
+        self._original_exif: dict[str, object] = {}
         self._match_results: dict[str, MatchResult] = {}
         self._trackpoints: list[Trackpoint] = []
         self._pause_frames: dict[str, list[int]] = {}  # photo_path → [first_frame, last_frame]
@@ -68,6 +73,7 @@ class PhotoListArea(DropArea):
         self._table.horizontalHeader().setSectionResizeMode(_COL_GPS, QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeToContents)
         self._table.verticalHeader().setVisible(False)
+        # Icon size set but thumbnails currently disabled (see _rebuild_table).
         self._table.setIconSize(QSize(_THUMBNAIL_HEIGHT * 2, _THUMBNAIL_HEIGHT))
         self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self._table.keyPressEvent = self._table_key_press
@@ -156,6 +162,7 @@ class PhotoListArea(DropArea):
         self._store.clear()
         self._table.setRowCount(0)
         self._clipboard = None
+        self._original_exif = {}
         self._match_results = {}
         self._trackpoints = []
         self._pause_frames = {}
@@ -194,6 +201,7 @@ class PhotoListArea(DropArea):
         if path in existing_paths:
             return
         metadata = read_photo_metadata(path)
+        self._original_exif[path] = metadata  # cache before any overrides
         self._store.add(metadata)
         self._rebuild_table()
         self.photos_changed.emit()
@@ -205,6 +213,7 @@ class PhotoListArea(DropArea):
         for row in selected_rows:
             path = self._table.item(row, 0).data(Qt.UserRole)
             self._store.remove(path)
+            self._original_exif.pop(path, None)
         self._rebuild_table()
         self.photos_changed.emit()
 
@@ -418,8 +427,6 @@ class PhotoListArea(DropArea):
             return (m.timestamp is None, m.timestamp, Path(m.path).name.lower())
 
         photos = sorted(self._store.all(), key=sort_key)
-        # Cache original EXIF for override detection (keyed by path)
-        originals: dict[str, object] = {}
 
         self._table.setRowCount(0)
         for metadata in photos:
@@ -432,10 +439,10 @@ class PhotoListArea(DropArea):
             self._table.setRowHeight(row, _THUMBNAIL_HEIGHT + 4)
             self._submit_thumbnail(metadata.path)
 
-            # Lazy-read original EXIF for override detection
-            if metadata.path not in originals:
-                originals[metadata.path] = read_photo_metadata(metadata.path)
-            original = originals[metadata.path]
+            # Use cached original EXIF; read and cache on first encounter (e.g. project load).
+            if metadata.path not in self._original_exif:
+                self._original_exif[metadata.path] = read_photo_metadata(metadata.path)
+            original = self._original_exif[metadata.path]
 
             ts = metadata.timestamp
             ts_overridden = ts != original.timestamp

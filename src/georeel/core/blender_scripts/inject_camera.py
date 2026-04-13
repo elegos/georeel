@@ -42,6 +42,34 @@ def _zero_roll_quat(pos, look_at, Vector, Matrix):
     return mat.to_quaternion()
 
 
+def _select_keyframe_indices(keyframes_data: list, stride: int) -> list[int]:
+    """Return sorted indices into keyframes_data to use as Blender keyframes.
+
+    Rules:
+    - Always include first and last frame.
+    - Include every `stride`-th frame for smooth motion.
+    - Include the first frame of every pause segment (is_pause transitions
+      False→True) and the first frame after each pause (True→False), so
+      CONSTANT interpolation can be applied precisely at pause boundaries.
+    """
+    n = len(keyframes_data)
+    selected: set[int] = set()
+    selected.add(0)
+    selected.add(n - 1)
+    for i in range(0, n, stride):
+        selected.add(i)
+    in_pause = False
+    for i, kf in enumerate(keyframes_data):
+        is_pause = kf.get("is_pause", False)
+        if is_pause and not in_pause:
+            selected.add(i)
+            in_pause = True
+        elif not is_pause and in_pause:
+            selected.add(i)
+            in_pause = False
+    return sorted(selected)
+
+
 def main() -> None:
     import bpy
     from mathutils import Matrix, Vector
@@ -49,12 +77,13 @@ def main() -> None:
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     if len(argv) < 2:
-        print("Usage: inject_camera.py -- keyframes.json output.blend",
+        print("Usage: inject_camera.py -- keyframes.json output.blend [resolution] [fps]",
               file=sys.stderr)
         sys.exit(1)
 
     keyframes_path, output_path = argv[0], argv[1]
     resolution = argv[2] if len(argv) > 2 else "1080p"
+    fps        = int(argv[3]) if len(argv) > 3 else 30
 
     _RESOLUTIONS = {
         "720p":  (1280,  720), "1080p": (1920, 1080),
@@ -103,7 +132,14 @@ def main() -> None:
     cam_obj.rotation_mode = "QUATERNION"
 
     # ------------------------------------------------------------------ #
-    # Insert a location + rotation keyframe for every camera keyframe     #
+    # Insert subsampled keyframes; Blender interpolates between them.     #
+    #                                                                     #
+    # Stride = fps → 1 keyframe per second.  This reduces keyframe count  #
+    # by ~fps× compared to inserting every frame, while LINEAR            #
+    # interpolation between the pre-smoothed camera positions is          #
+    # visually indistinguishable from per-frame injection.                #
+    # Pause segments (is_pause=True) use CONSTANT interpolation so the    #
+    # camera holds exactly at the photo waypoint position.                #
     # ------------------------------------------------------------------ #
     first_frame = keyframes_data[0]["frame"]
     last_frame  = keyframes_data[-1]["frame"]
@@ -111,7 +147,14 @@ def main() -> None:
     scene.frame_start = first_frame
     scene.frame_end   = last_frame
 
-    for kf in keyframes_data:
+    stride  = max(1, fps)
+    indices = _select_keyframe_indices(keyframes_data, stride)
+
+    # Map from Blender frame number → interpolation type
+    frame_interp: dict[int, str] = {}
+
+    for idx in indices:
+        kf      = keyframes_data[idx]
         frame   = kf["frame"]
         pos     = Vector((kf["x"],        kf["y"],        kf["z"]))
         look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
@@ -123,11 +166,16 @@ def main() -> None:
         cam_obj.keyframe_insert(data_path="location",            frame=frame)
         cam_obj.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-    # Set all keyframes to LINEAR interpolation for smooth motion
+        frame_interp[frame] = 'CONSTANT' if kf.get("is_pause", False) else 'LINEAR'
+
+    print(f"[georeel] Injected {len(indices)} keyframes "
+          f"(stride={stride}, total={len(keyframes_data)})")
+
+    # Apply per-keyframe interpolation (CONSTANT for pauses, LINEAR for motion)
     if cam_obj.animation_data and cam_obj.animation_data.action:
         for fc in cam_obj.animation_data.action.fcurves:
             for kp in fc.keyframe_points:
-                kp.interpolation = 'LINEAR'
+                kp.interpolation = frame_interp.get(round(kp.co.x), 'LINEAR')
 
     # ------------------------------------------------------------------ #
     # Apply render resolution so the camera aspect ratio is correct       #

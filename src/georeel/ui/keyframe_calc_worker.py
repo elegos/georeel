@@ -17,10 +17,12 @@ import math
 
 from PySide6.QtCore import QThread, Signal
 
+from georeel.core.bounding_box import BoundingBox
 from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.frustum import frustum_margin
+from georeel.core.gpx_cleaner import detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
@@ -32,6 +34,7 @@ class KeyframeCalcWorker(QThread):
     keyframes_ready  = Signal(object, object, object)  # keyframes, match_results, trackpoints
     dem_fetched      = Signal(object)                  # ElevationGrid
     error            = Signal(str)
+    progress         = Signal(int, int)                # (current, total)
 
     def __init__(
         self,
@@ -58,6 +61,31 @@ class KeyframeCalcWorker(QThread):
         except GpxParseError as e:
             self.error.emit(f"GPX parse error: {e}")
             return
+
+        # Apply the same GPX cleaning that the main pipeline uses, so that
+        # (0,0) holes and implausible-speed points don't inflate the track
+        # length and produce millions of keyframes.
+        repair_mode    = self._settings.get("gpx/repair_mode", "none")
+        max_speed_mps  = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
+        max_gap_s      = float(self._settings.get("gpx/max_gap_s", 30.0))
+        max_jump_m     = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
+        osrm_profile   = self._settings.get("gpx/osrm_profile", "driving")
+        trackpoints, _ = detect_and_repair(
+            trackpoints, repair_mode,
+            max_speed_mps=max_speed_mps,
+            max_gap_s=max_gap_s,
+            max_jump_m=max_jump_m,
+            osrm_profile=osrm_profile,
+        )
+        # Recompute bbox from cleaned points only.
+        if trackpoints:
+            bbox = BoundingBox(
+                min_lat=min(tp.latitude  for tp in trackpoints),
+                max_lat=max(tp.latitude  for tp in trackpoints),
+                min_lon=min(tp.longitude for tp in trackpoints),
+                max_lon=max(tp.longitude for tp in trackpoints),
+            )
+
         pipeline.trackpoints  = trackpoints
         pipeline.bounding_box = bbox
 
@@ -77,11 +105,13 @@ class KeyframeCalcWorker(QThread):
                 return
 
         # Stage 3 — DEM (required by camera path for terrain heights)
-        _distance_m = float(self._settings.get("render/camera_height_offset", 200))
-        _tilt_deg   = float(self._settings.get("render/camera_tilt_deg", 45))
+        _distance_m   = float(self._settings.get("render/camera_height_offset", 200))
+        _tilt_deg     = float(self._settings.get("render/camera_tilt_deg", 45))
+        _max_view_m   = float(self._settings.get("render/frustum_margin_km", 50)) * 1_000
         margin_m = frustum_margin(
-            height_m=_distance_m * math.sin(math.radians(_tilt_deg)),
+            height_m=_distance_m,
             tilt_deg=_tilt_deg,
+            max_view_m=_max_view_m,
         )
         fetch_bbox = bbox.expand(margin_m)
 
@@ -98,7 +128,8 @@ class KeyframeCalcWorker(QThread):
         else:
             self.status.emit("Keyframe preview: fetching DEM…")
             try:
-                grid = fetch_dem(fetch_bbox)
+                grid = fetch_dem(fetch_bbox,
+                                 progress_callback=lambda c, t: self.progress.emit(c, t))
             except DemFetchError as e:
                 self.error.emit(f"DEM fetch error: {e}")
                 return
@@ -108,7 +139,10 @@ class KeyframeCalcWorker(QThread):
         # Stage 6 — Camera path (no scene needed, just needs trackpoints + DEM)
         self.status.emit("Keyframe preview: computing camera path…")
         try:
-            keyframes = build_camera_path(pipeline, self._settings)
+            keyframes = build_camera_path(
+                pipeline, self._settings,
+                progress_callback=lambda c, t: self.progress.emit(c, t),
+            )
         except CameraPathError as e:
             self.error.emit(f"Camera path error: {e}")
             return

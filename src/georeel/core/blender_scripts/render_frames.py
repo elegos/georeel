@@ -74,6 +74,30 @@ _SAMPLES = {
 }
 
 
+def _select_keyframe_indices(keyframes_data: list, stride: int) -> list[int]:
+    """Return sorted indices into keyframes_data to use as Blender keyframes.
+
+    Always includes first/last frame and pause-segment boundaries so that
+    CONSTANT interpolation can be applied precisely at photo waypoints.
+    """
+    n = len(keyframes_data)
+    selected: set[int] = set()
+    selected.add(0)
+    selected.add(n - 1)
+    for i in range(0, n, stride):
+        selected.add(i)
+    in_pause = False
+    for i, kf in enumerate(keyframes_data):
+        is_pause = kf.get("is_pause", False)
+        if is_pause and not in_pause:
+            selected.add(i)
+            in_pause = True
+        elif not is_pause and in_pause:
+            selected.add(i)
+            in_pause = False
+    return sorted(selected)
+
+
 def main() -> None:
     import bpy
     from mathutils import Matrix, Quaternion, Vector
@@ -157,34 +181,50 @@ def main() -> None:
     scene.camera = cam_obj
 
     # ------------------------------------------------------------------ #
-    # Insert camera animation keyframes                                    #
+    # Insert subsampled camera animation keyframes                         #
     #                                                                     #
-    # We use 0-based frame numbers (seq_idx = kf["frame"] - 1) so the    #
-    # output filenames produced by Blender's animation renderer match      #
+    # We use 0-based frame numbers (seq_idx) so output filenames match    #
     # the 000000.png … {N-1:06d}.png pattern the compositor expects.      #
+    #                                                                     #
+    # Stride=10 → ~10× fewer keyframe_insert calls vs per-frame.         #
+    # Blender uses LINEAR interpolation between subsampled keyframes;     #
+    # since the camera path is already smooth this is visually exact.     #
+    # Pause segments (is_pause=True) use CONSTANT interpolation so the    #
+    # camera holds precisely at photo waypoint positions.                 #
     # ------------------------------------------------------------------ #
 
-    for seq_idx, kf in enumerate(keyframes_data):
+    _STRIDE = 10
+    indices = _select_keyframe_indices(keyframes_data, _STRIDE)
+
+    # Map from Blender frame (seq_idx) → interpolation type
+    frame_interp: dict[int, str] = {}
+
+    cam_obj.rotation_mode = "QUATERNION"
+    for idx in indices:
+        kf      = keyframes_data[idx]
         pos     = Vector((kf["x"],        kf["y"],        kf["z"]))
         look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
 
         rot_quat = _zero_roll_quat(pos, look_at, Vector, Matrix, Quaternion)
 
         cam_obj.location            = pos
-        cam_obj.rotation_mode       = "QUATERNION"
         cam_obj.rotation_quaternion = rot_quat
 
-        cam_obj.keyframe_insert(data_path="location",            frame=seq_idx)
-        cam_obj.keyframe_insert(data_path="rotation_quaternion", frame=seq_idx)
+        cam_obj.keyframe_insert(data_path="location",            frame=idx)
+        cam_obj.keyframe_insert(data_path="rotation_quaternion", frame=idx)
 
-    # CONSTANT interpolation: positions are pre-computed; Blender must not
-    # blend between them.  CONSTANT extrapolation beyond the first/last KF
-    # keeps the camera fixed (matches the existing per-frame behaviour).
+        frame_interp[idx] = 'CONSTANT' if kf.get("is_pause", False) else 'LINEAR'
+
+    print(f"[georeel] Inserted {len(indices)} keyframes "
+          f"(stride={_STRIDE}, total={total})")
+
+    # LINEAR for smooth motion; CONSTANT for pause segments; CONSTANT
+    # extrapolation beyond first/last keyframe keeps camera fixed.
     if cam_obj.animation_data and cam_obj.animation_data.action:
         for fcurve in cam_obj.animation_data.action.fcurves:
             fcurve.extrapolation = "CONSTANT"
             for kp in fcurve.keyframe_points:
-                kp.interpolation = "CONSTANT"
+                kp.interpolation = frame_interp.get(round(kp.co.x), 'LINEAR')
 
     # ------------------------------------------------------------------ #
     # Render the full animation in a single pass                           #

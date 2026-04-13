@@ -63,7 +63,7 @@ def compute_stats(trackpoints: list[Trackpoint]) -> GpxStats:
 
     # Distance & speed
     total_dist = 0.0
-    max_speed_kmh: float | None = None
+    seg_speeds_kmh: list[float] = []
 
     for i in range(1, n):
         a, b = trackpoints[i - 1], trackpoints[i]
@@ -73,13 +73,22 @@ def compute_stats(trackpoints: list[Trackpoint]) -> GpxStats:
         if a.timestamp and b.timestamp:
             dt_s = (b.timestamp - a.timestamp).total_seconds()
             if dt_s > 0:
-                seg_kmh = (seg_m / dt_s) * 3.6
-                if max_speed_kmh is None or seg_kmh > max_speed_kmh:
-                    max_speed_kmh = seg_kmh
+                seg_speeds_kmh.append((seg_m / dt_s) * 3.6)
 
     avg_speed_kmh: float | None = None
     if duration and duration.total_seconds() > 0:
         avg_speed_kmh = (total_dist / duration.total_seconds()) * 3.6
+
+    # Use the 99th-percentile segment speed rather than the absolute maximum.
+    # A single GPS artifact (position jump over a tiny time interval) can push
+    # the absolute max far above any real speed the user achieved.  The 99th
+    # percentile filters out those outliers while still reflecting the true
+    # sustained top speed even on a track with thousands of points.
+    max_speed_kmh: float | None = None
+    if seg_speeds_kmh:
+        seg_speeds_kmh.sort()
+        p99_idx = max(0, int(0.99 * len(seg_speeds_kmh)) - 1)
+        max_speed_kmh = seg_speeds_kmh[p99_idx]
 
     # Elevation
     elevs = [tp.elevation for tp in trackpoints if tp.elevation is not None]

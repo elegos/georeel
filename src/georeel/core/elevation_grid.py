@@ -43,6 +43,33 @@ class ElevationGrid:
             + self.data[r1, c1] * dr * dc
         )
 
+    def elevation_at_batch(self, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+        """Vectorised bilinear interpolation for arrays of (lat, lon) pairs.
+
+        Same formula as ``elevation_at`` but operates on entire arrays at once
+        using numpy indexing — eliminates the per-point Python overhead.
+        """
+        row_f = np.clip(
+            (self.max_lat - lats) / (self.max_lat - self.min_lat) * (self.rows - 1),
+            0, self.rows - 1,
+        )
+        col_f = np.clip(
+            (lons - self.min_lon) / (self.max_lon - self.min_lon) * (self.cols - 1),
+            0, self.cols - 1,
+        )
+        r0 = row_f.astype(np.intp)
+        c0 = col_f.astype(np.intp)
+        r1 = np.minimum(r0 + 1, self.rows - 1)
+        c1 = np.minimum(c0 + 1, self.cols - 1)
+        dr = row_f - r0
+        dc = col_f - c0
+        return (
+            self.data[r0, c0] * (1 - dr) * (1 - dc)
+            + self.data[r1, c0] * dr       * (1 - dc)
+            + self.data[r0, c1] * (1 - dr) * dc
+            + self.data[r1, c1] * dr       * dc
+        )
+
     # ------------------------------------------------------------------
     # Serialisation — v2 (ZIP): raw binary
     # ------------------------------------------------------------------

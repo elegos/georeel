@@ -49,6 +49,80 @@ class ProjectState:
 # Save (always v2 ZIP)
 # ------------------------------------------------------------------
 
+def autosave_tilde(
+    state: ProjectState,
+    path: str,
+    *,
+    update_dem: bool = False,
+    update_sat: bool = False,
+) -> None:
+    """Incrementally save DEM/satellite data to *path~* using zip-append.
+
+    On the first call after a project has been saved/loaded, *path* is copied
+    to *path~* and then the updated entries are appended.  On subsequent calls
+    only the append step runs — much faster than a full rebuild.
+
+    Python's ``zipfile`` reader builds its ``NameToInfo`` dict by iterating the
+    central directory in order, so later (appended) entries for the same path
+    shadow earlier ones.  Old data blocks remain in the file but are never
+    referenced; the file grows slightly until the user performs a full Save.
+
+    If *path* doesn't exist (project has never been explicitly saved), falls
+    back to a complete ``save_project`` call so the tilde is still valid.
+    """
+    tilde = path + "~"
+
+    if not Path(tilde).is_file():
+        if Path(path).is_file():
+            shutil.copy2(path, tilde)
+        else:
+            save_project(state, tilde)
+            return
+
+    # Open in append mode and shadow the changed entries.
+    with zipfile.ZipFile(tilde, "a", compression=zipfile.ZIP_DEFLATED) as zf:
+        # Patch project.json in place — read the existing one, update fields.
+        try:
+            payload: dict = json.loads(zf.read(_PROJECT))
+        except KeyError:
+            payload = {}
+
+        if state.elevation_grid is not None:
+            g = state.elevation_grid
+            payload["dem"] = {
+                "rows": g.rows, "cols": g.cols,
+                "min_lat": g.min_lat, "max_lat": g.max_lat,
+                "min_lon": g.min_lon, "max_lon": g.max_lon,
+            }
+        elif update_dem:
+            payload.pop("dem", None)
+
+        if state.satellite_texture is not None:
+            t = state.satellite_texture
+            payload["satellite"] = {
+                "min_lat": t.min_lat, "max_lat": t.max_lat,
+                "min_lon": t.min_lon, "max_lon": t.max_lon,
+                "provider_id": t.provider_id, "quality": t.quality,
+            }
+        elif update_sat:
+            payload.pop("satellite", None)
+
+        if state.render_settings is not None:
+            payload["render_settings"] = state.render_settings
+
+        manifest = {
+            "version": _FORMAT_VERSION,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        zf.writestr(_MANIFEST, json.dumps(manifest, indent=2))
+        zf.writestr(_PROJECT,  json.dumps(payload,  indent=2))
+
+        if update_dem and state.elevation_grid is not None:
+            zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
+        if update_sat and state.satellite_texture is not None:
+            zf.writestr(_SAT_TEXTURE, state.satellite_texture.to_png_bytes())
+
+
 def save_project(state: ProjectState, path: str) -> None:
     # Serialise photos first; the list is mutated below to add embedded names.
     serialised_photos = [_serialise_photo(p) for p in state.photos]

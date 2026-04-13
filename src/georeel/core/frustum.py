@@ -15,11 +15,12 @@ import math
 _SENSOR_W_MM = 36.0
 _FOCAL_MM    = 35.0
 _ASPECT      = 16 / 9
-_MAX_VIEW_M  = 50_000.0   # hard cap: never expand by more than 50 km
+_MAX_VIEW_M  = 50_000.0   # default cap: never expand by more than 50 km
 _MIN_VIEW_M  =    500.0   # always expand by at least 500 m
 
 
-def frustum_margin(height_m: float, tilt_deg: float) -> float:
+def frustum_margin(height_m: float, tilt_deg: float,
+                   max_view_m: float = _MAX_VIEW_M) -> float:
     """Return the margin in metres to expand the track bbox on every side.
 
     The margin equals the farthest ground point the camera can see, which
@@ -35,11 +36,11 @@ def frustum_margin(height_m: float, tilt_deg: float) -> float:
 
     if top_ray_down <= 0:
         # Top of frame is at or above the horizon — very large view distance
-        view_dist = _MAX_VIEW_M
+        view_dist = max_view_m
     else:
         view_dist = height_m / math.tan(top_ray_down)
 
-    view_dist = max(_MIN_VIEW_M, min(_MAX_VIEW_M, view_dist))
+    view_dist = max(_MIN_VIEW_M, min(max_view_m, view_dist))
 
     # The side extent at that distance is narrower, but since the camera
     # can face any direction we use the forward distance as the uniform margin.
