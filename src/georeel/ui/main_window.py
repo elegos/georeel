@@ -629,12 +629,31 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Photo matching mode")
         outer = QVBoxLayout(group)
 
+        _match_tooltips = {
+            "timestamp": (
+                "Match photos to track points by comparing EXIF timestamps against\n"
+                "GPX track timestamps. Requires both the GPX and the photos to have\n"
+                "accurate timestamps and a correctly set camera timezone offset."
+            ),
+            "gps": (
+                "Match photos to track points by nearest geographic distance using\n"
+                "the GPS coordinates stored in the photo's EXIF data.\n"
+                "Does not require timestamps — works even when clocks are wrong."
+            ),
+            "both": (
+                "Use GPS coordinates as the primary match when EXIF GPS data is\n"
+                "available; fall back to timestamp matching for photos that have\n"
+                "no GPS coordinates. Warns when the two methods disagree by more\n"
+                "than a configurable threshold. Recommended default."
+            ),
+        }
         btn_row = QHBoxLayout()
         self._match_buttons: dict[str, QRadioButton] = {}
         self._match_group = QButtonGroup(self)
         for label, value in _MATCH_MODES:
             rb = QRadioButton(label)
             rb.setProperty("match_value", value)
+            rb.setToolTip(_match_tooltips.get(value, ""))
             self._match_group.addButton(rb)
             self._match_buttons[value] = rb
             btn_row.addWidget(rb)
@@ -678,6 +697,11 @@ class MainWindow(QMainWindow):
         speed_row.setSpacing(6)
 
         self._speed_preset_combo = QComboBox()
+        self._speed_preset_combo.setToolTip(
+            "Quick-select a typical flythrough speed for the activity type.\n"
+            "Hiking ~80 m/s · Cycling ~120 m/s · Driving ~320 m/s.\n"
+            "Choose 'Custom' to type an exact value in the field to the right."
+        )
         for label, _ in _SPEED_PRESETS:
             self._speed_preset_combo.addItem(label)
         self._speed_preset_combo.addItem("Custom")
@@ -764,33 +788,67 @@ class MainWindow(QMainWindow):
 
         self._load_btn = QPushButton("Load project…")
         self._load_btn.setFixedHeight(36)
+        self._load_btn.setToolTip(
+            "Open a previously saved GeoReel project (.georeel).\n"
+            "Restores the GPX track, photos, settings, and any cached DEM\n"
+            "and satellite imagery without needing to re-download them."
+        )
         self._load_btn.clicked.connect(self._load_project)
 
         self._save_btn = QPushButton("Save project…")
         self._save_btn.setFixedHeight(36)
+        self._save_btn.setToolTip(
+            "Save the current GPX track, photos, settings, elevation data, and\n"
+            "satellite texture into a single .georeel archive so the project can\n"
+            "be resumed later without re-fetching any data."
+        )
         self._save_btn.clicked.connect(self._save_project)
 
         self._preview_map_btn = QPushButton("Preview Map")
         self._preview_map_btn.setFixedHeight(36)
         self._preview_map_btn.setEnabled(False)
+        self._preview_map_btn.setToolTip(
+            "Render a quick 2D overhead map showing the GPX track and photo\n"
+            "waypoint positions overlaid on the satellite imagery.\n"
+            "Available after the DEM and satellite data have been fetched."
+        )
         self._preview_map_btn.clicked.connect(self._show_preview_map)
 
         self._preview_video_btn = QPushButton("Preview Video")
         self._preview_video_btn.setFixedHeight(36)
         self._preview_video_btn.setEnabled(False)
+        self._preview_video_btn.setToolTip(
+            "Render a low-resolution preview of the full fly-through video\n"
+            "so you can check camera path, timing, and photo placement before\n"
+            "committing to a full-quality render. Requires a built 3D scene."
+        )
         self._preview_video_btn.clicked.connect(self._show_preview_video)
 
         self._open_blender_btn = QPushButton("Open in Blender")
         self._open_blender_btn.setFixedHeight(36)
         self._open_blender_btn.setEnabled(False)
+        self._open_blender_btn.setToolTip(
+            "Open the generated .blend scene file in the Blender GUI so you\n"
+            "can manually adjust materials, lighting, camera, or anything else\n"
+            "before rendering. Requires a built 3D scene."
+        )
         self._open_blender_btn.clicked.connect(self._open_in_blender)
 
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedHeight(36)
+        self._start_btn.setToolTip(
+            "Fetch DEM elevation data and satellite imagery, build the 3D\n"
+            "Blender scene, render all frames, and assemble the final video.\n"
+            "Requires a GPX file and an output path to be set."
+        )
         self._start_btn.clicked.connect(self._start)
 
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.setFixedHeight(36)
+        self._clear_btn.setToolTip(
+            "Remove the loaded GPX track, all photos, and all cached data\n"
+            "from the current session. Does not delete any files on disk."
+        )
         self._clear_btn.clicked.connect(self._clear)
 
         row.addWidget(self._load_btn)

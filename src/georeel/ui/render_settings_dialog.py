@@ -194,6 +194,12 @@ class RenderSettingsDialog(QDialog):
         form = QFormLayout(group)
 
         self._fps_combo = QComboBox()
+        self._fps_combo.setToolTip(
+            "Frames per second of the output video.\n"
+            "24 fps — cinematic look.\n"
+            "30 fps — standard broadcast / social media.\n"
+            "60 fps — ultra-smooth; doubles render time and file size."
+        )
         for fps in (24, 30, 60):
             self._fps_combo.addItem(f"{fps} fps", fps)
         _set_combo(self._fps_combo,
@@ -211,6 +217,12 @@ class RenderSettingsDialog(QDialog):
         path_group = QGroupBox("Path smoothing")
         path_form = QFormLayout(path_group)
         self._path_combo = QComboBox()
+        self._path_combo.setToolTip(
+            "How the raw GPS trackpoints are turned into a smooth camera path.\n"
+            "B-spline: passes through every trackpoint — faithful to the GPS trace.\n"
+            "Douglas-Peucker + B-spline: simplifies the trace first, then smooths;\n"
+            "  reduces jitter from noisy GPS at the cost of some positional accuracy."
+        )
         self._path_combo.addItem("B-spline through all trackpoints", "spline")
         self._path_combo.addItem("Douglas-Peucker simplification + B-spline", "dp_spline")
         _set_combo(self._path_combo,
@@ -221,6 +233,11 @@ class RenderSettingsDialog(QDialog):
         height_group = QGroupBox("Height")
         height_form = QFormLayout(height_group)
         self._height_combo = QComboBox()
+        self._height_combo.setToolTip(
+            "Fixed offset: the camera stays exactly 'Distance' metres above the raw DEM.\n"
+            "Smoothed offset: the camera height is low-pass filtered so it doesn't\n"
+            "  follow every small terrain bump — gives a more cinematic feel."
+        )
         self._height_combo.addItem("Fixed offset above DEM", "dem_fixed")
         self._height_combo.addItem("Smoothed DEM offset", "dem_smooth")
         _set_combo(self._height_combo,
@@ -230,6 +247,10 @@ class RenderSettingsDialog(QDialog):
         self._height_spin.setRange(5, 5000)
         self._height_spin.setSingleStep(10)
         self._height_spin.setSuffix(" m")
+        self._height_spin.setToolTip(
+            "Slant distance between the camera and the track point directly below it.\n"
+            "Typical values: 500–1500 m for hiking, 1000–3000 m for cycling/driving."
+        )
         self._height_spin.setValue(
             int(str(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET])))
         )
@@ -239,6 +260,12 @@ class RenderSettingsDialog(QDialog):
         orient_group = QGroupBox("Orientation")
         orient_form = QFormLayout(orient_group)
         self._orient_combo = QComboBox()
+        self._orient_combo.setToolTip(
+            "Path tangent: camera always faces the direction of travel — smooth,\n"
+            "  follows curves naturally. Look-ahead and weight settings apply.\n"
+            "Look at next waypoint: camera points toward the next photo waypoint;\n"
+            "  gives a more deliberate, narrative feel between photo stops."
+        )
         self._orient_combo.addItem("Path tangent (look forward)", "tangent")
         self._orient_combo.addItem("Look at next waypoint", "lookat")
         _set_combo(self._orient_combo,
@@ -247,6 +274,12 @@ class RenderSettingsDialog(QDialog):
         self._tilt_spin = QSpinBox()
         self._tilt_spin.setRange(0, 89)
         self._tilt_spin.setSuffix("°")
+        self._tilt_spin.setToolTip(
+            "How many degrees below horizontal the camera points.\n"
+            "0° = dead horizontal (horizon visible but no terrain below).\n"
+            "45° = diagonal, good balance of horizon and terrain detail.\n"
+            "75°+ = near top-down, emphasises the terrain map below."
+        )
         self._tilt_spin.setValue(
             int(str(self._settings.value(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG])))
         )
@@ -273,6 +306,12 @@ class RenderSettingsDialog(QDialog):
         self._lookahead_spin.setSingleStep(5.0)
         self._lookahead_spin.setDecimals(0)
         self._lookahead_spin.setSuffix(" s")
+        self._lookahead_spin.setToolTip(
+            "In Path tangent mode, the camera direction is computed as a weighted\n"
+            "average of trackpoints within this time window ahead of the current\n"
+            "position. Longer values smooth out sharp corners; shorter values hug\n"
+            "the actual path more tightly. Only applies when Method = Path tangent."
+        )
         self._lookahead_spin.setValue(
             float(str(self._settings.value(KEY_TANGENT_LOOKAHEAD_S,
                                        DEFAULTS[KEY_TANGENT_LOOKAHEAD_S])))
@@ -280,6 +319,13 @@ class RenderSettingsDialog(QDialog):
         orient_form.addRow("Look-ahead:", self._lookahead_spin)
 
         self._tangent_weight_combo = QComboBox()
+        self._tangent_weight_combo.setToolTip(
+            "How the trackpoints inside the look-ahead window are weighted when\n"
+            "computing the average heading direction.\n"
+            "Linear: nearer points count more — good default.\n"
+            "Uniform: all points equal weight — smoother but slower to react.\n"
+            "Exponential: very strongly biased toward the nearest points — tightest."
+        )
         self._tangent_weight_combo.addItem("Linear falloff (recommended)", "linear")
         self._tangent_weight_combo.addItem("Uniform (equal weight)",        "uniform")
         self._tangent_weight_combo.addItem("Exponential (near-biased)",     "exponential")
@@ -291,6 +337,12 @@ class RenderSettingsDialog(QDialog):
         pause_group = QGroupBox("Photo pause")
         pause_form = QFormLayout(pause_group)
         self._pause_combo = QComboBox()
+        self._pause_combo.setToolTip(
+            "What the 3D camera does while a photo is displayed full-screen.\n"
+            "Hold: camera freezes at the waypoint — simple and clean.\n"
+            "Ease in / hold / ease out: camera smoothly decelerates into the\n"
+            "  waypoint, pauses, then accelerates away — more polished feel."
+        )
         self._pause_combo.addItem("Hold (freeze camera)", "hold")
         self._pause_combo.addItem("Ease in / hold / ease out", "ease")
         _set_combo(self._pause_combo,
@@ -300,6 +352,10 @@ class RenderSettingsDialog(QDialog):
         self._pause_spin.setRange(0.5, 30.0)
         self._pause_spin.setSingleStep(0.5)
         self._pause_spin.setSuffix(" s")
+        self._pause_spin.setToolTip(
+            "How long each photo is shown full-screen before the fly-through resumes.\n"
+            "Applies to every photo equally. Default: 3 s."
+        )
         self._pause_spin.setValue(
             float(str(self._settings.value(KEY_PHOTO_PAUSE_DURATION,
                                        DEFAULTS[KEY_PHOTO_PAUSE_DURATION])))
@@ -320,6 +376,12 @@ class RenderSettingsDialog(QDialog):
         form = QFormLayout(group)
 
         self._engine_combo = QComboBox()
+        self._engine_combo.setToolTip(
+            "EEVEE: real-time rasterisation renderer — fast, good quality for terrain.\n"
+            "  Recommended for most outputs.\n"
+            "Cycles: physically-based path tracer — accurate lighting, shadows, and\n"
+            "  reflections, but renders 10–50× slower than EEVEE."
+        )
         self._engine_combo.addItem("EEVEE (fast, rasterisation)", "eevee")
         self._engine_combo.addItem("Cycles (slow, path tracing)", "cycles")
         _set_combo(self._engine_combo,
@@ -327,6 +389,12 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Engine:", self._engine_combo)
 
         self._aspect_combo = QComboBox()
+        self._aspect_combo.setToolTip(
+            "Aspect ratio of the output video.\n"
+            "Landscape (16:9) — standard widescreen, YouTube, TV.\n"
+            "Portrait (9:16) — vertical format for Instagram Reels / TikTok.\n"
+            "Square (1:1) — Instagram feed posts."
+        )
         self._aspect_combo.addItem("Landscape (16:9)", "landscape")
         self._aspect_combo.addItem("Portrait (9:16)",  "portrait")
         self._aspect_combo.addItem("Square (1:1)",     "square")
@@ -335,11 +403,22 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Aspect ratio:", self._aspect_combo)
 
         self._resolution_combo = QComboBox()
+        self._resolution_combo.setToolTip(
+            "Pixel dimensions of the output video.\n"
+            "Higher resolutions are sharper but take proportionally longer to render\n"
+            "and produce larger files. 1080p is a good default for most uses."
+        )
         saved_resolution = str(self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION]))
         self._populate_resolution_combo(saved_aspect, saved_resolution)
         form.addRow("Resolution:", self._resolution_combo)
 
         self._quality_combo = QComboBox()
+        self._quality_combo.setToolTip(
+            "Number of render samples per pixel (anti-aliasing / noise reduction).\n"
+            "Low: fast preview quality — visible noise in complex lighting.\n"
+            "Medium: good balance of speed and quality for most scenes.\n"
+            "High: clean output suitable for final export; doubles render time vs. Medium."
+        )
         self._quality_combo.addItem("Low    (EEVEE 32  / Cycles 64 samples)",  "low")
         self._quality_combo.addItem("Medium (EEVEE 64  / Cycles 128 samples)", "medium")
         self._quality_combo.addItem("High   (EEVEE 128 / Cycles 256 samples)", "high")
@@ -390,6 +469,11 @@ class RenderSettingsDialog(QDialog):
         form = QFormLayout(group)
 
         self._transition_combo = QComboBox()
+        self._transition_combo.setToolTip(
+            "How the video transitions between the 3D fly-through and each photo overlay.\n"
+            "Fade: a smooth cross-dissolve over the configured Fade duration.\n"
+            "Cut: an instant hard cut — no dissolve frames are rendered."
+        )
         self._transition_combo.addItem("Fade (cross-dissolve)", "fade")
         self._transition_combo.addItem("Cut (hard edit)", "cut")
         _set_combo(self._transition_combo,
@@ -397,6 +481,12 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Transition:", self._transition_combo)
 
         self._fill_combo = QComboBox()
+        self._fill_combo.setToolTip(
+            "What fills the empty bars when a photo's aspect ratio doesn't match\n"
+            "the video frame (letterboxing / pillarboxing).\n"
+            "Blurred fill: a blurred, zoomed copy of the photo — looks polished.\n"
+            "Black bars: plain black — cleaner, more traditional."
+        )
         self._fill_combo.addItem("Blurred fill", "blurred")
         self._fill_combo.addItem("Black bars", "black")
         _set_combo(self._fill_combo,
@@ -408,6 +498,10 @@ class RenderSettingsDialog(QDialog):
         self._fade_dur_spin.setSingleStep(0.1)
         self._fade_dur_spin.setDecimals(1)
         self._fade_dur_spin.setSuffix(" s")
+        self._fade_dur_spin.setToolTip(
+            "Duration of the cross-dissolve transition (in and out).\n"
+            "Only used when Transition = Fade. Range: 0.1–2.0 s."
+        )
         self._fade_dur_spin.setValue(
             float(str(self._settings.value(KEY_PHOTO_FADE_DURATION,
                                        DEFAULTS[KEY_PHOTO_FADE_DURATION])))
@@ -425,6 +519,12 @@ class RenderSettingsDialog(QDialog):
         form = QFormLayout(group)
 
         self._provider_combo = QComboBox()
+        self._provider_combo.setToolTip(
+            "Satellite imagery source. All built-in providers use open or freely\n"
+            "available tile services. Providers marked with a key icon require\n"
+            "an API key which must be pasted in the field below.\n"
+            "Choose 'Custom XYZ' to supply your own tile URL template."
+        )
         for p in PROVIDERS:
             self._provider_combo.addItem(p.label, p.id)
         _set_combo(self._provider_combo,
@@ -432,6 +532,13 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Provider:", self._provider_combo)
 
         self._imagery_quality_combo = QComboBox()
+        self._imagery_quality_combo.setToolTip(
+            "Zoom level of the downloaded satellite tiles.\n"
+            "Standard (zoom 13, ~19 m/px) — fast download, suitable for most scenes.\n"
+            "High (zoom 15, ~5 m/px) — finer detail, ~16× more tiles to download.\n"
+            "Very High (zoom 17, ~1.2 m/px) — maximum detail; only practical for\n"
+            "  short tracks or areas with very dense tile coverage."
+        )
         self._imagery_quality_combo.addItem("Standard  (zoom 13, ~19 m/pixel)", "standard")
         self._imagery_quality_combo.addItem("High      (zoom 15,  ~5 m/pixel)", "high")
         self._imagery_quality_combo.addItem("Very High (zoom 17, ~1.2 m/pixel, slow for large areas)", "very_high")
@@ -459,6 +566,11 @@ class RenderSettingsDialog(QDialog):
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setPlaceholderText("Paste your API key here…")
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_edit.setToolTip(
+            "Authentication key for the selected provider. The key is stored\n"
+            "in your local application settings and never sent anywhere except\n"
+            "the tile server URL of the chosen provider."
+        )
         saved_key = str(self._settings.value(KEY_IMAGERY_API_KEY, ""))
         self._api_key_edit.setText(saved_key)
         form.addRow(self._api_key_label, self._api_key_edit)
@@ -466,6 +578,11 @@ class RenderSettingsDialog(QDialog):
         self._custom_url_label = QLabel("XYZ URL template:")
         self._custom_url_edit = QLineEdit()
         self._custom_url_edit.setPlaceholderText("https://…/{z}/{x}/{y}.png")
+        self._custom_url_edit.setToolTip(
+            "URL template for a custom XYZ/TMS slippy-map tile server.\n"
+            "Use {z}, {x}, {y} as placeholders — e.g.:\n"
+            "  https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        )
         self._custom_url_edit.setText(
             str(self._settings.value(KEY_IMAGERY_CUSTOM_URL, ""))
         )
@@ -495,9 +612,14 @@ class RenderSettingsDialog(QDialog):
         self._cache_dir_edit = QLineEdit()
         self._cache_dir_edit.setPlaceholderText("e.g. /mnt/fast-disk/georeel-cache")
         self._cache_dir_edit.setReadOnly(True)
+        self._cache_dir_edit.setToolTip(
+            "Root directory where all GeoReel temporary files will be created\n"
+            "when the custom directory option is enabled."
+        )
         self._cache_dir_edit.setText(str(self._settings.value(KEY_CACHE_BASE_DIR, "")))
         self._cache_dir_browse_btn = QPushButton("Browse…")
         self._cache_dir_browse_btn.setFixedWidth(80)
+        self._cache_dir_browse_btn.setToolTip("Open a folder picker to choose the custom temp directory.")
         self._cache_dir_browse_btn.clicked.connect(self._browse_cache_dir)
         dir_layout.addWidget(self._cache_dir_edit)
         dir_layout.addWidget(self._cache_dir_browse_btn)
@@ -535,6 +657,7 @@ class RenderSettingsDialog(QDialog):
         self._marker_color_label = QLabel()
         marker_change_btn = QPushButton("Change…")
         marker_change_btn.setFixedWidth(80)
+        marker_change_btn.setToolTip("Pick a new color for the track-position marker shown in the 3D scene.")
         marker_change_btn.clicked.connect(self._change_marker_color)
         marker_swatch_layout.addWidget(self._marker_swatch)
         marker_swatch_layout.addWidget(self._marker_color_label)
@@ -568,6 +691,7 @@ class RenderSettingsDialog(QDialog):
 
         change_btn = QPushButton("Change…")
         change_btn.setFixedWidth(80)
+        change_btn.setToolTip("Pick a new color for the pins that mark photo waypoints in the 3D scene.")
         change_btn.clicked.connect(self._change_pin_color)
 
         swatch_layout.addWidget(self._pin_swatch)
@@ -664,6 +788,13 @@ class RenderSettingsDialog(QDialog):
 
         # Container
         self._container_combo = QComboBox()
+        self._container_combo.setToolTip(
+            "Output file container format.\n"
+            "MKV: open standard, supports metadata attachments (GPX, settings);\n"
+            "  recommended for archiving. Not natively supported by all players.\n"
+            "MP4: universally compatible — works on phones, browsers, social media;\n"
+            "  does not support embedded metadata attachments."
+        )
         self._container_combo.addItem("Matroska (.mkv)", "mkv")
         self._container_combo.addItem("MPEG-4 (.mp4)",   "mp4")
         _set_combo(self._container_combo,
@@ -672,6 +803,13 @@ class RenderSettingsDialog(QDialog):
 
         # Codec
         self._out_codec_combo = QComboBox()
+        self._out_codec_combo.setToolTip(
+            "Video compression codec.\n"
+            "H.264: fastest encode/decode, widest compatibility — good default.\n"
+            "H.265 (HEVC): ~40% smaller files than H.264 at equal quality;\n"
+            "  hardware-accelerated on most modern GPUs.\n"
+            "AV1: best compression, royalty-free; encode is very slow on CPU."
+        )
         self._out_codec_combo.addItem("H.264 (AVC)",  "h264")
         self._out_codec_combo.addItem("H.265 (HEVC)", "h265")
         self._out_codec_combo.addItem("AV1",           "av1")
@@ -681,15 +819,33 @@ class RenderSettingsDialog(QDialog):
 
         # Encoder (dynamic, populated by _refresh_encoders)
         self._encoder_combo = QComboBox()
+        self._encoder_combo.setToolTip(
+            "FFmpeg encoder implementation for the chosen codec.\n"
+            "Software encoders (libx264, libx265) run on the CPU — universally\n"
+            "  available but slower. Hardware encoders (nvenc, qsv, videotoolbox)\n"
+            "  offload encoding to the GPU — much faster but may not be available\n"
+            "  on all systems. Use 'Apply suggestion' to let GeoReel choose."
+        )
         form.addRow("Encoder:", self._encoder_combo)
 
         # CQ
         self._out_cq_spin = QSpinBox()
         self._out_cq_spin.setRange(0, 63)
+        self._out_cq_spin.setToolTip(
+            "Constant Quality factor (CQ/CRF) — lower = higher quality, larger file.\n"
+            "Typical good values: H.264 → 18–28, H.265 → 24–32, AV1 → 28–40.\n"
+            "0 = lossless (very large). Use 'Apply suggestion' for a sensible default."
+        )
         form.addRow("Quality (CQ/CRF):", self._out_cq_spin)
 
         # Preset (dynamic)
         self._preset_combo = QComboBox()
+        self._preset_combo.setToolTip(
+            "Encoder speed preset — controls the trade-off between encode speed\n"
+            "and compression efficiency at the same quality level.\n"
+            "Faster presets produce larger files; slower presets are smaller\n"
+            "but take longer. 'medium' or 'fast' are good starting points."
+        )
         form.addRow("Preset:", self._preset_combo)
 
         # Suggestion label
@@ -699,6 +855,10 @@ class RenderSettingsDialog(QDialog):
 
         # Apply suggestion button
         self._apply_btn = QPushButton("Apply suggestion")
+        self._apply_btn.setToolTip(
+            "Automatically fill Encoder, Quality, and Preset with the recommended\n"
+            "settings for the chosen codec based on what is available on this system."
+        )
         self._apply_btn.clicked.connect(self._apply_suggestion)
         form.addRow("", self._apply_btn)
 

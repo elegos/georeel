@@ -52,6 +52,10 @@ class BlenderSettingsDialog(QDialog):
         version_group = QGroupBox("Portable Blender version")
         form = QFormLayout(version_group)
         self._version_combo = QComboBox()
+        self._version_combo.setToolTip(
+            "The Blender version to download when using the built-in downloader.\n"
+            "Does not affect a manually browsed or auto-detected executable."
+        )
         saved_version = settings.value(_SETTINGS_KEY_VERSION, DEFAULT_VERSION.version)
         selected_index = 0
         for i, v in enumerate(AVAILABLE_VERSIONS):
@@ -73,15 +77,24 @@ class BlenderSettingsDialog(QDialog):
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("Auto-detected or manually set path")
         self._path_edit.setReadOnly(True)
+        self._path_edit.setToolTip(
+            "Path to the Blender executable GeoReel will use for 3D rendering.\n"
+            "Filled automatically when Blender is found on PATH or after downloading."
+        )
         path_row.addWidget(self._path_edit)
 
         browse_btn = QPushButton("Browse…")
         browse_btn.setFixedWidth(80)
+        browse_btn.setToolTip("Manually select a Blender executable on disk.")
         browse_btn.clicked.connect(self._browse)
         path_row.addWidget(browse_btn)
         path_layout.addLayout(path_row)
 
         self._download_btn = QPushButton("Download selected version")
+        self._download_btn.setToolTip(
+            "Download the selected Blender version directly from blender.org\n"
+            "into the GeoReel data directory and register it as the active executable."
+        )
         self._download_btn.clicked.connect(self._download)
         path_layout.addWidget(self._download_btn)
 
