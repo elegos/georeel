@@ -16,13 +16,13 @@ import json
 import math
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Callable
 
 from .blender_runtime import find_blender
 from .camera_keyframe import CameraKeyframe
 from .pipeline import Pipeline
+from . import temp_manager
 
 _BLENDER_SCRIPT = Path(__file__).parent / "blender_scripts" / "render_frames.py"
 
@@ -120,7 +120,7 @@ def render_frames(
     quality    = settings.get("render/quality",    "medium")
     n_segments = int(settings.get("render/n_segments", 1))
 
-    work_dir = Path(tempfile.mkdtemp(prefix="georeel_frames_"))
+    work_dir = temp_manager.make_temp_dir("georeel_frames_")
     pipeline._temp_dirs.append(work_dir)
     kf_path  = work_dir / "keyframes.json"
     out_dir  = work_dir / "frames"

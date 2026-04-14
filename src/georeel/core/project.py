@@ -1,7 +1,6 @@
 import json
 import shutil
 import subprocess
-import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,6 +9,7 @@ from pathlib import Path
 from .elevation_grid import ElevationGrid
 from .photo_metadata import PhotoMetadata
 from .satellite import SatelliteTexture
+from . import temp_manager
 
 # ------------------------------------------------------------------
 # ZIP entry paths (v2 format)
@@ -277,7 +277,7 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
     def _tmpdir() -> Path:
         nonlocal temp_dir
         if temp_dir is None:
-            temp_dir = Path(tempfile.mkdtemp(prefix="georeel_proj_"))
+            temp_dir = temp_manager.make_temp_dir("georeel_proj_")
         return temp_dir
 
     # ── Extract GPX ──────────────────────────────────────────────────

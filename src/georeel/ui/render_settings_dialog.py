@@ -3,10 +3,12 @@ import shutil
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -73,6 +75,8 @@ KEY_GPX_OSRM_PROFILE      = "gpx/osrm_profile"               # "driving" | "cycl
 KEY_GPX_MAX_SPEED_KMH     = "gpx/max_speed_kmh"             # int km/h — above this is nullified
 KEY_GPX_MAX_GAP_S         = "gpx/max_gap_s"                 # float s — gaps longer than this are filled
 KEY_GPX_MAX_JUMP_KM       = "gpx/max_jump_km"               # float km — no-timestamp fallback distance
+KEY_CACHE_USE_CUSTOM_DIR  = "cache/use_custom_dir"           # bool — use custom temp dir
+KEY_CACHE_BASE_DIR        = "cache/base_dir"                 # str  — path to custom temp dir
 
 _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
     "landscape": [
@@ -135,6 +139,8 @@ DEFAULTS = {
     KEY_GPX_MAX_SPEED_KMH:    300,
     KEY_GPX_MAX_GAP_S:        30.0,
     KEY_GPX_MAX_JUMP_KM:      50.0,
+    KEY_CACHE_USE_CUSTOM_DIR: False,
+    KEY_CACHE_BASE_DIR:       "",
 }
 
 
@@ -466,6 +472,42 @@ class RenderSettingsDialog(QDialog):
         form.addRow(self._custom_url_label, self._custom_url_edit)
 
         layout.addWidget(group)
+
+        # -- Temp & cache group --
+        cache_group = QGroupBox("Temp & cache")
+        cache_form = QFormLayout(cache_group)
+
+        self._cache_custom_dir_check = QCheckBox("Use custom directory for temporary files")
+        self._cache_custom_dir_check.setToolTip(
+            "By default GeoReel writes temporary tile caches, scene files, rendered\n"
+            "frames, etc. to the system temp directory (/tmp on Linux/macOS).\n"
+            "Enable this to redirect all temp output to a directory you control\n"
+            "(useful when /tmp is a RAM-disk or has limited space)."
+        )
+        use_custom = self._settings.value(KEY_CACHE_USE_CUSTOM_DIR, False)
+        self._cache_custom_dir_check.setChecked(bool(use_custom) and use_custom != "false")
+        cache_form.addRow(self._cache_custom_dir_check)
+
+        dir_row = QWidget()
+        dir_layout = QHBoxLayout(dir_row)
+        dir_layout.setContentsMargins(0, 0, 0, 0)
+        dir_layout.setSpacing(6)
+        self._cache_dir_edit = QLineEdit()
+        self._cache_dir_edit.setPlaceholderText("e.g. /mnt/fast-disk/georeel-cache")
+        self._cache_dir_edit.setReadOnly(True)
+        self._cache_dir_edit.setText(str(self._settings.value(KEY_CACHE_BASE_DIR, "")))
+        self._cache_dir_browse_btn = QPushButton("Browse…")
+        self._cache_dir_browse_btn.setFixedWidth(80)
+        self._cache_dir_browse_btn.clicked.connect(self._browse_cache_dir)
+        dir_layout.addWidget(self._cache_dir_edit)
+        dir_layout.addWidget(self._cache_dir_browse_btn)
+        cache_form.addRow("Directory:", dir_row)
+
+        # Sync enabled state with checkbox
+        self._cache_custom_dir_check.toggled.connect(self._on_cache_custom_dir_toggled)
+        self._on_cache_custom_dir_toggled(self._cache_custom_dir_check.isChecked())
+
+        layout.addWidget(cache_group)
         layout.addStretch()
 
         self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
@@ -584,6 +626,18 @@ class RenderSettingsDialog(QDialog):
             self._pin_color_name   = dlg.selected_name()
             self._pin_custom_color = dlg.custom_hex()
             self._refresh_pin_swatch()
+
+    def _on_cache_custom_dir_toggled(self, checked: bool) -> None:
+        self._cache_dir_edit.setEnabled(checked)
+        self._cache_dir_browse_btn.setEnabled(checked)
+
+    def _browse_cache_dir(self) -> None:
+        current = self._cache_dir_edit.text().strip() or ""
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Select temp/cache directory", current
+        )
+        if chosen:
+            self._cache_dir_edit.setText(chosen)
 
     def _on_provider_changed(self) -> None:
         from georeel.core.satellite.providers import get_provider
@@ -785,6 +839,8 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_IMAGERY_FETCH_MODE,  self._imagery_fetch_mode_combo.currentData())
         self._settings.setValue(KEY_IMAGERY_API_KEY,     self._api_key_edit.text().strip())
         self._settings.setValue(KEY_IMAGERY_CUSTOM_URL,  self._custom_url_edit.text().strip())
+        self._settings.setValue(KEY_CACHE_USE_CUSTOM_DIR, self._cache_custom_dir_check.isChecked())
+        self._settings.setValue(KEY_CACHE_BASE_DIR,       self._cache_dir_edit.text().strip())
         self._settings.setValue(KEY_MARKER_COLOR,        self._marker_color_name)
         self._settings.setValue(KEY_MARKER_CUSTOM_COLOR, self._marker_custom_color)
         self._settings.setValue(KEY_PIN_COLOR,           self._pin_color_name)

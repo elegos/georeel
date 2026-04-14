@@ -20,6 +20,12 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 - **Project files** — save and reload work as `.georeel` archives; DEM and satellite data are cached inside
 - **Preview tools** — top-down map preview and short video preview before committing to a full render
 - **Open in Blender** — inspect or manually edit the generated scene before rendering
+---
+
+## Screenshots
+![Main window](docs/assets/main_window.png)
+
+![Render options](docs/assets/render_options.png)
 
 ---
 

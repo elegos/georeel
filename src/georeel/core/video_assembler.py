@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .encoder_registry import EncoderConfig, get_encoder
+from . import temp_manager
 
 
 class VideoAssembleError(Exception):
@@ -94,7 +95,7 @@ def assemble_video(
     skip_prepend = fi_enabled and prepend_black_as_frames
 
     if prepend_black_as_frames:
-        prep_dir = Path(tempfile.mkdtemp(prefix="georeel_blackprepend_"))
+        prep_dir = temp_manager.make_temp_dir("georeel_blackprepend_")
         _prepend_black_frames(frames_dir, prep_dir, n_black_frames)
         frames_dir = str(prep_dir)
         total_frames += n_black_frames
@@ -102,7 +103,7 @@ def assemble_video(
         prep_dir = None  # type: ignore[assignment]
 
     if title_enabled:
-        title_dir = Path(tempfile.mkdtemp(prefix="georeel_title_"))
+        title_dir = temp_manager.make_temp_dir("georeel_title_")
         # When skip_prepend=True the luminance fade-in for content is baked into
         # the PIL frames (content_start/content_fade) rather than delegated to
         # ffmpeg's fade filter.  This prevents the ffmpeg filter from darkening

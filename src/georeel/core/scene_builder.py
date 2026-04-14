@@ -5,8 +5,9 @@ import math
 import shlex
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from georeel.core import temp_manager
 
 _log = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def build_scene(
             "Install Blender or download it via Options → Blender…"
         )
 
-    work_dir = Path(tempfile.mkdtemp(prefix="georeel_scene_"))
+    work_dir = temp_manager.make_temp_dir("georeel_scene_")
     atexit.register(shutil.rmtree, work_dir, True)
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
     manifest_path, tiles_manifest = _write_texture_tiles(

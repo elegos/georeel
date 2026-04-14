@@ -19,7 +19,6 @@ import atexit
 import logging
 import math
 import shutil
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -30,6 +29,7 @@ from PIL import Image
 
 from ..bounding_box import BoundingBox
 from ..pil_lock import PIL_LOCK
+from .. import temp_manager
 
 _log = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class TileCache:
         self._timeout      = timeout
         self._user_agent   = user_agent
         self._on_demand    = on_demand
-        self._dir          = Path(tempfile.mkdtemp(prefix="georeel_xyz_"))
+        self._dir          = temp_manager.make_temp_dir("georeel_xyz_")
         # Track tiles that permanently failed so we never retry them.
         self._failed: set[tuple[int, int]] = set()
         atexit.register(self.cleanup)

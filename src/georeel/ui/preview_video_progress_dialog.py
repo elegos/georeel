@@ -6,6 +6,7 @@ frame-by-frame progress.  On success the output path is available via
 output_path().
 """
 
+import os
 import tempfile
 import threading
 
@@ -73,9 +74,14 @@ class PreviewVideoProgressDialog(QDialog):
 
         self._output_path: str | None = None
 
-        # Temp output file
-        import os
-        fd, tmp = tempfile.mkstemp(prefix="georeel_preview_", suffix=".mp4")
+        # Temp output file — placed in the configured GeoReel temp dir (or
+        # system default) so it is found by cleanup_stale() on next restart.
+        from georeel.core import temp_manager
+        base = temp_manager.get_base_dir()
+        fd, tmp = tempfile.mkstemp(
+            prefix="georeel_preview_", suffix=".mp4",
+            dir=str(base) if base is not None else None,
+        )
         os.close(fd)
         self._tmp_path = tmp
 

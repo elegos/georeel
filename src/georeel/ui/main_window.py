@@ -46,6 +46,7 @@ from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
 from georeel.core.pipeline_memory import log_pipeline_memory
 from georeel.core.scene_builder import SceneBuildError, build_scene
+from georeel.core import temp_manager
 
 from .blender_settings_dialog import BlenderSettingsDialog
 from .clip_effects_widget import ClipEffectsWidget
@@ -60,6 +61,8 @@ from .preview_video_dialog import open_preview_video
 from .preview_video_progress_dialog import PreviewVideoProgressDialog
 from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
+    KEY_CACHE_BASE_DIR,
+    KEY_CACHE_USE_CUSTOM_DIR,
     KEY_CAMERA_SPEED,
     KEY_FRUSTUM_MARGIN_KM,
     KEY_GPX_MAX_GAP_S,
@@ -331,6 +334,29 @@ class MainWindow(QMainWindow):
         self._match_group.buttonClicked.connect(self._invalidate_scene)
         self._output_selector.path_changed.connect(self._mark_dirty)
 
+        self._apply_temp_dir_setting()
+        self._cleanup_stale_temp()
+
+    # ------------------------------------------------------------------
+    # Temp-dir management
+    # ------------------------------------------------------------------
+
+    def _apply_temp_dir_setting(self) -> None:
+        """Configure temp_manager from the current cache/dir settings."""
+        use_custom = self._settings.value(KEY_CACHE_USE_CUSTOM_DIR, False)
+        use_custom = bool(use_custom) and use_custom != "false"
+        base_dir_str = str(self._settings.value(KEY_CACHE_BASE_DIR, "")).strip()
+        if use_custom and base_dir_str:
+            temp_manager.set_base_dir(Path(base_dir_str))
+        else:
+            temp_manager.set_base_dir(None)
+
+    def _cleanup_stale_temp(self) -> None:
+        """Remove temp dirs/files left over from previous crashed sessions."""
+        n = temp_manager.cleanup_stale()
+        if n:
+            _log.info("[startup] Removed %d stale GeoReel temp entries", n)
+
     # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------
@@ -385,6 +411,7 @@ class MainWindow(QMainWindow):
                 self._cached_elevation_grid = None
             if any(self._settings.value(k) != sat_before[k] for k in _sat_keys):
                 self._cached_satellite_texture = None
+            self._apply_temp_dir_setting()
             self._invalidate_scene()
 
     def _calculate_keyframes(self):

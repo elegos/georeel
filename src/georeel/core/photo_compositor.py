@@ -18,7 +18,6 @@ import io
 import logging
 import os
 import shutil
-import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import groupby
 from pathlib import Path
@@ -28,6 +27,7 @@ from PIL import Image, ImageFilter, ImageOps
 
 from .camera_keyframe import CameraKeyframe
 from .pipeline import Pipeline
+from . import temp_manager
 
 _log = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ def composite_photos(
 
     out_w, out_h = _RESOLUTIONS.get(resolution, (1920, 1080))
 
-    comp_work_dir = Path(tempfile.mkdtemp(prefix="georeel_comp_"))
+    comp_work_dir = temp_manager.make_temp_dir("georeel_comp_")
     pipeline._temp_dirs.append(comp_work_dir)
     out_dir = comp_work_dir / "frames"
     out_dir.mkdir()
