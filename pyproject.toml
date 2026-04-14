@@ -41,6 +41,7 @@ omit = [
   "**/main.py",
   "**/ui/**",
   "**/blender_scripts/**"
+]
 
 [dependency-groups]
 dev = [
