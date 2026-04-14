@@ -35,12 +35,12 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=georeel.core --cov-report=term-missing --cov-fail-under=64
+        run: uv run coverage run -m pytest --cov=georeel.core --cov-report=term-missing --cov-fail-under=64 && uv run coverage html -d .coverage_html
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report-py${{ matrix.python-version }}
-          path: .coverage
+          path: .coverage_html
           retention-days: 7

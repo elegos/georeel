@@ -1,5 +1,7 @@
 .claude
 .venv
+.coverage
+.coverage_html
 **/__pycache__
 **/*.pyc
 *.egg-info/
