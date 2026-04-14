@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/elegos/georeel/actions/workflows/ci.yml/badge.svg)](https://github.com/elegos/georeel/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/elegos/georeel?label=release&color=blue)](https://github.com/elegos/georeel/releases/tag/v1.2.1)
+[![codecov](https://codecov.io/github/elegos/georeel/graph/badge.svg?token=D8RDK015NT)](https://codecov.io/github/elegos/georeel)
 
 GeoReel is an open-source desktop application that turns a GPX track and a set of geotagged photos into a cinematic fly-through video of the route rendered on 3D terrain with satellite imagery — a self-hosted alternative to services like Relive.
 

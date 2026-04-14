@@ -38,12 +38,19 @@ jobs:
         run: |
           uv run coverage run -m pytest --cov=georeel.core --cov-report=term-missing --cov-fail-under=64
           uv run coverage html -d .coverage_html
-          ls -la .coverage_html
+          uv run coverage xml -o .coverage.xml
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report-py${{ matrix.python-version }}
-          path: ${{ github.workspace }}/.coverage_html
+          path: |
+            .coverage_html/**
+            !.coverage_html/.gitignore
           retention-days: 7
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
