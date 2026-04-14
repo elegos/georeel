@@ -163,8 +163,10 @@ class ScenePrepWorker(QThread):
         log_pipeline_memory(pipeline, "after DEM")
 
         # Stage 4 — Satellite imagery
-        provider_id = self._settings.get("imagery/provider", "esri_world")
-        img_quality = self._settings.get("imagery/quality",  "standard")
+        provider_id  = self._settings.get("imagery/provider",    "esri_world")
+        img_quality  = self._settings.get("imagery/quality",     "standard")
+        fetch_mode   = self._settings.get("imagery/fetch_mode",  "prefetch")
+        on_demand    = fetch_mode == "on_demand"
         cached_sat  = self._cached_sat
         if (
             cached_sat is not None
@@ -179,7 +181,12 @@ class ScenePrepWorker(QThread):
             pipeline.satellite_texture = cached_sat
             self.status.emit("Auto-build: satellite texture cached, reusing.")
         else:
-            self.status.emit("Auto-build: fetching satellite imagery…")
+            status_msg = (
+                "Auto-build: fetching satellite imagery…"
+                if not on_demand
+                else "Auto-build: preparing satellite imagery (on-demand mode)…"
+            )
+            self.status.emit(status_msg)
             try:
                 source = build_source(
                     provider_id=provider_id,
@@ -187,8 +194,11 @@ class ScenePrepWorker(QThread):
                     custom_url=self._custom_url,
                     quality=img_quality,
                 )
-                texture = source.fetch(fetch_bbox,
-                                       progress_callback=lambda c, t: self.progress.emit(c, t))
+                texture = source.fetch(
+                    fetch_bbox,
+                    progress_callback=lambda c, t: self.progress.emit(c, t),
+                    on_demand=on_demand,
+                )
             except Exception as e:
                 self.error.emit(f"Satellite fetch error: {e}")
                 return

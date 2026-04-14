@@ -1356,8 +1356,10 @@ class MainWindow(QMainWindow):
         log_pipeline_memory(self._pipeline, "after DEM fetch")
 
         # Stage 4 — Satellite Imagery Fetcher
-        provider_id = str(self._settings.value("imagery/provider", "esri_world"))
-        img_quality = str(self._settings.value("imagery/quality", "standard"))
+        provider_id = str(self._settings.value("imagery/provider",    "esri_world"))
+        img_quality = str(self._settings.value("imagery/quality",     "standard"))
+        fetch_mode  = str(self._settings.value("imagery/fetch_mode",  "prefetch"))
+        on_demand   = fetch_mode == "on_demand"
         cached_sat = self._cached_satellite_texture
         if (
             cached_sat is not None
@@ -1390,7 +1392,11 @@ class MainWindow(QMainWindow):
                     custom_url=str(self._settings.value("imagery/custom_url", "")),
                     quality=img_quality,
                 )
-                texture = source.fetch(fetch_bbox, progress_callback=_sat_progress)
+                texture = source.fetch(
+                    fetch_bbox,
+                    progress_callback=_sat_progress,
+                    on_demand=on_demand,
+                )
             except Exception as e:
                 self._fetch_progress_bar.hide()
                 QMessageBox.critical(self, "Satellite imagery error", str(e))

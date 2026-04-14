@@ -502,6 +502,150 @@ def _write_texture_tiles(
     texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
     max_texture_pixels: int | None = None,
 ) -> tuple[Path, dict]:
+    """Dispatch to the tile-cache or PIL-image tiling path."""
+    if texture._tile_cache is not None:
+        return _write_texture_tiles_from_cache(
+            texture, grid, work_dir, max_texture_pixels=max_texture_pixels
+        )
+    return _write_texture_tiles_from_image(
+        texture, grid, work_dir, max_texture_pixels=max_texture_pixels
+    )
+
+
+def _write_texture_tiles_from_cache(
+    texture: SatelliteTexture,
+    grid: ElevationGrid,
+    work_dir: Path,
+    max_texture_pixels: int | None = None,
+) -> tuple[Path, dict]:
+    """Build Blender terrain tiles by compositing from the XYZ tile cache.
+
+    For each terrain tile the compositor reads only the XYZ source tiles that
+    overlap its geographic extent, so the full-resolution satellite canvas is
+    never held in RAM.  Peak memory per call is one composited terrain tile
+    (bounded by _MAX_TILE_PIXELS) plus the working XYZ tiles (~few MB).
+
+    The manifest format is identical to _write_texture_tiles_from_image, so
+    write_png() reassembly and the Blender script are unchanged.
+    """
+    import math as _math
+    from .bounding_box import BoundingBox
+    from .satellite.tile_cache import TileCache
+    from PIL.Image import Resampling
+
+    cache: TileCache = texture._tile_cache  # type: ignore[assignment]
+
+    lat_span = grid.max_lat - grid.min_lat
+    lon_span = grid.max_lon - grid.min_lon
+    dem_rows = grid.rows
+    dem_cols = grid.cols
+
+    # Native pixel dimensions for the DEM-extent region at the XYZ zoom level.
+    dem_bbox = BoundingBox(grid.min_lat, grid.max_lat, grid.min_lon, grid.max_lon)
+    W, H = cache.canvas_size(dem_bbox)
+    total_pixels = W * H
+
+    # Apply preview downscale if requested.
+    if max_texture_pixels is not None and total_pixels > max_texture_pixels:
+        scale = _math.sqrt(max_texture_pixels / total_pixels)
+        W = max(1, int(W * scale))
+        H = max(1, int(H * scale))
+        total_pixels = W * H
+        _log.info("[satellite] Preview downscale: virtual %d×%d px", W, H)
+
+    # Determine Blender terrain tile grid (same logic as the image path).
+    n_tiles_needed = _math.ceil(total_pixels / _MAX_TILE_PIXELS)
+    if n_tiles_needed <= 1:
+        n_tile_cols, n_tile_rows = 1, 1
+    else:
+        n_tile_cols = max(1, _math.ceil(_math.sqrt(n_tiles_needed * W / H)))
+        n_tile_rows = max(1, _math.ceil(n_tiles_needed / n_tile_cols))
+        while True:
+            tile_w = _math.ceil(W / n_tile_cols)
+            tile_h = _math.ceil(H / n_tile_rows)
+            if tile_w * tile_h <= _MAX_TILE_PIXELS:
+                break
+            if n_tile_cols * H < n_tile_rows * W:
+                n_tile_cols += 1
+            else:
+                n_tile_rows += 1
+
+    _log.info(
+        "[satellite] Compositing %d×%d px texture from tile cache → %d×%d Blender tiles",
+        W, H, n_tile_rows, n_tile_cols,
+    )
+
+    tiles_dir = work_dir / "sat_tiles"
+    tiles_dir.mkdir(exist_ok=True)
+
+    tiles = []
+    for ti in range(n_tile_rows):
+        for tj in range(n_tile_cols):
+            # Pixel bounds within the virtual (W×H) canvas — linear fractions
+            # so adjacent tiles share their boundary pixel exactly.
+            px_left   = tj * W // n_tile_cols
+            px_right  = (tj + 1) * W // n_tile_cols
+            px_top    = ti * H // n_tile_rows
+            px_bottom = (ti + 1) * H // n_tile_rows
+            tile_px_w = max(1, px_right  - px_left)
+            tile_px_h = max(1, px_bottom - px_top)
+
+            # DEM row/col bounds (shared boundary so terrain seams are seamless).
+            dem_r_start = round(ti       * (dem_rows - 1) / n_tile_rows)
+            dem_r_end   = round((ti + 1) * (dem_rows - 1) / n_tile_rows)
+            dem_c_start = round(tj       * (dem_cols - 1) / n_tile_cols)
+            dem_c_end   = round((tj + 1) * (dem_cols - 1) / n_tile_cols)
+
+            # Geographic bounds from DEM fractions — works regardless of
+            # whether satellite and DEM extents differ.
+            tile_max_lat = grid.max_lat - dem_r_start / (dem_rows - 1) * lat_span
+            tile_min_lat = grid.max_lat - dem_r_end   / (dem_rows - 1) * lat_span
+            tile_min_lon = grid.min_lon + dem_c_start / (dem_cols - 1) * lon_span
+            tile_max_lon = grid.min_lon + dem_c_end   / (dem_cols - 1) * lon_span
+            tile_bbox = BoundingBox(tile_min_lat, tile_max_lat, tile_min_lon, tile_max_lon)
+
+            tile_path = tiles_dir / f"{ti}_{tj}.png"
+            with PIL_LOCK:
+                tile_img = cache.composite(tile_bbox)
+                # Resize to the target grid size for consistent write_png reassembly.
+                if tile_img.size != (tile_px_w, tile_px_h):
+                    tile_img = tile_img.resize(
+                        (tile_px_w, tile_px_h), resample=Resampling.LANCZOS
+                    )
+                if tile_img.mode != "RGB":
+                    tile_img = tile_img.convert("RGB")
+                tile_img.save(str(tile_path), format="PNG", optimize=False)
+            del tile_img
+
+            tiles.append({
+                "ti": ti, "tj": tj,
+                "path": str(tile_path),
+                "px_left":   px_left,
+                "px_top":    px_top,
+                "px_right":  px_right,
+                "px_bottom": px_bottom,
+                "dem_r_start": dem_r_start,
+                "dem_r_end":   dem_r_end,
+                "dem_c_start": dem_c_start,
+                "dem_c_end":   dem_c_end,
+            })
+
+    manifest = {
+        "n_tile_rows": n_tile_rows,
+        "n_tile_cols": n_tile_cols,
+        "image_width":  W,
+        "image_height": H,
+        "tiles": tiles,
+    }
+    manifest_path = work_dir / "sat_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    return manifest_path, manifest
+
+
+def _write_texture_tiles_from_image(
+    texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
+    max_texture_pixels: int | None = None,
+) -> tuple[Path, dict]:
     """Save the satellite texture as tiled PNG files and write a manifest JSON.
 
     Splits the image into an N×M grid so each tile stays under _MAX_TILE_PIXELS,

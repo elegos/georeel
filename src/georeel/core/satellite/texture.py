@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import io
 import logging
 import struct
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import TYPE_CHECKING, IO
+
+if TYPE_CHECKING:
+    from .tile_cache import TileCache
 
 from PIL import Image
 
@@ -40,8 +45,10 @@ class SatelliteTexture:
     # Set by from_zip_lazy — stream directly from the source ZIP without decoding.
     _source_zip: Path | None = field(default=None, repr=False)
     _source_entry: str | None = field(default=None, repr=False)
-    # Cached pixel dimensions — populated from image.size, tile manifest, or
-    # the PNG IHDR header so that width/height work without decoding the image.
+    # Set by XyzSource.fetch() — on-disk XYZ tiles, no global canvas ever built.
+    _tile_cache: TileCache | None = field(default=None, repr=False)
+    # Cached pixel dimensions — populated from image.size, tile manifest,
+    # tile cache geometry, or the PNG IHDR header.
     _dim_width: int | None = field(default=None, repr=False)
     _dim_height: int | None = field(default=None, repr=False)
 
@@ -66,12 +73,16 @@ class SatelliteTexture:
         )
 
     def memory_bytes(self) -> int:
-        """Approximate bytes used by the in-memory PIL image (0 if freed)."""
+        """Approximate bytes used by the in-memory PIL image (0 if on disk / lazy)."""
         if self.image is None:
             return 0
         w, h = self.image.size
         bands = len(self.image.getbands())
         return w * h * bands
+
+    def has_pixels(self) -> bool:
+        """Return True if pixel data is available in RAM (image is decoded)."""
+        return self.image is not None
 
     def free_image(
         self,
@@ -95,6 +106,8 @@ class SatelliteTexture:
             self._dim_height = self.image.height
         mb = self.memory_bytes() / 1024 ** 2
         self.image = None
+        # Blender tiles are now on disk; the XYZ tile cache is no longer needed.
+        self._tile_cache = None
         _log.info("[memory] SatelliteTexture image freed (%.0f MB reclaimed)", mb)
 
     # ------------------------------------------------------------------
@@ -105,10 +118,10 @@ class SatelliteTexture:
         """Stream the PNG directly into *dest* without an intermediate bytes copy.
 
         Priority order:
-        1. If image is loaded in RAM — save directly.
-        2. If loaded lazily from a source ZIP (_source_zip set) — copy the raw
-           compressed bytes straight across; zero decode overhead.
-        3. If the image was freed after tiling — reassemble from on-disk tiles.
+        1. Image in RAM — save directly.
+        2. Lazy ZIP source (_source_zip) — copy raw bytes, zero decode.
+        3. Tile cache (_tile_cache) — composite full bbox on demand.
+        4. Blender tile manifest (_tiles_manifest) — reassemble from tile PNGs.
         """
         if self.image is not None:
             with PIL_LOCK:
@@ -128,7 +141,20 @@ class SatelliteTexture:
                         dest.write(chunk)
             return
 
-        # Image was freed — reassemble from tile PNGs.
+        # Tile cache — composite the full bbox on demand (used when saving a
+        # project before the scene has been built, so no Blender tiles exist yet).
+        if self._tile_cache is not None:
+            from ..bounding_box import BoundingBox
+            bbox = BoundingBox(self.min_lat, self.max_lat, self.min_lon, self.max_lon)
+            _log.info("[memory] Compositing full satellite texture from tile cache for save")
+            with PIL_LOCK:
+                img = self._tile_cache.composite(bbox)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img.save(dest, format="PNG", optimize=False)
+            return
+
+        # Image was freed — reassemble from Blender tile PNGs.
         if self._tiles_dir is None or self._tiles_manifest is None:
             raise RuntimeError(
                 "SatelliteTexture.image is None and no tile backing is available. "

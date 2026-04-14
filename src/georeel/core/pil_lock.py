@@ -18,4 +18,4 @@ Usage::
 
 import threading
 
-PIL_LOCK = threading.Lock()
+PIL_LOCK = threading.RLock()   # RLock: same thread may re-enter (e.g. write_png → composite)

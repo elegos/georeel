@@ -60,6 +60,7 @@ KEY_IMAGERY_PROVIDER      = "imagery/provider"               # provider id
 KEY_IMAGERY_QUALITY       = "imagery/quality"                # "standard" | "high" | "very_high"
 KEY_IMAGERY_API_KEY       = "imagery/api_key"                # per-provider key (provider-prefixed)
 KEY_IMAGERY_CUSTOM_URL    = "imagery/custom_url"
+KEY_IMAGERY_FETCH_MODE    = "imagery/fetch_mode"             # "prefetch" | "on_demand"
 KEY_CONTAINER             = "output/container"               # "mkv" | "mp4"
 KEY_CODEC                 = "output/codec"                   # "h264" | "h265" | "av1"
 KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder name
@@ -124,6 +125,7 @@ DEFAULTS = {
     KEY_IMAGERY_QUALITY:      "standard",
     KEY_IMAGERY_API_KEY:      "",
     KEY_IMAGERY_CUSTOM_URL:   "",
+    KEY_IMAGERY_FETCH_MODE:   "prefetch",
     KEY_PIN_COLOR:            "ForestGreen",
     KEY_PIN_CUSTOM_COLOR:     "#228B22",
     KEY_MARKER_COLOR:         "LightBlue",
@@ -430,6 +432,22 @@ class RenderSettingsDialog(QDialog):
         _set_combo(self._imagery_quality_combo,
                    self._settings.value(KEY_IMAGERY_QUALITY, DEFAULTS[KEY_IMAGERY_QUALITY]))
         form.addRow("Detail level:", self._imagery_quality_combo)
+
+        self._imagery_fetch_mode_combo = QComboBox()
+        self._imagery_fetch_mode_combo.addItem(
+            "Prefetch all  (download upfront, faster scene build)", "prefetch"
+        )
+        self._imagery_fetch_mode_combo.addItem(
+            "On-demand  (download per terrain tile, lower peak RAM)", "on_demand"
+        )
+        self._imagery_fetch_mode_combo.setToolTip(
+            "Prefetch: all satellite tiles for the route are downloaded before the scene is built.\n"
+            "On-demand: tiles are fetched lazily as each terrain tile is processed — no upfront\n"
+            "wait, lower peak memory, but individual scene tiles take slightly longer."
+        )
+        _set_combo(self._imagery_fetch_mode_combo,
+                   self._settings.value(KEY_IMAGERY_FETCH_MODE, DEFAULTS[KEY_IMAGERY_FETCH_MODE]))
+        form.addRow("Fetch mode:", self._imagery_fetch_mode_combo)
 
         self._api_key_label = QLabel("API key:")
         self._api_key_edit = QLineEdit()
@@ -762,10 +780,11 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_ENCODER,     self._encoder_combo.currentData())
         self._settings.setValue(KEY_OUTPUT_CQ,   self._out_cq_spin.value())
         self._settings.setValue(KEY_OUTPUT_PRESET, self._preset_combo.currentData() or "")
-        self._settings.setValue(KEY_IMAGERY_PROVIDER,   self._provider_combo.currentData())
-        self._settings.setValue(KEY_IMAGERY_QUALITY,    self._imagery_quality_combo.currentData())
-        self._settings.setValue(KEY_IMAGERY_API_KEY,    self._api_key_edit.text().strip())
-        self._settings.setValue(KEY_IMAGERY_CUSTOM_URL, self._custom_url_edit.text().strip())
+        self._settings.setValue(KEY_IMAGERY_PROVIDER,    self._provider_combo.currentData())
+        self._settings.setValue(KEY_IMAGERY_QUALITY,     self._imagery_quality_combo.currentData())
+        self._settings.setValue(KEY_IMAGERY_FETCH_MODE,  self._imagery_fetch_mode_combo.currentData())
+        self._settings.setValue(KEY_IMAGERY_API_KEY,     self._api_key_edit.text().strip())
+        self._settings.setValue(KEY_IMAGERY_CUSTOM_URL,  self._custom_url_edit.text().strip())
         self._settings.setValue(KEY_MARKER_COLOR,        self._marker_color_name)
         self._settings.setValue(KEY_MARKER_CUSTOM_COLOR, self._marker_custom_color)
         self._settings.setValue(KEY_PIN_COLOR,           self._pin_color_name)
