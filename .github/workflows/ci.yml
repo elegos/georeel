@@ -36,7 +36,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          uv run coverage run -m pytest --cov-report=term-missing --cov-fail-under=64
+          uv run coverage run -m pytest --cov-report=term-missing --cov-fail-under=85
           uv run coverage xml -o .coverage.xml
 
       - name: Upload coverage reports to Codecov

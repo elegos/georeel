@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 from georeel.core import temp_manager
 
@@ -37,6 +38,9 @@ def build_scene(
     blender_exe: str | None = None,
     settings: dict | None = None,
     max_texture_pixels: int | None = None,
+    tile_progress_cb: Callable[[int, int], None] | None = None,
+    status_cb: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> str:
     """Build a 3D terrain .blend from the pipeline's elevation grid and satellite texture.
 
@@ -67,6 +71,9 @@ def build_scene(
     manifest_path, tiles_manifest = _write_texture_tiles(
         pipeline.satellite_texture, pipeline.elevation_grid, work_dir,
         max_texture_pixels=max_texture_pixels,
+        tile_progress_cb=tile_progress_cb,
+        status_cb=status_cb,
+        cancel_check=cancel_check,
     )
     # Release the PIL image now that tile PNGs are on disk — the Blender script
     # reads from the files directly.  write_png() (used by project save) will
@@ -112,20 +119,27 @@ def build_scene(
         marker_color,
     ] + _sun_args(pipeline)
 
-    try:
-        result = subprocess.run(
-            shlex.join(cmd),
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_SECONDS,
-            shell=True,
-        )
-    except subprocess.TimeoutExpired:
-        raise SceneBuildError(
-            f"Blender timed out after {_TIMEOUT_SECONDS // 60} minutes."
-        )
+    if status_cb:
+        status_cb("Running Blender to assemble 3D scene…")
 
-    blender_output = (result.stderr or "") + (result.stdout or "")
+    proc = subprocess.Popen(
+        shlex.join(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        shell=True,
+    )
+    output_lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        output_lines.append(line)
+        if cancel_check and cancel_check():
+            proc.terminate()
+            proc.wait()
+            raise SceneBuildError("Cancelled.")
+    proc.wait()
+
+    blender_output = "".join(output_lines)
     if blender_output:
         _log.debug("Blender output:\n%s", blender_output)
 
@@ -134,15 +148,15 @@ def build_scene(
         if line.startswith("[georeel]"):
             _log.info("%s", line)
 
-    if result.returncode != 0 or not blend_path.is_file():
+    if proc.returncode != 0 or not blend_path.is_file():
         _log.error(
             "Blender scene build failed (exit %d):\n%s",
-            result.returncode,
+            proc.returncode,
             blender_output,
         )
         tail = blender_output[-2000:]
         raise SceneBuildError(
-            f"Blender scene build failed (exit {result.returncode}).\n{tail}"
+            f"Blender scene build failed (exit {proc.returncode}).\n{tail}"
         )
 
     return str(blend_path)
@@ -502,14 +516,25 @@ _MAX_TILE_PIXELS = 400_000_000  # ~1.2 GB as RGB — safely below Blender's 2 GB
 def _write_texture_tiles(
     texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
     max_texture_pixels: int | None = None,
+    tile_progress_cb: Callable[[int, int], None] | None = None,
+    status_cb: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, dict]:
     """Dispatch to the tile-cache or PIL-image tiling path."""
     if texture._tile_cache is not None:
         return _write_texture_tiles_from_cache(
-            texture, grid, work_dir, max_texture_pixels=max_texture_pixels
+            texture, grid, work_dir,
+            max_texture_pixels=max_texture_pixels,
+            tile_progress_cb=tile_progress_cb,
+            status_cb=status_cb,
+            cancel_check=cancel_check,
         )
     return _write_texture_tiles_from_image(
-        texture, grid, work_dir, max_texture_pixels=max_texture_pixels
+        texture, grid, work_dir,
+        max_texture_pixels=max_texture_pixels,
+        tile_progress_cb=tile_progress_cb,
+        status_cb=status_cb,
+        cancel_check=cancel_check,
     )
 
 
@@ -518,6 +543,9 @@ def _write_texture_tiles_from_cache(
     grid: ElevationGrid,
     work_dir: Path,
     max_texture_pixels: int | None = None,
+    tile_progress_cb: Callable[[int, int], None] | None = None,
+    status_cb: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, dict]:
     """Build Blender terrain tiles by compositing from the XYZ tile cache.
 
@@ -575,10 +603,14 @@ def _write_texture_tiles_from_cache(
         "[satellite] Compositing %d×%d px texture from tile cache → %d×%d Blender tiles",
         W, H, n_tile_rows, n_tile_cols,
     )
+    if status_cb:
+        status_cb(f"Compositing satellite texture ({n_tile_rows * n_tile_cols} tiles)…")
 
     tiles_dir = work_dir / "sat_tiles"
     tiles_dir.mkdir(exist_ok=True)
 
+    total_tiles = n_tile_rows * n_tile_cols
+    tile_idx = 0
     tiles = []
     for ti in range(n_tile_rows):
         for tj in range(n_tile_cols):
@@ -605,6 +637,9 @@ def _write_texture_tiles_from_cache(
             tile_max_lon = grid.min_lon + dem_c_end   / (dem_cols - 1) * lon_span
             tile_bbox = BoundingBox(tile_min_lat, tile_max_lat, tile_min_lon, tile_max_lon)
 
+            if cancel_check and cancel_check():
+                raise SceneBuildError("Cancelled.")
+
             tile_path = tiles_dir / f"{ti}_{tj}.png"
             with PIL_LOCK:
                 tile_img = cache.composite(tile_bbox)
@@ -617,6 +652,10 @@ def _write_texture_tiles_from_cache(
                     tile_img = tile_img.convert("RGB")
                 tile_img.save(str(tile_path), format="PNG", optimize=False)
             del tile_img
+
+            tile_idx += 1
+            if tile_progress_cb:
+                tile_progress_cb(tile_idx, total_tiles)
 
             tiles.append({
                 "ti": ti, "tj": tj,
@@ -646,6 +685,9 @@ def _write_texture_tiles_from_cache(
 def _write_texture_tiles_from_image(
     texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
     max_texture_pixels: int | None = None,
+    tile_progress_cb: Callable[[int, int], None] | None = None,
+    status_cb: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, dict]:
     """Save the satellite texture as tiled PNG files and write a manifest JSON.
 
@@ -668,6 +710,8 @@ def _write_texture_tiles_from_image(
         # Lazy-loaded from a project ZIP — decode now (only happens on first
         # scene build after loading a project without re-fetching the texture).
         if texture._source_zip is not None:
+            if status_cb:
+                status_cb("Loading satellite texture from project file…")
             img = texture.load_image()
         else:
             raise SceneBuildError(
@@ -748,6 +792,8 @@ def _write_texture_tiles_from_image(
         "[satellite] Splitting %dx%d px texture into %d×%d tiles",
         W, H, n_tile_rows, n_tile_cols,
     )
+    if status_cb:
+        status_cb(f"Splitting satellite texture into {n_tile_rows * n_tile_cols} tiles…")
 
     tiles_dir = work_dir / "sat_tiles"
     tiles_dir.mkdir(exist_ok=True)
@@ -755,6 +801,8 @@ def _write_texture_tiles_from_image(
     dem_rows = grid.rows
     dem_cols = grid.cols
 
+    total_tiles = n_tile_rows * n_tile_cols
+    tile_idx = 0
     tiles = []
     for ti in range(n_tile_rows):
         for tj in range(n_tile_cols):
@@ -770,6 +818,9 @@ def _write_texture_tiles_from_image(
             dem_r_start = round((px_top   - src_top)  / H * (dem_rows - 1))
             dem_r_end   = round((px_bottom - src_top)  / H * (dem_rows - 1))
 
+            if cancel_check and cancel_check():
+                raise SceneBuildError("Cancelled.")
+
             tile_path = tiles_dir / f"{ti}_{tj}.png"
             # Write directly to disk — no BytesIO round-trip, no convert("RGB")
             # copy (img is guaranteed RGB from the fetch pipeline).
@@ -779,6 +830,10 @@ def _write_texture_tiles_from_image(
                     tile_img = tile_img.convert("RGB")
                 tile_img.save(str(tile_path), format="PNG", optimize=False)
             del tile_img
+
+            tile_idx += 1
+            if tile_progress_cb:
+                tile_progress_cb(tile_idx, total_tiles)
 
             tiles.append({
                 "ti": ti, "tj": tj,

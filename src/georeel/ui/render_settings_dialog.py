@@ -44,7 +44,7 @@ KEY_PHOTO_PAUSE_MODE      = "render/photo_pause_mode"        # "hold" | "ease"
 KEY_PHOTO_PAUSE_DURATION  = "render/photo_pause_duration"    # seconds (float)
 KEY_FPS                   = "render/fps"                     # int: 24 | 30 | 60
 KEY_CAMERA_SPEED          = "render/camera_speed_mps"        # metres per second (float)
-KEY_ENGINE                = "render/engine"                  # "eevee" | "cycles"
+KEY_ENGINE                = "render/engine"                  # "eevee" | "cycles" | "viewport"
 KEY_ASPECT_RATIO          = "render/aspect_ratio"            # "landscape" | "portrait" | "square"
 KEY_RESOLUTION            = "render/resolution"              # see _ASPECT_RESOLUTIONS values
 KEY_QUALITY               = "render/quality"                 # "low" | "medium" | "high"
@@ -70,6 +70,7 @@ KEY_OUTPUT_CQ             = "output/cq"                      # int
 KEY_OUTPUT_PRESET         = "output/preset"                  # string
 KEY_FRUSTUM_MARGIN_KM     = "render/frustum_margin_km"       # float km — max terrain view distance
 KEY_RENDER_SEGMENTS       = "render/n_segments"              # int: render passes (1 = single pass)
+KEY_PNG_COMPRESSION       = "render/png_compression"         # int 0–9: zlib level (0=none, 9=max)
 KEY_GPX_REPAIR_MODE       = "gpx/repair_mode"                # "none" | "ground" | "street"
 KEY_GPX_OSRM_PROFILE      = "gpx/osrm_profile"               # "driving" | "cycling" | "walking"
 KEY_GPX_MAX_SPEED_KMH     = "gpx/max_speed_kmh"             # int km/h — above this is nullified
@@ -135,6 +136,7 @@ DEFAULTS = {
     KEY_MARKER_COLOR:         "LightBlue",
     KEY_MARKER_CUSTOM_COLOR:  "#ADD8E6",
     KEY_RENDER_SEGMENTS:      1,
+    KEY_PNG_COMPRESSION:      6,
     KEY_GPX_REPAIR_MODE:      "none",
     KEY_GPX_MAX_SPEED_KMH:    300,
     KEY_GPX_MAX_GAP_S:        30.0,
@@ -377,11 +379,16 @@ class RenderSettingsDialog(QDialog):
 
         self._engine_combo = QComboBox()
         self._engine_combo.setToolTip(
-            "EEVEE: real-time rasterisation renderer — fast, good quality for terrain.\n"
-            "  Recommended for most outputs.\n"
-            "Cycles: physically-based path tracer — accurate lighting, shadows, and\n"
-            "  reflections, but renders 10–50× slower than EEVEE."
+            "Viewport (draft): EEVEE at 4 samples, no shadows/AO, satellite textures\n"
+            "  downscaled to 50% (¼ the VRAM). This is the primary speedup for terrain\n"
+            "  scenes: large textures are the bottleneck, not sample count. Output video\n"
+            "  is at the configured resolution but with softer satellite detail.\n"
+            "  Best for checking camera path and timing before a full render.\n"
+            "EEVEE: full-quality rasterisation renderer — recommended for final output.\n"
+            "Cycles: physically-based path tracer — accurate lighting/shadows/reflections,\n"
+            "  but renders 10–50× slower than EEVEE."
         )
+        self._engine_combo.addItem("Viewport (draft, fastest)", "viewport")
         self._engine_combo.addItem("EEVEE (fast, rasterisation)", "eevee")
         self._engine_combo.addItem("Cycles (slow, path tracing)", "cycles")
         _set_combo(self._engine_combo,
@@ -425,6 +432,21 @@ class RenderSettingsDialog(QDialog):
         _set_combo(self._quality_combo,
                    self._settings.value(KEY_QUALITY, DEFAULTS[KEY_QUALITY]))
         form.addRow("Quality:", self._quality_combo)
+
+        self._png_compression_spin = QSpinBox()
+        self._png_compression_spin.setRange(0, 9)
+        self._png_compression_spin.setValue(
+            int(str(self._settings.value(KEY_PNG_COMPRESSION, DEFAULTS[KEY_PNG_COMPRESSION])))
+        )
+        self._png_compression_spin.setToolTip(
+            "zlib compression level for intermediate PNG frames (0–9).\n"
+            "0 = no compression — fastest writes, largest temporary files.\n"
+            "6 = default zlib level — good balance of speed and size.\n"
+            "9 = maximum compression — smallest files, slowest writes.\n"
+            "Intermediate frames are deleted after the video is assembled,\n"
+            "so lower values trade disk space for faster rendering throughput."
+        )
+        form.addRow("Frame PNG compression:", self._png_compression_spin)
 
         self._segments_spin = QSpinBox()
         self._segments_spin.setRange(1, 16)
@@ -985,6 +1007,7 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_ASPECT_RATIO,        self._aspect_combo.currentData())
         self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
         self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
+        self._settings.setValue(KEY_PNG_COMPRESSION,     self._png_compression_spin.value())
         self._settings.setValue(KEY_RENDER_SEGMENTS,     self._segments_spin.value())
         self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FILL,          self._fill_combo.currentData())

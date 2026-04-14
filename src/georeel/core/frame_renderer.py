@@ -160,6 +160,7 @@ def render_frames(
         tile_filter=None,
         progress_cb=progress_cb,
         cancel_check=cancel_check,
+        settings=settings,
     )
 
 
@@ -181,8 +182,14 @@ def _render_single(
     tile_filter: str | None,
     progress_cb: Callable[[int, int], None] | None,
     cancel_check: Callable[[], bool] | None,
+    settings: dict | None = None,
 ) -> str:
     """Run one Blender render pass and stream progress."""
+    # tex_scale < 1.0 for viewport/draft mode: downscales terrain textures in
+    # VRAM to relieve GPU memory pressure on scenes with large satellite imagery.
+    tex_scale      = 0.5 if engine == "viewport" else 1.0
+    png_compression = int(settings.get("render/png_compression", 6)) if settings else 6
+
     cmd = [
         exe,
         "--background", scene,
@@ -195,9 +202,10 @@ def _render_single(
         quality,
         str(frame_start),
         str(frame_end),
+        tile_filter if tile_filter is not None else "",  # argv[7]; "" → None in script
+        str(tex_scale),                                  # argv[8]
+        str(png_compression),                            # argv[9]
     ]
-    if tile_filter is not None:
-        cmd.append(tile_filter)
 
     try:
         proc = subprocess.Popen(
@@ -329,6 +337,7 @@ def _render_segmented(
             tile_filter=tile_filter,
             progress_cb=progress_cb,
             cancel_check=cancel_check,
+            settings=settings,
         )
 
     rendered = list(out_dir.glob("*.png"))

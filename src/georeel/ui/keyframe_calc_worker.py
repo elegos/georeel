@@ -27,6 +27,7 @@ from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
+from georeel.core.trackpoint import Trackpoint
 
 
 class KeyframeCalcWorker(QThread):
@@ -135,6 +136,22 @@ class KeyframeCalcWorker(QThread):
                 return
             pipeline.elevation_grid = grid
             self.dem_fetched.emit(grid)
+
+        # Backfill missing elevations from DEM (if GPX had no elevation data)
+        filled_trackpoints = []
+        for pt in pipeline.trackpoints:
+            if pt.elevation is None:
+                elev = pipeline.elevation_grid.elevation_at(pt.latitude, pt.longitude)
+                filled_trackpoints.append(Trackpoint(
+                    latitude=pt.latitude,
+                    longitude=pt.longitude,
+                    elevation=elev,
+                    timestamp=pt.timestamp
+                ))
+            else:
+                filled_trackpoints.append(pt)
+        trackpoints = filled_trackpoints
+        pipeline.trackpoints = trackpoints
 
         # Stage 6 — Camera path (no scene needed, just needs trackpoints + DEM)
         self.status.emit("Keyframe preview: computing camera path…")

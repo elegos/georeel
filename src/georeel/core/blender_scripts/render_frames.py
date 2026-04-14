@@ -111,9 +111,11 @@ def main() -> None:
 
     keyframes_path, output_dir, engine, resolution, quality = argv[:5]
     # Optional segmented-render arguments (added by frame_renderer.py in multi-segment mode)
-    frame_start_arg  = int(argv[5]) if len(argv) > 5 else None
-    frame_end_arg    = int(argv[6]) if len(argv) > 6 else None
-    tile_filter_str  = argv[7]      if len(argv) > 7 else None
+    frame_start_arg  = int(argv[5])   if len(argv) > 5 else None
+    frame_end_arg    = int(argv[6])   if len(argv) > 6 else None
+    tile_filter_str  = (argv[7] or None) if len(argv) > 7 else None  # "" → None
+    tex_scale        = float(argv[8]) if len(argv) > 8 else 1.0
+    png_compression  = int(argv[9])   if len(argv) > 9 else 6       # zlib level 0–9
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
@@ -132,8 +134,8 @@ def main() -> None:
     # segmented rendering of large satellite textures.                    #
     # ------------------------------------------------------------------ #
     if tile_filter_str:
-        allowed_tiles = set(tile_filter_str.split(","))
-        to_remove_imgs   = []
+        allowed_tiles    = set(tile_filter_str.split(","))
+        to_remove_mats   = []
         to_remove_objs   = []
         to_remove_meshes = []
 
@@ -143,13 +145,9 @@ def main() -> None:
             tile_id = obj.name[len("Terrain_"):]
             if tile_id in allowed_tiles:
                 continue
-            # Collect textures before removing the object
             for ms in obj.material_slots:
-                mat = ms.material
-                if mat and mat.use_nodes:
-                    for node in mat.node_tree.nodes:
-                        if node.type == 'TEX_IMAGE' and node.image:
-                            to_remove_imgs.append(node.image)
+                if ms.material:
+                    to_remove_mats.append(ms.material)
             to_remove_meshes.append(obj.data)
             to_remove_objs.append(obj)
 
@@ -158,13 +156,57 @@ def main() -> None:
         for mesh in to_remove_meshes:
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
-        for img in to_remove_imgs:
+        # Remove materials — this decrements the image user count.
+        for mat in to_remove_mats:
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+        # Now images whose only users were the removed materials can be freed.
+        for img in list(bpy.data.images):
             if img.users == 0:
                 bpy.data.images.remove(img)
 
         n_kept    = len(allowed_tiles)
         n_removed = len(to_remove_objs)
         print(f"[georeel] Tile filter: kept {n_kept}, removed {n_removed} terrain tile(s)")
+
+    # ------------------------------------------------------------------ #
+    # Texture downscale (draft / viewport mode)                            #
+    #                                                                     #
+    # Halving each dimension → 4× less VRAM.  For satellite terrain the   #
+    # GPU is typically texture-bandwidth-bound; reducing texture size is   #
+    # far more effective than reducing sample count.                       #
+    # img.scale() loads the full image then resamples in-place, so peak   #
+    # RAM = original + scaled briefly, then drops to the scaled size.     #
+    # ------------------------------------------------------------------ #
+    if tex_scale < 1.0:
+        seen_imgs: set[str] = set()
+        n_scaled = 0
+        for obj in bpy.data.objects:
+            if not obj.name.startswith("Terrain_"):
+                continue
+            for ms in obj.material_slots:
+                mat = ms.material
+                if not mat or not mat.use_nodes:
+                    continue
+                for node in mat.node_tree.nodes:
+                    if node.type != 'TEX_IMAGE' or not node.image:
+                        continue
+                    img = node.image
+                    if img.name in seen_imgs:
+                        continue
+                    seen_imgs.add(img.name)
+                    orig_w, orig_h = img.size
+                    if orig_w < 2 or orig_h < 2:
+                        continue
+                    new_w = max(1, int(orig_w * tex_scale))
+                    new_h = max(1, int(orig_h * tex_scale))
+                    img.scale(new_w, new_h)
+                    n_scaled += 1
+                    print(f"[georeel] Texture downscaled: '{img.name}' "
+                          f"{orig_w}×{orig_h} → {new_w}×{new_h}")
+        if n_scaled:
+            print(f"[georeel] Downscaled {n_scaled} terrain texture(s) "
+                  f"(scale={tex_scale:.2f})")
 
     scene = bpy.context.scene
 
@@ -188,6 +230,19 @@ def main() -> None:
                 scene.cycles.device = "GPU"
         except Exception:
             pass  # GPU not available; CPU rendering continues
+    elif engine == "viewport":
+        # Draft renderer: EEVEE at 4 samples with shadows and AO disabled.
+        # Equivalent to Blender's real-time viewport "Rendered" shading mode —
+        # an order of magnitude faster than even EEVEE "low" quality.
+        try:
+            scene.render.engine = "BLENDER_EEVEE_NEXT"
+            scene.eevee.taa_render_samples = 4
+        except AttributeError:
+            scene.render.engine = "BLENDER_EEVEE"
+            scene.eevee.taa_render_samples = 4
+        scene.eevee.use_shadows = False
+        if hasattr(scene.eevee, "use_gtao"):
+            scene.eevee.use_gtao = False
     else:
         # EEVEE Next (Blender 4.2+); fall back to legacy name
         try:
@@ -204,8 +259,10 @@ def main() -> None:
     scene.render.resolution_x = width
     scene.render.resolution_y = height
     scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "PNG"
-    scene.render.image_settings.color_mode = "RGB"
+    scene.render.image_settings.file_format    = "PNG"
+    scene.render.image_settings.color_mode     = "RGB"
+    # Map zlib level 0–9 to Blender's 0–100 compression scale.
+    scene.render.image_settings.compression    = round(png_compression / 9 * 100)
 
     # ------------------------------------------------------------------ #
     # Camera                                                               #
@@ -286,6 +343,7 @@ def main() -> None:
     scene.render.filepath = f"{output_dir}/######"
 
     n_frames = scene.frame_end - scene.frame_start + 1
+
     bpy.ops.render.render(animation=True)
 
     print(f"[georeel] Rendered {n_frames} frames "

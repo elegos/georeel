@@ -162,6 +162,21 @@ class ScenePrepWorker(QThread):
 
         log_pipeline_memory(pipeline, "after DEM")
 
+        # Backfill missing elevations from DEM (if GPX had no elevation data)
+        filled_trackpoints = []
+        for pt in pipeline.trackpoints:
+            if pt.elevation is None:
+                elev = pipeline.elevation_grid.elevation_at(pt.latitude, pt.longitude)
+                filled_trackpoints.append(Trackpoint(
+                    latitude=pt.latitude,
+                    longitude=pt.longitude,
+                    elevation=elev,
+                    timestamp=pt.timestamp
+                ))
+            else:
+                filled_trackpoints.append(pt)
+        pipeline.trackpoints = filled_trackpoints
+
         # Stage 4 — Satellite imagery
         provider_id  = self._settings.get("imagery/provider",    "esri_world")
         img_quality  = self._settings.get("imagery/quality",     "standard")

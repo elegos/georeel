@@ -45,7 +45,6 @@ from georeel.core.project import ProjectState, autosave_tilde, load_project, sav
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
 from georeel.core.pipeline_memory import log_pipeline_memory
-from georeel.core.scene_builder import SceneBuildError, build_scene
 from georeel.core import temp_manager
 
 from .blender_settings_dialog import BlenderSettingsDialog
@@ -80,6 +79,7 @@ from .render_settings_dialog import (
     RenderSettingsDialog,
     get_render_settings,
 )
+from .scene_build_dialog import SceneBuildDialog
 from .scene_prep_worker import ScenePrepWorker
 from .video_progress_dialog import VideoProgressDialog
 
@@ -1499,16 +1499,17 @@ class MainWindow(QMainWindow):
         log_pipeline_memory(self._pipeline, "after satellite fetch")
 
         # Stage 5 — 3D Scene Builder
-        self._status_show("Building 3D scene (Blender)…")
         blender_exe = self._settings.value("blender/executable_path") or None
-        try:
-            blend_path = build_scene(
-                self._pipeline, blender_exe=blender_exe, settings=render_settings
-            )
-        except SceneBuildError as e:
-            QMessageBox.critical(self, "Scene build error", str(e))
-            self._status_show("Pipeline stopped: scene build failed.")
+        dlg = SceneBuildDialog(
+            self._pipeline,
+            blender_exe=blender_exe,
+            settings=render_settings,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.blend_path() is None:
+            self._status_show("Pipeline stopped: scene build cancelled or failed.")
             return
+        blend_path = dlg.blend_path()
         self._pipeline.scene = blend_path
         log_pipeline_memory(self._pipeline, "after scene build")
         self._scene_stale = False
