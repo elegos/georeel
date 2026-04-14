@@ -89,10 +89,19 @@ def detect_and_repair(
     """
     stats = CleanStats()
 
+    # ── Step 0: distribution-based geographic outlier detection ──────────────
+    # Identify points that are anomalously far from the rest of the track
+    # (e.g. GPS null-island artefacts at or near (0, 0)).  This catches
+    # outliers that escape the sequential speed/jump check — in particular,
+    # near-zero coordinates with a large timestamp gap are treated as
+    # "legitimate pauses" by _is_nullified, but they're clearly wrong when the
+    # rest of the track is on another continent.
+    geo_outliers = _geographic_outlier_indices(points)
+
     # ── Step 1: remove nullified points ──────────────────────────────────────
     clean: list[Trackpoint] = []
-    for pt in points:
-        if _is_nullified(pt, clean, max_speed_mps, max_jump_m, max_gap_s):
+    for i, pt in enumerate(points):
+        if i in geo_outliers or _is_nullified(pt, clean, max_speed_mps, max_jump_m, max_gap_s):
             stats.nullified_removed += 1
         else:
             clean.append(pt)
@@ -127,6 +136,55 @@ def detect_and_repair(
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _geographic_outlier_indices(
+    points: list[Trackpoint],
+    spread_factor: float = 5.0,
+) -> frozenset[int]:
+    """Return the indices of points that are geographic outliers.
+
+    Algorithm
+    ---------
+    1. Compute the median latitude and longitude of the whole track
+       (the median is resistant to outliers, unlike the mean).
+    2. Compute the haversine distance from each point to that median.
+    3. Derive the median distance (typical spread of the track) and
+       clamp it to a sensible range.
+    4. Any point whose distance to the median exceeds
+       ``spread_factor × median_distance`` is an outlier.
+
+    The clamping ensures:
+    - Very short tracks (< 200 m spread) still flag anything > 1 km away.
+    - Very long tracks (> 600 km spread) still flag anything > 3 000 km away,
+      which covers null-island artefacts from any location on Earth.
+
+    Returns an empty frozenset when there are fewer than 4 points (not enough
+    data for a reliable median).
+    """
+    if len(points) < 4:
+        return frozenset()
+
+    lats = sorted(p.latitude  for p in points)
+    lons = sorted(p.longitude for p in points)
+    median_lat = lats[len(lats) // 2]
+    median_lon = lons[len(lons) // 2]
+
+    dists = [
+        _haversine(p.latitude, p.longitude, median_lat, median_lon)
+        for p in points
+    ]
+    sorted_dists = sorted(dists)
+    median_dist  = sorted_dists[len(sorted_dists) // 2]
+
+    # Clamp threshold: minimum 1 km (avoids false positives on tiny tracks),
+    # maximum 3 000 km (ensures (0,0) is always caught from anywhere on Earth).
+    threshold = min(
+        max(1_000.0, median_dist * spread_factor),
+        3_000_000.0,   # 3 000 km in metres
+    )
+
+    return frozenset(i for i, d in enumerate(dists) if d > threshold)
+
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres."""

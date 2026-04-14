@@ -26,6 +26,7 @@ from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
+from georeel.core.pipeline_memory import log_pipeline_memory
 from georeel.core.scene_builder import SceneBuildError, build_scene, _PREVIEW_MAX_TEXTURE_PIXELS
 from georeel.core.trackpoint import Trackpoint
 
@@ -135,6 +136,8 @@ class ScenePrepWorker(QThread):
         )
         fetch_bbox = bbox.expand(margin_m)
 
+        log_pipeline_memory(pipeline, "after GPX+bbox")
+
         # Stage 3 — DEM
         cached = self._cached_dem
         if (
@@ -156,6 +159,8 @@ class ScenePrepWorker(QThread):
                 return
             pipeline.elevation_grid = grid
             self.dem_fetched.emit(grid)
+
+        log_pipeline_memory(pipeline, "after DEM")
 
         # Stage 4 — Satellite imagery
         provider_id = self._settings.get("imagery/provider", "esri_world")
@@ -190,6 +195,8 @@ class ScenePrepWorker(QThread):
             pipeline.satellite_texture = texture
             self.satellite_fetched.emit(texture)
 
+        log_pipeline_memory(pipeline, "after satellite")
+
         # Stage 5 — 3D Scene Builder
         self.status.emit("Auto-build: building 3D scene (Blender)…")
         try:
@@ -200,5 +207,6 @@ class ScenePrepWorker(QThread):
             self.error.emit(f"Scene build error: {e}")
             return
 
+        log_pipeline_memory(pipeline, "after scene build")
         pipeline.scene = blend_path
         self.scene_ready.emit(blend_path, pipeline)

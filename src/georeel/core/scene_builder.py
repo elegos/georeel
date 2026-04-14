@@ -63,10 +63,15 @@ def build_scene(
     work_dir = Path(tempfile.mkdtemp(prefix="georeel_scene_"))
     atexit.register(shutil.rmtree, work_dir, True)
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
-    manifest_path = _write_texture_tiles(
+    manifest_path, tiles_manifest = _write_texture_tiles(
         pipeline.satellite_texture, pipeline.elevation_grid, work_dir,
         max_texture_pixels=max_texture_pixels,
     )
+    # Release the PIL image now that tile PNGs are on disk — the Blender script
+    # reads from the files directly.  write_png() (used by project save) will
+    # reassemble from tiles on demand so no RAM is wasted between now and save.
+    tiles_dir = work_dir / "sat_tiles"
+    pipeline.satellite_texture.free_image(tiles_dir=tiles_dir, tiles_manifest=tiles_manifest)
     settings = settings or {}
     fps = float(settings.get("render/fps", 30))
     speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
@@ -470,6 +475,9 @@ def _resolve_marker_color(settings: dict) -> str:
 
 
 def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
+    mean_lat_rad = math.radians((grid.min_lat + grid.max_lat) / 2)
+    lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
+    lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
     meta = {
         "rows": grid.rows,
         "cols": grid.cols,
@@ -477,6 +485,8 @@ def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
         "max_lat": grid.max_lat,
         "min_lon": grid.min_lon,
         "max_lon": grid.max_lon,
+        "lat_m": lat_m,
+        "lon_m": lon_m,
     }
     meta_path = work_dir / "dem_meta.json"
     data_path = work_dir / "dem_data.bin"
@@ -491,7 +501,7 @@ _MAX_TILE_PIXELS = 400_000_000  # ~1.2 GB as RGB — safely below Blender's 2 GB
 def _write_texture_tiles(
     texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
     max_texture_pixels: int | None = None,
-) -> Path:
+) -> tuple[Path, dict]:
     """Save the satellite texture as tiled PNG files and write a manifest JSON.
 
     Splits the image into an N×M grid so each tile stays under _MAX_TILE_PIXELS,
@@ -499,15 +509,31 @@ def _write_texture_tiles(
     row/column of DEM vertices so no seam appears in the rendered terrain.
 
     The satellite and DEM may cover slightly different extents when cached data
-    from a previous run is reused; the image is cropped to the DEM extent first
-    so UV [0,1] maps correctly.
+    from a previous run is reused; the crop offset is applied per-tile so no
+    intermediate full-image copy is created.
 
-    Returns the path to the manifest JSON consumed by build_scene.py.
+    Returns (manifest_path, manifest_dict).  The manifest dict includes pixel
+    bounds for each tile so the image can be reassembled from tiles on demand
+    (e.g. for project save after the PIL image has been freed).
     """
-    import io
     import math as _math
 
     img = texture.image
+    if img is None:
+        # Lazy-loaded from a project ZIP — decode now (only happens on first
+        # scene build after loading a project without re-fetching the texture).
+        if texture._source_zip is not None:
+            img = texture.load_image()
+        else:
+            raise SceneBuildError(
+                "Satellite texture image is not available (was it freed before build_scene?)."
+            )
+
+    # Compute crop offsets for DEM-extent alignment without allocating a
+    # second full-size image.  The offsets are applied per-tile below so the
+    # large intermediate copy is never created.
+    src_left = src_top = 0
+    src_w, src_h = img.size
 
     bounds_match = (
         abs(texture.min_lat - grid.min_lat) < 1e-9
@@ -521,20 +547,22 @@ def _write_texture_tiles(
         lat_span = texture.max_lat - texture.min_lat
         lon_span = texture.max_lon - texture.min_lon
         # Satellite image: row 0 = max_lat (north), col 0 = min_lon (west).
-        left   = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
-        right  = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
-        top    = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
-        bottom = int(round((texture.max_lat - grid.min_lat) / lat_span * h))
-        left, right = max(0, left), min(w, right)
-        top, bottom = max(0, top), min(h, bottom)
-        if right > left and bottom > top:
-            with PIL_LOCK:
-                img = img.crop((left, top, right, bottom))
+        c_left   = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
+        c_right  = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
+        c_top    = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
+        c_bottom = int(round((texture.max_lat - grid.min_lat) / lat_span * h))
+        c_left, c_right  = max(0, c_left),  min(w, c_right)
+        c_top,  c_bottom = max(0, c_top),   min(h, c_bottom)
+        if c_right > c_left and c_bottom > c_top:
+            src_left, src_top = c_left, c_top
+            src_w = c_right  - c_left
+            src_h = c_bottom - c_top
 
-    W, H = img.size
+    W, H = src_w, src_h
     total_pixels = W * H
 
-    # Downscale for preview if requested
+    # Downscale for preview if requested — this IS a new allocation but the
+    # result is small (max_texture_pixels, e.g. 8 MP), so it is fine.
     if max_texture_pixels is not None and total_pixels > max_texture_pixels:
         scale = _math.sqrt(max_texture_pixels / total_pixels)
         new_w = max(1, int(W * scale))
@@ -545,7 +573,11 @@ def _write_texture_tiles(
         )
         from PIL.Image import Resampling
         with PIL_LOCK:
-            img = img.resize((new_w, new_h), resample=Resampling.BICUBIC)
+            # We must materialise the crop first when there is an offset.
+            region = img.crop((src_left, src_top, src_left + W, src_top + H))
+            img = region.resize((new_w, new_h), resample=Resampling.BICUBIC)
+            del region
+        src_left = src_top = 0
         W, H = new_w, new_h
         total_pixels = W * H
 
@@ -581,28 +613,37 @@ def _write_texture_tiles(
     tiles = []
     for ti in range(n_tile_rows):
         for tj in range(n_tile_cols):
-            # Image pixel bounds (PIL crop: exclusive right/bottom)
-            px_left   = tj * W // n_tile_cols
-            px_right  = (tj + 1) * W // n_tile_cols
-            px_top    = ti * H // n_tile_rows
-            px_bottom = (ti + 1) * H // n_tile_rows
+            # Image pixel bounds within the (possibly offset) source region
+            px_left   = src_left + tj * W // n_tile_cols
+            px_right  = src_left + (tj + 1) * W // n_tile_cols
+            px_top    = src_top  + ti * H // n_tile_rows
+            px_bottom = src_top  + (ti + 1) * H // n_tile_rows
 
             # DEM row/col bounds (inclusive both ends so adjacent tiles share boundary)
-            dem_c_start = round(px_left   / W * (dem_cols - 1))
-            dem_c_end   = round(px_right  / W * (dem_cols - 1))
-            dem_r_start = round(px_top    / H * (dem_rows - 1))
-            dem_r_end   = round(px_bottom / H * (dem_rows - 1))
+            dem_c_start = round((px_left  - src_left) / W * (dem_cols - 1))
+            dem_c_end   = round((px_right - src_left) / W * (dem_cols - 1))
+            dem_r_start = round((px_top   - src_top)  / H * (dem_rows - 1))
+            dem_r_end   = round((px_bottom - src_top)  / H * (dem_rows - 1))
 
             tile_path = tiles_dir / f"{ti}_{tj}.png"
-            buf = io.BytesIO()
+            # Write directly to disk — no BytesIO round-trip, no convert("RGB")
+            # copy (img is guaranteed RGB from the fetch pipeline).
             with PIL_LOCK:
                 tile_img = img.crop((px_left, px_top, px_right, px_bottom))
-                tile_img.convert("RGB").save(buf, format="PNG", optimize=False)
-            tile_path.write_bytes(buf.getvalue())
+                if tile_img.mode != "RGB":
+                    tile_img = tile_img.convert("RGB")
+                tile_img.save(str(tile_path), format="PNG", optimize=False)
+            del tile_img
 
             tiles.append({
                 "ti": ti, "tj": tj,
                 "path": str(tile_path),
+                # Pixel bounds in the output image coordinate space (origin = src_left, src_top)
+                # stored so the image can be reassembled from tiles on demand.
+                "px_left":   px_left   - src_left,
+                "px_top":    px_top    - src_top,
+                "px_right":  px_right  - src_left,
+                "px_bottom": px_bottom - src_top,
                 "dem_r_start": dem_r_start,
                 "dem_r_end":   dem_r_end,
                 "dem_c_start": dem_c_start,
@@ -612,8 +653,10 @@ def _write_texture_tiles(
     manifest = {
         "n_tile_rows": n_tile_rows,
         "n_tile_cols": n_tile_cols,
+        "image_width":  W,
+        "image_height": H,
         "tiles": tiles,
     }
     manifest_path = work_dir / "sat_manifest.json"
     manifest_path.write_text(json.dumps(manifest))
-    return manifest_path
+    return manifest_path, manifest

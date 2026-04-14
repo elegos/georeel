@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from georeel.core.bounding_box import BoundingBox
 from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
@@ -43,6 +44,7 @@ from georeel.core.preview_map import PreviewMapError, render_preview_map
 from georeel.core.project import ProjectState, autosave_tilde, load_project, save_project
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
+from georeel.core.pipeline_memory import log_pipeline_memory
 from georeel.core.scene_builder import SceneBuildError, build_scene
 
 from .blender_settings_dialog import BlenderSettingsDialog
@@ -1254,6 +1256,16 @@ class MainWindow(QMainWindow):
                 _repair_msg += f" ({_cs.street_fallbacks} street→ground fallbacks)"
             _log.info(_repair_msg)
 
+        # Recompute bbox from the (possibly cleaned) trackpoints so that
+        # removed outliers (e.g. null-island artefacts) don't inflate the
+        # DEM / satellite fetch region.
+        if trackpoints:
+            bbox = BoundingBox(
+                min_lat=min(p.latitude  for p in trackpoints),
+                max_lat=max(p.latitude  for p in trackpoints),
+                min_lon=min(p.longitude for p in trackpoints),
+                max_lon=max(p.longitude for p in trackpoints),
+            )
         self._pipeline.trackpoints = trackpoints
         self._pipeline.bounding_box = bbox
         self._photo_area.update_pipeline_info(trackpoints=trackpoints)
@@ -1299,6 +1311,8 @@ class MainWindow(QMainWindow):
         track_bbox = self._pipeline.bounding_box
         fetch_bbox = track_bbox.expand(margin_m)
 
+        log_pipeline_memory(self._pipeline, "before DEM fetch")
+
         # Stage 3 — DEM Fetcher
         cached = self._cached_elevation_grid
         if (
@@ -1338,6 +1352,8 @@ class MainWindow(QMainWindow):
                 f"DEM fetched: {grid.rows}×{grid.cols} points "
                 f"({grid.rows * grid.cols:,} total)."
             )
+
+        log_pipeline_memory(self._pipeline, "after DEM fetch")
 
         # Stage 4 — Satellite Imagery Fetcher
         provider_id = str(self._settings.value("imagery/provider", "esri_world"))
@@ -1389,6 +1405,8 @@ class MainWindow(QMainWindow):
                 f"Satellite imagery fetched: {texture.width}×{texture.height} px."
             )
 
+        log_pipeline_memory(self._pipeline, "after satellite fetch")
+
         # Stage 5 — 3D Scene Builder
         self._status_show("Building 3D scene (Blender)…")
         blender_exe = self._settings.value("blender/executable_path") or None
@@ -1401,6 +1419,7 @@ class MainWindow(QMainWindow):
             self._status_show("Pipeline stopped: scene build failed.")
             return
         self._pipeline.scene = blend_path
+        log_pipeline_memory(self._pipeline, "after scene build")
         self._scene_stale = False
         self._open_blender_btn.setEnabled(True)
         self._preview_map_btn.setEnabled(True)

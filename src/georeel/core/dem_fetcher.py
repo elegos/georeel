@@ -1,4 +1,6 @@
+import logging
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 import numpy as np
@@ -7,6 +9,8 @@ import srtm
 
 from .bounding_box import BoundingBox
 from .elevation_grid import ElevationGrid
+
+_log = logging.getLogger(__name__)
 
 # Target horizontal spacing between grid points (metres).
 # 90 m matches SRTM3 native resolution and keeps grids small.
@@ -21,6 +25,11 @@ _ELEV_MAX_M   = 9_000.0   # Everest  ~8849 m
 # srtm library void thresholds (from GeoElevationFile.get_elevation_from_row_and_column)
 _SRTM_RAW_MAX =  10_000
 _SRTM_RAW_MIN =  -1_000
+
+# Parallel tile download workers.  More workers = faster on first download;
+# the srtm library writes each tile to a separate cache file so concurrent
+# downloads of *different* tiles are safe.
+_DEM_WORKERS = 8
 
 
 class DemFetchError(Exception):
@@ -57,6 +66,24 @@ def _fill_voids(grid: np.ndarray) -> np.ndarray:
     return filled
 
 
+def _parse_tile(geo_file: object) -> tuple[np.ndarray, int, float, float] | None:
+    """Convert a cached srtm GeoElevationFile to a float32 tile array.
+
+    Returns (tile_arr, N, f_lat, f_lon) or None if the tile has no data.
+    """
+    if geo_file is None or not geo_file.data:  # type: ignore[union-attr]
+        return None
+    N: int = geo_file.square_side  # type: ignore[union-attr]
+    tile_arr = (
+        np.frombuffer(geo_file.data, dtype=">i2")  # type: ignore[union-attr]
+        .reshape(N, N)
+        .astype(np.float32)
+    )
+    # Mask srtm library void values (same thresholds as the library uses)
+    tile_arr[(tile_arr > _SRTM_RAW_MAX) | (tile_arr < _SRTM_RAW_MIN)] = _SRTM_VOID
+    return tile_arr, N, float(geo_file.latitude), float(geo_file.longitude)  # type: ignore[union-attr]
+
+
 def fetch_dem(
     bbox: BoundingBox,
     progress_callback: Callable[[int, int], None] | None = None,
@@ -69,6 +96,18 @@ def fetch_dem(
 
     If *progress_callback* is provided it is called as
     ``progress_callback(tiles_done, total_tiles)`` after each tile is loaded.
+
+    Design notes
+    ------------
+    - We avoid building a full (rows, cols) meshgrid — that would allocate
+      two float64 arrays the size of the output grid (up to 10+ GB for large
+      bboxes).  Instead we keep 1D lat/lon arrays and use np.searchsorted to
+      find the row/col slice for each 1°×1° SRTM tile, then build a small
+      per-tile meshgrid only for that slice.
+
+    - Tile downloads are parallelised with a ThreadPoolExecutor.  Each SRTM
+      tile is a separate file in the on-disk cache, so concurrent downloads of
+      different tiles are safe.
     """
     mid_lat = (bbox.min_lat + bbox.max_lat) / 2
     m_per_deg_lon = _M_PER_DEG_LAT * math.cos(math.radians(mid_lat))
@@ -79,15 +118,19 @@ def fetch_dem(
     rows = max(2, round(lat_span * _M_PER_DEG_LAT / _TARGET_SPACING_M) + 1)
     cols = max(2, round(lon_span * m_per_deg_lon / _TARGET_SPACING_M) + 1)
 
-    # Build coordinate meshgrid (lat decreasing north→south, lon increasing west→east)
-    lats = np.linspace(bbox.max_lat, bbox.min_lat, rows)
-    lons = np.linspace(bbox.min_lon, bbox.max_lon, cols)
-    lon_grid, lat_grid = np.meshgrid(lons, lats)   # both shape (rows, cols)
+    # 1D coordinate arrays — lats decreases N→S, lons increases W→E.
+    # No meshgrid here: the full (rows×cols) grids would be 2×rows×cols×8 bytes
+    # of float64 (e.g. 10 GB for a 56 k×12 k grid).  We build per-tile slices
+    # via searchsorted instead.
+    lats = np.linspace(bbox.max_lat, bbox.min_lat, rows)   # float64 1-D (rows,)
+    lons = np.linspace(bbox.min_lon, bbox.max_lon, cols)   # float64 1-D (cols,)
 
-    # Determine which integer-degree tiles are needed
-    lat_tiles = range(math.floor(bbox.min_lat), math.floor(bbox.max_lat) + 1)
-    lon_tiles = range(math.floor(bbox.min_lon), math.floor(bbox.max_lon) + 1)
-    total_tiles = len(lat_tiles) * len(lon_tiles)
+    lat_tiles = list(range(math.floor(bbox.min_lat), math.floor(bbox.max_lat) + 1))
+    lon_tiles = list(range(math.floor(bbox.min_lon), math.floor(bbox.max_lon) + 1))
+    all_tiles = [(tlat, tlon) for tlat in lat_tiles for tlon in lon_tiles]
+    total_tiles = len(all_tiles)
+
+    _log.info("[dem] %d×%d grid, %d SRTM tiles to load", rows, cols, total_tiles)
 
     grid = np.full((rows, cols), _SRTM_VOID, dtype=np.float32)
 
@@ -96,56 +139,56 @@ def fetch_dem(
     except Exception as e:
         raise DemFetchError(f"Failed to initialise SRTM data: {e}") from e
 
+    # ------------------------------------------------------------------ #
+    # Parallel tile download                                               #
+    # Each tile downloads to a separate file in ~/.cache/srtm/ so there  #
+    # are no write-write conflicts between workers.                        #
+    # ------------------------------------------------------------------ #
     tiles_done = 0
-    for tile_lat in lat_tiles:
-        for tile_lon in lon_tiles:
-            # get_file triggers download + cache if the tile isn't on disk yet.
-            # Pass a point inside the tile (floor lat/lon + 0.5) so the filename
-            # calculation inside srtm produces the correct tile name.
-            geo_file = elevation_data.get_file(tile_lat + 0.5, tile_lon + 0.5)
+
+    def _load(tile_lat: int, tile_lon: int) -> tuple[int, int, object]:
+        geo_file = elevation_data.get_file(tile_lat + 0.5, tile_lon + 0.5)
+        return tile_lat, tile_lon, geo_file
+
+    with ThreadPoolExecutor(max_workers=_DEM_WORKERS) as pool:
+        futures = {pool.submit(_load, tlat, tlon): (tlat, tlon)
+                   for tlat, tlon in all_tiles}
+        for future in as_completed(futures):
+            tile_lat, tile_lon, geo_file = future.result()
 
             tiles_done += 1
             if progress_callback is not None:
                 progress_callback(tiles_done, total_tiles)
 
-            if geo_file is None or not geo_file.data:
-                continue   # ocean / no coverage
+            parsed = _parse_tile(geo_file)
+            if parsed is None:
+                continue
+            tile_arr, N, f_lat, f_lon = parsed
 
-            # Load raw big-endian int16 bytes directly into a numpy array —
-            # this is the key vectorisation step that avoids the per-point
-            # struct.unpack loop inside srtm's get_elevation().
-            N = geo_file.square_side
-            tile_arr = (
-                np.frombuffer(geo_file.data, dtype=">i2")
-                .reshape(N, N)
-                .astype(np.float32)
-            )
-            # Mask srtm library void values (same thresholds as the library uses)
-            tile_arr[(tile_arr > _SRTM_RAW_MAX) | (tile_arr < _SRTM_RAW_MIN)] = _SRTM_VOID
+            # ---------------------------------------------------------- #
+            # Find which rows/cols of the output grid fall in this tile.  #
+            # lats is *decreasing*, so we negate for searchsorted.        #
+            # ---------------------------------------------------------- #
+            r_start = int(np.searchsorted(-lats, -(f_lat + 1.0), side="left"))
+            r_end   = int(np.searchsorted(-lats, -f_lat,         side="right"))
+            c_start = int(np.searchsorted( lons,   f_lon,         side="left"))
+            c_end   = int(np.searchsorted( lons,   f_lon + 1.0,   side="right"))
 
-            f_lat = float(geo_file.latitude)   # integer SW-corner latitude
-            f_lon = float(geo_file.longitude)  # integer SW-corner longitude
-
-            # Select grid points that fall inside this 1°×1° tile
-            mask = (
-                (lat_grid >= f_lat) & (lat_grid < f_lat + 1.0) &
-                (lon_grid >= f_lon) & (lon_grid < f_lon + 1.0)
-            )
-            if not mask.any():
+            if r_start >= r_end or c_start >= c_end:
                 continue
 
-            # Vectorised coordinate → tile-array index mapping.
-            # Formula mirrors GeoElevationFile.get_row_and_column():
-            #   row = floor((f_lat + 1 - lat) * (N - 1))
-            #   col = floor((lon - f_lon)     * (N - 1))
-            q_lats = lat_grid[mask]
-            q_lons = lon_grid[mask]
-            r_idx = np.floor((f_lat + 1.0 - q_lats) * (N - 1)).astype(np.intp)
-            c_idx = np.floor((q_lons - f_lon)        * (N - 1)).astype(np.intp)
+            sub_lats = lats[r_start:r_end]   # shape (nr,)
+            sub_lons = lons[c_start:c_end]   # shape (nc,)
+
+            # Small meshgrid only for this tile's slice.
+            sub_lon_g, sub_lat_g = np.meshgrid(sub_lons, sub_lats)  # (nr, nc)
+
+            r_idx = np.floor((f_lat + 1.0 - sub_lat_g) * (N - 1)).astype(np.intp)
+            c_idx = np.floor((sub_lon_g - f_lon)        * (N - 1)).astype(np.intp)
             np.clip(r_idx, 0, N - 1, out=r_idx)
             np.clip(c_idx, 0, N - 1, out=c_idx)
 
-            grid[mask] = tile_arr[r_idx, c_idx]
+            grid[r_start:r_end, c_start:c_end] = tile_arr[r_idx, c_idx]
 
     grid = _fill_voids(grid).astype(np.float32)
 

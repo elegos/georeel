@@ -120,7 +120,7 @@ def autosave_tilde(
         if update_dem and state.elevation_grid is not None:
             zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
         if update_sat and state.satellite_texture is not None:
-            zf.writestr(_SAT_TEXTURE, state.satellite_texture.to_png_bytes())
+            _write_sat_png(zf, state.satellite_texture)
 
 
 def save_project(state: ProjectState, path: str) -> None:
@@ -240,7 +240,24 @@ def save_project(state: ProjectState, path: str) -> None:
         if state.elevation_grid is not None:
             zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
         if state.satellite_texture is not None:
-            zf.writestr(_SAT_TEXTURE, state.satellite_texture.to_png_bytes())
+            _write_sat_png(zf, state.satellite_texture)
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _write_sat_png(zf: zipfile.ZipFile, texture: SatelliteTexture) -> None:
+    """Stream the satellite texture PNG directly into the ZIP archive.
+
+    Uses ZIP_STORED so the PNG (already compressed) is not re-deflated —
+    this halves the in-memory overhead compared to writestr() with ZIP_DEFLATED,
+    and avoids materialising the entire compressed image as a Python bytes object.
+    """
+    info = zipfile.ZipInfo(_SAT_TEXTURE)
+    info.compress_type = zipfile.ZIP_STORED
+    with zf.open(info, "w", force_zip64=True) as f:
+        texture.write_png(f)
 
 
 # ------------------------------------------------------------------
@@ -249,10 +266,10 @@ def save_project(state: ProjectState, path: str) -> None:
 
 def load_project(path: str) -> ProjectState:
     with zipfile.ZipFile(path, "r") as zf:
-        return _load_v2(zf)
+        return _load_v2(zf, Path(path))
 
 
-def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
+def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
     payload  = json.loads(zf.read(_PROJECT))
     namelist = set(zf.namelist())
     temp_dir: Path | None = None
@@ -328,8 +345,11 @@ def _load_v2(zf: zipfile.ZipFile) -> ProjectState:
     satellite_texture = None
     sat_meta = payload.get("satellite")
     if sat_meta and _SAT_TEXTURE in namelist:
-        satellite_texture = SatelliteTexture.from_png_bytes(
-            zf.read(_SAT_TEXTURE),
+        # Lazy reference — do NOT decode the PNG at load time.  The pixels are
+        # only needed if the user re-saves without fetching a new texture.
+        satellite_texture = SatelliteTexture.from_zip_lazy(
+            zip_path=zip_path,
+            entry=_SAT_TEXTURE,
             min_lat=sat_meta["min_lat"],
             max_lat=sat_meta["max_lat"],
             min_lon=sat_meta["min_lon"],

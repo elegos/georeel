@@ -66,6 +66,7 @@ KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder na
 KEY_OUTPUT_CQ             = "output/cq"                      # int
 KEY_OUTPUT_PRESET         = "output/preset"                  # string
 KEY_FRUSTUM_MARGIN_KM     = "render/frustum_margin_km"       # float km — max terrain view distance
+KEY_RENDER_SEGMENTS       = "render/n_segments"              # int: render passes (1 = single pass)
 KEY_GPX_REPAIR_MODE       = "gpx/repair_mode"                # "none" | "ground" | "street"
 KEY_GPX_OSRM_PROFILE      = "gpx/osrm_profile"               # "driving" | "cycling" | "walking"
 KEY_GPX_MAX_SPEED_KMH     = "gpx/max_speed_kmh"             # int km/h — above this is nullified
@@ -127,6 +128,7 @@ DEFAULTS = {
     KEY_PIN_CUSTOM_COLOR:     "#228B22",
     KEY_MARKER_COLOR:         "LightBlue",
     KEY_MARKER_CUSTOM_COLOR:  "#ADD8E6",
+    KEY_RENDER_SEGMENTS:      1,
     KEY_GPX_REPAIR_MODE:      "none",
     KEY_GPX_MAX_SPEED_KMH:    300,
     KEY_GPX_MAX_GAP_S:        30.0,
@@ -336,6 +338,20 @@ class RenderSettingsDialog(QDialog):
         _set_combo(self._quality_combo,
                    self._settings.value(KEY_QUALITY, DEFAULTS[KEY_QUALITY]))
         form.addRow("Quality:", self._quality_combo)
+
+        self._segments_spin = QSpinBox()
+        self._segments_spin.setRange(1, 16)
+        self._segments_spin.setValue(
+            int(str(self._settings.value(KEY_RENDER_SEGMENTS, DEFAULTS[KEY_RENDER_SEGMENTS])))
+        )
+        self._segments_spin.setToolTip(
+            "Split the render into N sequential passes.\n"
+            "Each pass launches a fresh Blender process that loads only the\n"
+            "terrain tiles visible during its frame range, reducing VRAM usage.\n"
+            "Use 1 for a single pass (default). Increase to 4–8 for very large\n"
+            "satellite textures that exceed your GPU memory."
+        )
+        form.addRow("Render segments:", self._segments_spin)
 
         layout.addWidget(group)
         layout.addStretch()
@@ -737,6 +753,7 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_ASPECT_RATIO,        self._aspect_combo.currentData())
         self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
         self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
+        self._settings.setValue(KEY_RENDER_SEGMENTS,     self._segments_spin.value())
         self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FILL,          self._fill_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FADE_DURATION, self._fade_dur_spin.value())

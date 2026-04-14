@@ -81,7 +81,23 @@ class XyzSource(SatelliteSource):
                 total_tiles,
             )
 
-        canvas = Image.new("RGB", (cols * _TILE_SIZE, rows * _TILE_SIZE))
+        # Pre-compute the exact crop bounds so the canvas is created at the
+        # final size — this avoids a second full-image allocation from crop().
+        nw_lat, nw_lon = _tile_nw(x_min,     y_min,     zoom)
+        se_lat, se_lon = _tile_nw(x_max + 1, y_max + 1, zoom)
+        full_w = cols * _TILE_SIZE
+        full_h = rows * _TILE_SIZE
+        total_lat = nw_lat - se_lat
+        total_lon = se_lon - nw_lon
+
+        crop_left   = max(0, round((bbox.min_lon - nw_lon) / total_lon * full_w))
+        crop_right  = min(full_w, round((bbox.max_lon - nw_lon) / total_lon * full_w))
+        crop_top    = max(0, round((nw_lat - bbox.max_lat) / total_lat * full_h))
+        crop_bottom = min(full_h, round((nw_lat - bbox.min_lat) / total_lat * full_h))
+
+        canvas_w = max(1, crop_right - crop_left)
+        canvas_h = max(1, crop_bottom - crop_top)
+        canvas = Image.new("RGB", (canvas_w, canvas_h))
 
         session = requests.Session()
         session.headers["User-Agent"] = _USER_AGENT
@@ -105,29 +121,18 @@ class XyzSource(SatelliteSource):
             }
             for future in as_completed(futures):
                 tx, ty, tile = future.result()
-                px = (tx - x_min) * _TILE_SIZE
-                py = (ty - y_min) * _TILE_SIZE
+                # Paste at offset relative to the crop origin — PIL clips
+                # tiles that are partially outside the canvas automatically.
+                px = (tx - x_min) * _TILE_SIZE - crop_left
+                py = (ty - y_min) * _TILE_SIZE - crop_top
                 canvas.paste(tile, (px, py))
                 completed += 1
                 if progress_callback is not None:
                     progress_callback(completed, total_tiles)
 
-        # Crop to the exact bounding box
-        nw_lat, nw_lon = _tile_nw(x_min,     y_min,     zoom)
-        se_lat, se_lon = _tile_nw(x_max + 1, y_max + 1, zoom)
-
-        total_lat = nw_lat - se_lat
-        total_lon = se_lon - nw_lon
-
-        left   = round((bbox.min_lon - nw_lon) / total_lon * canvas.width)
-        right  = round((bbox.max_lon - nw_lon) / total_lon * canvas.width)
-        top    = round((nw_lat - bbox.max_lat) / total_lat * canvas.height)
-        bottom = round((nw_lat - bbox.min_lat) / total_lat * canvas.height)
-
-        cropped = canvas.crop((left, top, right, bottom))
-
+        # canvas is already cropped to bbox; no second allocation needed.
         return SatelliteTexture(
-            image=cropped,
+            image=canvas,
             min_lat=bbox.min_lat,
             max_lat=bbox.max_lat,
             min_lon=bbox.min_lon,

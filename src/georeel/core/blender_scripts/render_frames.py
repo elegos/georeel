@@ -110,6 +110,10 @@ def main() -> None:
         sys.exit(1)
 
     keyframes_path, output_dir, engine, resolution, quality = argv[:5]
+    # Optional segmented-render arguments (added by frame_renderer.py in multi-segment mode)
+    frame_start_arg  = int(argv[5]) if len(argv) > 5 else None
+    frame_end_arg    = int(argv[6]) if len(argv) > 6 else None
+    tile_filter_str  = argv[7]      if len(argv) > 7 else None
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
@@ -121,6 +125,46 @@ def main() -> None:
     total = len(keyframes_data)
     width, height = _RESOLUTIONS.get(resolution, (1920, 1080))
     samples = _SAMPLES.get(engine, _SAMPLES["eevee"]).get(quality, 64)
+
+    # ------------------------------------------------------------------ #
+    # Tile filter: delete excluded terrain objects so their textures are  #
+    # never uploaded to VRAM — the primary memory-reduction mechanism for  #
+    # segmented rendering of large satellite textures.                    #
+    # ------------------------------------------------------------------ #
+    if tile_filter_str:
+        allowed_tiles = set(tile_filter_str.split(","))
+        to_remove_imgs   = []
+        to_remove_objs   = []
+        to_remove_meshes = []
+
+        for obj in list(bpy.data.objects):
+            if not obj.name.startswith("Terrain_"):
+                continue
+            tile_id = obj.name[len("Terrain_"):]
+            if tile_id in allowed_tiles:
+                continue
+            # Collect textures before removing the object
+            for ms in obj.material_slots:
+                mat = ms.material
+                if mat and mat.use_nodes:
+                    for node in mat.node_tree.nodes:
+                        if node.type == 'TEX_IMAGE' and node.image:
+                            to_remove_imgs.append(node.image)
+            to_remove_meshes.append(obj.data)
+            to_remove_objs.append(obj)
+
+        for obj in to_remove_objs:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        for mesh in to_remove_meshes:
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+        for img in to_remove_imgs:
+            if img.users == 0:
+                bpy.data.images.remove(img)
+
+        n_kept    = len(allowed_tiles)
+        n_removed = len(to_remove_objs)
+        print(f"[georeel] Tile filter: kept {n_kept}, removed {n_removed} terrain tile(s)")
 
     scene = bpy.context.scene
 
@@ -237,13 +281,15 @@ def main() -> None:
     # "######" in the filepath → 6-digit zero-padded frame number.        #
     # ------------------------------------------------------------------ #
 
-    scene.frame_start = 0
-    scene.frame_end   = total - 1
+    scene.frame_start = frame_start_arg if frame_start_arg is not None else 0
+    scene.frame_end   = frame_end_arg   if frame_end_arg   is not None else total - 1
     scene.render.filepath = f"{output_dir}/######"
 
+    n_frames = scene.frame_end - scene.frame_start + 1
     bpy.ops.render.render(animation=True)
 
-    print(f"[georeel] Rendered {total} frames to {output_dir}")
+    print(f"[georeel] Rendered {n_frames} frames "
+          f"({scene.frame_start}–{scene.frame_end}) to {output_dir}")
 
 
 main()
