@@ -1456,10 +1456,11 @@ class MainWindow(QMainWindow):
             and _quality_rank(cached_sat.quality) >= _quality_rank(img_quality)
         ):
             self._pipeline.satellite_texture = cached_sat
-            self._status_show(
-                f"Satellite: using cached texture "
-                f"({cached_sat.width}×{cached_sat.height} px)."
-            )
+            try:
+                dims = f"({cached_sat.width}×{cached_sat.height} px)"
+            except RuntimeError:
+                dims = "(size unknown)"
+            self._status_show(f"Satellite: using cached texture {dims}.")
         else:
             self._status_show("Fetching satellite imagery…")
             self._fetch_progress_bar.setRange(0, 0)
