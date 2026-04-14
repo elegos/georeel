@@ -35,7 +35,10 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests with coverage
-        run: uv run coverage run -m pytest --cov=georeel.core --cov-report=term-missing --cov-fail-under=64 && uv run coverage html -d .coverage_html
+        run: |
+          uv run coverage run -m pytest --cov=georeel.core --cov-report=term-missing --cov-fail-under=64
+          uv run coverage html -d .coverage_html
+          ls -la .coverage_html
 
       - name: Upload coverage report
         if: always()
