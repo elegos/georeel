@@ -35,9 +35,7 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests with coverage
-        run: |
-          uv run coverage run -m pytest --cov-report=term-missing --cov-fail-under=85
-          uv run coverage xml -o .coverage.xml
+        run: uv run pytest --cov=src/georeel --cov-report=xml --cov-report=term-missing --cov-fail-under=85
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v6

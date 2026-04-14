@@ -1,7 +1,7 @@
 .claude
 .venv
 .coverage
-.coverage.xml
+coverage.xml
 .coverage_html
 **/__pycache__
 **/*.pyc
