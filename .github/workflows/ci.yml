@@ -45,12 +45,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report-py${{ matrix.python-version }}
-          path: |
-            .coverage_html/**
-            !.coverage_html/.gitignore
+          path: .coverage_html/**
           retention-days: 7
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
