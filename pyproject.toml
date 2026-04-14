@@ -33,7 +33,7 @@ addopts = "--tb=short -q"
 
 [tool.coverage.run]
 source = ["georeel"]
-omit = ["*/ui/*", "*/blender_scripts/*"]
+omit = ["*/ui/*", "*/blender_scripts/*", "src/georeel/main.py"]
 
 [dependency-groups]
 dev = [
