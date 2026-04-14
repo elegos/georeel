@@ -386,7 +386,7 @@ class MainWindow(QMainWindow):
         options_menu = self.menuBar().addMenu("Options")
         blender_action = options_menu.addAction("Blender…")
         blender_action.triggered.connect(self._open_blender_settings)
-        render_action = options_menu.addAction("Render Settings…")
+        render_action = options_menu.addAction("Pipeline Settings…")
         render_action.triggered.connect(self._open_render_settings)
 
     def _open_blender_settings(self):
