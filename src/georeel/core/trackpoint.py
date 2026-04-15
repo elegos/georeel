@@ -8,3 +8,4 @@ class Trackpoint:
     longitude: float
     elevation: float | None
     timestamp: datetime | None
+    is_reconstructed: bool = False

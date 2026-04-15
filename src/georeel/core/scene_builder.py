@@ -98,6 +98,8 @@ def build_scene(
     pin_color = _resolve_pin_color(settings)
     marker_color = _resolve_marker_color(settings)
     height_offset = float(settings.get("render/camera_height_offset", 200))
+    shifting_pin = bool(settings.get("marker/shifting_pin", False))
+    marker_comp_color = _complementary_color(marker_color)
 
     cmd = [
         exe,
@@ -117,6 +119,8 @@ def build_scene(
         str(speed_mps),
         str(pauses_path),
         marker_color,
+        "1" if shifting_pin else "0",
+        marker_comp_color,
     ] + _sun_args(pipeline)
 
     if status_cb:
@@ -212,28 +216,32 @@ def _write_track(
     lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
     lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
 
-    # Project trackpoints to scene XY, removing duplicates
-    raw: list[tuple[float, float]] = []
+    # Project trackpoints to scene XY, removing duplicates.
+    # Also carry the is_reconstructed flag from each source trackpoint.
+    raw: list[tuple[float, float, bool]] = []
     for tp in pipeline.trackpoints:
         x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
         y = (tp.latitude - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
         if raw and abs(x - raw[-1][0]) < 1e-4 and abs(y - raw[-1][1]) < 1e-4:
             continue
-        raw.append((x, y))
+        raw.append((x, y, tp.is_reconstructed))
 
     if len(raw) < 4:
         # Too few points for a spline: fall back to raw points with slope=0
         points = [
-            {"x": x, "y": y, "z": _elev_at_xy(x, y, grid, lat_m, lon_m), "slope": 0.0}
-            for x, y in raw
+            {"x": x, "y": y, "z": _elev_at_xy(x, y, grid, lat_m, lon_m), "slope": 0.0,
+             "is_reconstructed": rec}
+            for x, y, rec in raw
         ]
         track_path.write_text(json.dumps(points))
         return track_path, points
 
-    pts = np.array(raw)
+    pts = np.array([(x, y) for x, y, _ in raw])
+    raw_flags: list[bool] = [rec for _, _, rec in raw]
 
-    # Fit parametric cubic B-spline through all trackpoints
-    tck, _ = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
+    # Fit parametric cubic B-spline through all trackpoints.
+    # splprep returns u: the parameter values corresponding to each input point.
+    tck, u = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
 
     # Compute total arc length on a dense evaluation
     t_fine = np.linspace(0, 1, max(10_000, len(pts) * 100))
@@ -255,13 +263,17 @@ def _write_track(
     _dev = splev(sample_t, tck, der=1)
     dxs, dys = np.asarray(_dev[0], dtype=float), np.asarray(_dev[1], dtype=float)
 
+    # For each ribbon sample, determine whether it lies in a reconstructed segment.
+    # A sample at parameter t falls in segment [u[j], u[j+1]]; it is reconstructed
+    # if either bounding input point is reconstructed.
+    u_arr = np.asarray(u)
+
     points: list[dict] = []
     for i in range(n_samples):
         x, y = float(xs[i]), float(ys[i])
         z = _elev_at_xy(x, y, grid, lat_m, lon_m)
         # Slope: rise over run using spline tangent and DEM elevation difference
         # Sample elevation slightly ahead and behind for accurate grade
-        eps = ribbon_spacing_m / 2
         horiz = math.sqrt(float(dxs[i]) ** 2 + float(dys[i]) ** 2)
         if horiz > 1e-6 and i > 0 and i < n_samples - 1:
             z_prev = _elev_at_xy(float(xs[i - 1]), float(ys[i - 1]), grid, lat_m, lon_m)
@@ -273,7 +285,11 @@ def _write_track(
             slope = abs(z_next - z_prev) / seg_h if seg_h > 1e-6 else 0.0
         else:
             slope = 0.0
-        points.append({"x": x, "y": y, "z": z, "slope": slope})
+        # Map sample parameter back to its input segment and propagate is_reconstructed.
+        j = int(np.searchsorted(u_arr, sample_t[i], side="right")) - 1
+        j = max(0, min(j, len(raw_flags) - 2))
+        is_rec = raw_flags[j] or raw_flags[j + 1]
+        points.append({"x": x, "y": y, "z": z, "slope": slope, "is_reconstructed": is_rec})
 
     track_path.write_text(json.dumps(points))
     return track_path, points
@@ -487,6 +503,59 @@ def _resolve_marker_color(settings: dict) -> str:
     if color_id == "custom":
         return settings.get("marker/custom_color", "#ADD8E6")
     return get_color_hex(color_id, "#ADD8E6")
+
+
+def _complementary_color(hex_color: str) -> str:
+    """Return the complementary (hue-opposite) color as #rrggbb.
+
+    Complement is computed by rotating hue 180° in HSV space, keeping
+    saturation and value intact so the two colors are equally vivid.
+    """
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16) / 255.0
+    g = int(hex_color[2:4], 16) / 255.0
+    b = int(hex_color[4:6], 16) / 255.0
+
+    cmax = max(r, g, b)
+    cmin = min(r, g, b)
+    delta = cmax - cmin
+
+    # Hue (0–360)
+    if delta == 0:
+        h = 0.0
+    elif cmax == r:
+        h = 60.0 * (((g - b) / delta) % 6)
+    elif cmax == g:
+        h = 60.0 * ((b - r) / delta + 2)
+    else:
+        h = 60.0 * ((r - g) / delta + 4)
+
+    s = 0.0 if cmax == 0 else delta / cmax
+    v = cmax
+
+    # Rotate hue by 180°
+    h = (h + 180.0) % 360.0
+
+    # HSV → RGB
+    c = v * s
+    x = c * (1 - abs((h / 60.0) % 2 - 1))
+    m = v - c
+    sector = int(h / 60) % 6
+    if sector == 0:
+        r2, g2, b2 = c, x, 0.0
+    elif sector == 1:
+        r2, g2, b2 = x, c, 0.0
+    elif sector == 2:
+        r2, g2, b2 = 0.0, c, x
+    elif sector == 3:
+        r2, g2, b2 = 0.0, x, c
+    elif sector == 4:
+        r2, g2, b2 = x, 0.0, c
+    else:
+        r2, g2, b2 = c, 0.0, x
+
+    ri, gi, bi = round((r2 + m) * 255), round((g2 + m) * 255), round((b2 + m) * 255)
+    return f"#{ri:02x}{gi:02x}{bi:02x}"
 
 
 def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:

@@ -58,6 +58,7 @@ KEY_PIN_COLOR             = "pins/color"                     # named color id or
 KEY_PIN_CUSTOM_COLOR      = "pins/custom_color"              # "#rrggbb" when color=="custom"
 KEY_MARKER_COLOR          = "marker/color"                   # named color id or "custom"
 KEY_MARKER_CUSTOM_COLOR   = "marker/custom_color"            # "#rrggbb" when color=="custom"
+KEY_MARKER_SHIFTING_PIN   = "marker/shifting_pin"            # bool — fade to complementary on reconstructed segments
 KEY_IMAGERY_PROVIDER      = "imagery/provider"               # provider id
 KEY_IMAGERY_QUALITY       = "imagery/quality"                # "standard" | "high" | "very_high"
 KEY_IMAGERY_API_KEY       = "imagery/api_key"                # per-provider key (provider-prefixed)
@@ -135,6 +136,7 @@ DEFAULTS = {
     KEY_PIN_CUSTOM_COLOR:     "#228B22",
     KEY_MARKER_COLOR:         "LightBlue",
     KEY_MARKER_CUSTOM_COLOR:  "#ADD8E6",
+    KEY_MARKER_SHIFTING_PIN:  False,
     KEY_RENDER_SEGMENTS:      1,
     KEY_PNG_COMPRESSION:      6,
     KEY_GPX_REPAIR_MODE:      "none",

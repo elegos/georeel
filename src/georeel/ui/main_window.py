@@ -8,6 +8,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -34,7 +35,7 @@ from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.frustum import frustum_margin
 from georeel.core.exif_reader import read_photo_metadata
-from georeel.core.gpx_cleaner import REPAIR_NONE, detect_and_repair
+from georeel.core.gpx_cleaner import REPAIR_LINEAR, REPAIR_NONE, detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.gpx_stats import compute_stats
 from georeel.core.photo_matcher import match_photos
@@ -70,6 +71,7 @@ from .render_settings_dialog import (
     KEY_GPX_OSRM_PROFILE,
     KEY_GPX_REPAIR_MODE,
     KEY_HEIGHT_OFFSET,
+    KEY_MARKER_SHIFTING_PIN,
     KEY_IMAGERY_API_KEY,
     KEY_IMAGERY_CUSTOM_URL,
     KEY_IMAGERY_PROVIDER,
@@ -482,16 +484,19 @@ class MainWindow(QMainWindow):
         # ── Mode combo ────────────────────────────────────────────────
         self._gpx_repair_combo = QComboBox()
         self._gpx_repair_combo.addItem("No hole repair", "none")
-        self._gpx_repair_combo.addItem("Ground interpolation", "ground")
+        self._gpx_repair_combo.addItem("Linear interpolation", "linear")
         self._gpx_repair_combo.addItem("Street interpolation (OSRM)", "street")
         saved_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, "none"))
+        # Remap legacy "ground" value to "linear".
+        if saved_mode == "ground":
+            saved_mode = "linear"
         idx = self._gpx_repair_combo.findData(saved_mode)
         if idx >= 0:
             self._gpx_repair_combo.setCurrentIndex(idx)
         self._gpx_repair_combo.setToolTip(
-            "Ground: fills gaps with a straight line on the terrain.\n"
+            "Linear: fills gaps with a straight line between the two endpoints.\n"
             "Street: routes via the OSRM public API (router.project-osrm.org);\n"
-            "falls back to ground when the route is unavailable."
+            "falls back to linear when the route is unavailable."
         )
         form.addRow("Hole repair:", self._gpx_repair_combo)
 
@@ -553,11 +558,30 @@ class MainWindow(QMainWindow):
         self._gpx_thresh_widget.setLayout(thresh_row)
         form.addRow("", self._gpx_thresh_widget)
 
-        # Show/hide thresholds and profile based on mode.
+        # ── Shifting pin checkbox (visible only when mode != none) ────
+        self._shifting_pin_check = QCheckBox("Shifting pin")
+        self._shifting_pin_check.setToolTip(
+            "When checked, the track marker gradually shifts from its chosen color\n"
+            "to its complementary color over reconstructed (filled-gap) segments,\n"
+            "then fades back once the recorded track resumes."
+        )
+        saved_shifting = self._settings.value(KEY_MARKER_SHIFTING_PIN, False)
+        self._shifting_pin_check.setChecked(
+            bool(saved_shifting) and saved_shifting != "false"
+        )
+        self._shifting_pin_widget = QWidget()
+        shifting_row = QHBoxLayout(self._shifting_pin_widget)
+        shifting_row.setContentsMargins(0, 0, 0, 0)
+        shifting_row.addWidget(self._shifting_pin_check)
+        shifting_row.addStretch()
+        form.addRow("", self._shifting_pin_widget)
+
+        # Show/hide thresholds, profile, and shifting-pin based on mode.
         def _update_thresh_visibility():
             mode = self._gpx_repair_combo.currentData()
             self._gpx_thresh_widget.setVisible(mode != "none")
             self._gpx_osrm_profile_widget.setVisible(mode == "street")
+            self._shifting_pin_widget.setVisible(mode != "none")
             self._settings.setValue(KEY_GPX_REPAIR_MODE, mode)
 
         _update_thresh_visibility()
@@ -573,12 +597,17 @@ class MainWindow(QMainWindow):
                 KEY_GPX_OSRM_PROFILE, self._gpx_osrm_profile_combo.currentData()
             )
         )
+        self._shifting_pin_check.toggled.connect(
+            lambda v: self._settings.setValue(KEY_MARKER_SHIFTING_PIN, v)
+        )
 
         return container
 
     def _reload_gpx_repair_controls(self) -> None:
         """Sync GPX repair widgets from QSettings (called after project load)."""
         mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, "none"))
+        if mode == "ground":
+            mode = "linear"  # remap legacy value
         idx = self._gpx_repair_combo.findData(mode)
         self._gpx_repair_combo.blockSignals(True)
         if idx >= 0:
@@ -586,6 +615,7 @@ class MainWindow(QMainWindow):
         self._gpx_repair_combo.blockSignals(False)
         self._gpx_thresh_widget.setVisible(mode != "none")
         self._gpx_osrm_profile_widget.setVisible(mode == "street")
+        self._shifting_pin_widget.setVisible(mode != "none")
 
         profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
         pidx = self._gpx_osrm_profile_combo.findData(profile)
@@ -601,6 +631,11 @@ class MainWindow(QMainWindow):
         self._gpx_gap_spin.blockSignals(True)
         self._gpx_gap_spin.setValue(float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))))
         self._gpx_gap_spin.blockSignals(False)
+
+        saved_shifting = self._settings.value(KEY_MARKER_SHIFTING_PIN, False)
+        self._shifting_pin_check.blockSignals(True)
+        self._shifting_pin_check.setChecked(bool(saved_shifting) and saved_shifting != "false")
+        self._shifting_pin_check.blockSignals(False)
 
     def _reload_speed_control(self) -> None:
         """Sync flythrough speed widgets from QSettings (called after project load)."""

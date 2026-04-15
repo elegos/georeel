@@ -11,15 +11,18 @@ Holes come in two flavours:
   *max_gap_s* (the recorder paused or lost satellite signal).
 
 Both types are repaired by inserting synthetic ``Trackpoint`` objects between
-the bounding valid points.  Three repair modes are supported:
+the bounding valid points.  Four repair modes are supported:
 
 ``"none"``
     No repair — return the cleaned (bad-points-removed) list as-is.
 
+``"linear"``
+    Direct linear interpolation of latitude/longitude in coordinate space;
+    elevation and timestamps are also linearly interpolated.  The simplest
+    and fastest mode — draws a straight line between the two endpoints.
+
 ``"ground"``
-    Linear great-circle interpolation of latitude/longitude; elevation is
-    linearly interpolated between the two endpoint elevations (or set to
-    ``None`` when either is absent); timestamps are linearly interpolated.
+    Equivalent to ``"linear"`` (retained for backwards compatibility).
 
 ``"street"``
     The OSRM public routing API is queried for the shortest driving route
@@ -27,7 +30,7 @@ the bounding valid points.  Three repair modes are supported:
     to the desired number of points.  Elevation is still interpolated from
     the DEM endpoints (OSRM does not supply elevation data, so bridges and
     tunnels are not modelled differently from ground level).  Falls back
-    silently to ground interpolation when OSRM is unavailable.
+    silently to linear interpolation when OSRM is unavailable.
 """
 from __future__ import annotations
 
@@ -41,7 +44,8 @@ from .trackpoint import Trackpoint
 # ── Public constants ──────────────────────────────────────────────────────────
 
 REPAIR_NONE   = "none"
-REPAIR_GROUND = "ground"
+REPAIR_LINEAR = "linear"
+REPAIR_GROUND = "ground"   # alias for REPAIR_LINEAR (backwards compatibility)
 REPAIR_STREET = "street"
 
 
@@ -108,6 +112,10 @@ def detect_and_repair(
 
     if mode == REPAIR_NONE or len(clean) < 2:
         return clean, stats
+
+    # Normalise alias so downstream code only needs to check REPAIR_STREET.
+    if mode == REPAIR_GROUND:
+        mode = REPAIR_LINEAR
 
     # ── Step 2: estimate the typical inter-point interval (median) ───────────
     pair_gaps = [
@@ -262,7 +270,7 @@ def _fill_hole(
         else:
             fell_back = True
             latlon_pts = _interp_latlon(a, b, n)
-    else:
+    else:  # REPAIR_LINEAR (and the normalised REPAIR_GROUND alias)
         latlon_pts = _interp_latlon(a, b, n)
 
     # Elevation: linearly interpolate between the two valid endpoints.
@@ -279,7 +287,8 @@ def _fill_hole(
         frac = (i + 1) / (n + 1)
         elev = el_a + frac * (el_b - el_a) if have_el else None  # type: ignore[operator]
         ts   = ts_a + timedelta(seconds=frac * total_s) if have_ts else None  # type: ignore[operator]
-        result.append(Trackpoint(latitude=lat, longitude=lon, elevation=elev, timestamp=ts))
+        result.append(Trackpoint(latitude=lat, longitude=lon, elevation=elev, timestamp=ts,
+                                  is_reconstructed=True))
     return result, fell_back
 
 

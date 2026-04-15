@@ -38,8 +38,10 @@ def main() -> None:
     height_offset = float(argv[7]) if len(argv) > 7  else 200.0
     fps           = float(argv[8]) if len(argv) > 8  else 30.0
     speed_mps     = float(argv[9]) if len(argv) > 9  else 80.0
-    pauses_path   = argv[10]       if len(argv) > 10 else None
-    marker_color  = argv[11]       if len(argv) > 11 else "#ADD8E6"
+    pauses_path      = argv[10]        if len(argv) > 10 else None
+    marker_color     = argv[11]        if len(argv) > 11 else "#ADD8E6"
+    shifting_pin     = argv[12] == "1" if len(argv) > 12 else False
+    marker_comp_color = argv[13]       if len(argv) > 13 else None
 
     pause_schedule: dict = {}
     if pauses_path and os.path.isfile(pauses_path):
@@ -47,9 +49,9 @@ def main() -> None:
             pause_schedule = json.load(_f)
 
     sun_vec = None
-    if len(argv) >= 15:
+    if len(argv) >= 17:
         try:
-            sun_vec = (float(argv[12]), float(argv[13]), float(argv[14]))
+            sun_vec = (float(argv[14]), float(argv[15]), float(argv[16]))
         except ValueError:
             pass
 
@@ -191,7 +193,9 @@ def main() -> None:
             _build_marker(bpy, track_data, height_offset=height_offset,
                           fps=fps, speed_mps=speed_mps,
                           pause_schedule=pause_schedule,
-                          marker_color=marker_color)
+                          marker_color=marker_color,
+                          shifting_pin=shifting_pin,
+                          marker_comp_color=marker_comp_color)
 
     # ------------------------------------------------------------------ #
     # Photo waypoint pins (billboards)                                     #
@@ -752,7 +756,9 @@ def _build_marker(bpy, track_data: list[dict],
                   fps: float = 30.0, speed_mps: float = 80.0,
                   z_offset: float = 4.0,
                   pause_schedule: dict | None = None,
-                  marker_color: str = "#ADD8E6") -> None:
+                  marker_color: str = "#ADD8E6",
+                  shifting_pin: bool = False,
+                  marker_comp_color: str | None = None) -> None:
     """Create an animated position marker that travels along the track.
 
     Strategy: keyframe the marker's world *location* at each track point,
@@ -921,6 +927,43 @@ def _build_marker(bpy, track_data: list[dict],
                         'CONSTANT' if int(round(kp.co.x)) in pause_starts
                         else 'LINEAR'
                     )
+
+    # ------------------------------------------------------------------ #
+    # Shifting-pin: animate emission color on reconstructed segments       #
+    # ------------------------------------------------------------------ #
+    if shifting_pin and marker_comp_color:
+        comp_r, comp_g, comp_b = _hex_to_rgb(marker_comp_color)
+        emit_node = mat_outer.node_tree.nodes.get("Emission") or next(
+            (n for n in mat_outer.node_tree.nodes if n.type == 'EMISSION'), None
+        )
+        if emit_node:
+            color_input = emit_node.inputs["Color"]
+            cumulative_pause_frames = 0
+            for i in range(n):
+                fly_frame_i = round(i * frames_per_point)
+                is_rec = bool(track_data[i].get("is_reconstructed", False))
+                color = (comp_r, comp_g, comp_b, 1.0) if is_rec else (m_r, m_g, m_b, 1.0)
+
+                if fly_frame_i in pauses_by_fly:
+                    p  = pauses_by_fly[fly_frame_i]
+                    ps = p["scene_start"]
+                    pd = p["duration"]
+                    color_input.default_value = color
+                    color_input.keyframe_insert("default_value", frame=ps)
+                    color_input.keyframe_insert("default_value", frame=ps + pd)
+                    cumulative_pause_frames += pd
+                else:
+                    scene_frame_i = pre_total + fly_frame_i + cumulative_pause_frames + 1
+                    color_input.default_value = color
+                    color_input.keyframe_insert("default_value", frame=scene_frame_i)
+
+            # Set all color keyframes to LINEAR interpolation
+            color_action = mat_outer.node_tree.animation_data.action \
+                if mat_outer.node_tree.animation_data else None
+            if color_action:
+                for fcurve in color_action.fcurves:
+                    for kp in fcurve.keyframe_points:
+                        kp.interpolation = 'LINEAR'
 
 
 def _build_ribbon(bpy, track_data: list[dict],
