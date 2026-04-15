@@ -1,3 +1,4 @@
+from typing import Any
 import threading
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -18,7 +19,7 @@ class _Worker(QObject):
     failed   = Signal(str)
 
     def __init__(self, frames_dir: str, output_path: str,
-                 settings: dict, total_frames: int, gpx_path: str | None = None):
+                 settings: dict[str, Any], total_frames: int, gpx_path: str | None = None):
         super().__init__()
         self._frames_dir   = frames_dir
         self._output_path  = output_path
@@ -52,7 +53,7 @@ class VideoProgressDialog(QDialog):
     """Shows FFmpeg encoding progress with a cancel button."""
 
     def __init__(self, frames_dir: str, output_path: str,
-                 settings: dict, total_frames: int,
+                 settings: dict[str, Any], total_frames: int,
                  gpx_path: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Encoding video")

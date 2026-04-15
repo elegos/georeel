@@ -5,6 +5,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .elevation_grid import ElevationGrid
 from .photo_metadata import PhotoMetadata
@@ -38,8 +39,8 @@ class ProjectState:
     photos: list[PhotoMetadata]
     elevation_grid: ElevationGrid | None = None
     satellite_texture: SatelliteTexture | None = None
-    render_settings: dict | None = None   # camera + imagery settings at fetch time
-    clip_effects: dict | None = None      # fade-in/out, title, music settings
+    render_settings: dict[str, Any] | None = None   # camera + imagery settings at fetch time
+    clip_effects: dict[str, Any] | None = None      # fade-in/out, title, music settings
     # Temporary directory created when embedded files are extracted on load.
     # The caller is responsible for deleting it (shutil.rmtree) when done.
     temp_dir: Path | None = field(default=None, compare=False, repr=False)
@@ -83,7 +84,7 @@ def autosave_tilde(
     with zipfile.ZipFile(tilde, "a", compression=zipfile.ZIP_DEFLATED) as zf:
         # Patch project.json in place — read the existing one, update fields.
         try:
-            payload: dict = json.loads(zf.read(_PROJECT))
+            payload: dict[str, Any] = json.loads(zf.read(_PROJECT))
         except KeyError:
             payload = {}
 
@@ -127,7 +128,7 @@ def save_project(state: ProjectState, path: str) -> None:
     # Serialise photos first; the list is mutated below to add embedded names.
     serialised_photos = [_serialise_photo(p) for p in state.photos]
 
-    project_payload: dict = {
+    project_payload: dict[str, Any] = {
         "gpx_path": state.gpx_path,
         "match_mode": state.match_mode,
         "output_path": state.output_path,
@@ -379,7 +380,7 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
 # Helpers
 # ------------------------------------------------------------------
 
-def _serialise_photo(p: PhotoMetadata) -> dict:
+def _serialise_photo(p: PhotoMetadata) -> dict[str, Any]:
     return {
         "path": p.path,
         "timestamp": p.timestamp.isoformat() if p.timestamp else None,
@@ -388,7 +389,7 @@ def _serialise_photo(p: PhotoMetadata) -> dict:
     }
 
 
-def _deserialise_photos(raw: list[dict]) -> list[PhotoMetadata]:
+def _deserialise_photos(raw: list[dict[str, Any]]) -> list[PhotoMetadata]:
     photos = []
     for p in raw:
         ts_raw = p.get("timestamp")
@@ -401,7 +402,7 @@ def _deserialise_photos(raw: list[dict]) -> list[PhotoMetadata]:
     return photos
 
 
-def _should_embed_font(clip_effects: dict | None) -> bool:
+def _should_embed_font(clip_effects: dict[str, Any] | None) -> bool:
     if not clip_effects:
         return False
     return bool(clip_effects.get("clip_effects/title_enabled")) and bool(

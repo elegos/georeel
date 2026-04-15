@@ -1,3 +1,4 @@
+from typing import Any
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -157,7 +158,7 @@ class PhotoListArea(DropArea):
             self._tz_offset_hours = hours
             self._rebuild_table()
 
-    def preload_exif_cache(self, cache: dict) -> None:
+    def preload_exif_cache(self, cache: dict[str, Any]) -> None:
         """Seed the EXIF cache with pre-read metadata so _rebuild_table skips disk reads."""
         self._original_exif.update(cache)
 

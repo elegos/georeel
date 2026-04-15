@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
@@ -15,7 +16,7 @@ _GPS_LON_REF = 3
 _GPS_LON = 4
 
 
-def _dms_to_decimal(dms: tuple, ref: str) -> float:
+def _dms_to_decimal(dms: tuple[Any, ...], ref: str) -> float:
     degrees, minutes, seconds = (float(v) for v in dms)
     decimal = degrees + minutes / 60 + seconds / 3600
     if ref in ("S", "W"):
@@ -23,7 +24,7 @@ def _dms_to_decimal(dms: tuple, ref: str) -> float:
     return decimal
 
 
-def _parse_gps(gps_ifd: dict) -> tuple[float, float] | None:
+def _parse_gps(gps_ifd: dict[int, Any]) -> tuple[float, float] | None:
     try:
         lat = _dms_to_decimal(gps_ifd[_GPS_LAT], gps_ifd[_GPS_LAT_REF])
         lon = _dms_to_decimal(gps_ifd[_GPS_LON], gps_ifd[_GPS_LON_REF])

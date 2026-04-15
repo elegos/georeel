@@ -6,7 +6,7 @@ import struct
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, IO
+from typing import TYPE_CHECKING, Any, IO
 
 if TYPE_CHECKING:
     from .tile_cache import TileCache
@@ -41,7 +41,7 @@ class SatelliteTexture:
     quality: str = "standard"
     # Set by _write_texture_tiles / free_image so we can reassemble on demand.
     _tiles_dir: Path | None = field(default=None, repr=False)
-    _tiles_manifest: dict | None = field(default=None, repr=False)
+    _tiles_manifest: dict[str, Any] | None = field(default=None, repr=False)
     # Set by from_zip_lazy — stream directly from the source ZIP without decoding.
     _source_zip: Path | None = field(default=None, repr=False)
     _source_entry: str | None = field(default=None, repr=False)
@@ -87,7 +87,7 @@ class SatelliteTexture:
     def free_image(
         self,
         tiles_dir: Path | None = None,
-        tiles_manifest: dict | None = None,
+        tiles_manifest: dict[str, Any] | None = None,
     ) -> None:
         """Release the PIL Image from RAM.
 

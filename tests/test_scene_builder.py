@@ -122,30 +122,40 @@ class TestWriteTrack:
         p = Pipeline()
         p.trackpoints = []
         p.elevation_grid = _make_grid()
-        track_path, ribbon_points = _write_track(p, tmp_path)
+        track_path, ribbon_points, min_speed_mps, max_speed_mps = _write_track(p, tmp_path)
         data = json.loads(track_path.read_text())
         assert data == []
         assert ribbon_points == []
+        assert min_speed_mps == 0.0
+        assert max_speed_mps == 0.0
 
     def test_no_grid_writes_empty_json(self, tmp_path):
         p = Pipeline()
         p.trackpoints = _make_trackpoints(5)
         p.elevation_grid = None
-        track_path, ribbon_points = _write_track(p, tmp_path)
+        track_path, ribbon_points, min_speed_mps, max_speed_mps = _write_track(p, tmp_path)
         data = json.loads(track_path.read_text())
         assert data == []
+        assert ribbon_points == []
+        assert min_speed_mps == 0.0
+        assert max_speed_mps == 0.0
 
     def test_few_trackpoints_fallback(self, tmp_path):
         """Fewer than 4 unique points → falls back to raw points."""
         p = _make_pipeline(n_trackpoints=3)
-        track_path, ribbon_points = _write_track(p, tmp_path)
+        track_path, ribbon_points, min_speed_mps, max_speed_mps = _write_track(p, tmp_path)
         data = json.loads(track_path.read_text())
         # Should still write something without crashing
         assert isinstance(data, list)
 
+        assert len(data) == 3
+        assert len(ribbon_points) == 3
+        assert min_speed_mps == 0.0
+        assert max_speed_mps == 1.0
+
     def test_normal_path_writes_json(self, tmp_path):
         p = _make_pipeline(n_trackpoints=8)
-        track_path, ribbon_points = _write_track(p, tmp_path)
+        track_path, ribbon_points, min_speed_mps, max_speed_mps = _write_track(p, tmp_path)
         data = json.loads(track_path.read_text())
         assert len(data) > 0
         for pt in data:
@@ -157,10 +167,12 @@ class TestWriteTrack:
     def test_returns_path_and_list(self, tmp_path):
         p = _make_pipeline(n_trackpoints=6)
         result = _write_track(p, tmp_path)
-        assert len(result) == 2
-        path, ribbon_pts = result
+        assert len(result) == 4
+        path, ribbon_pts, min_speed_mps, max_speed_mps = result
         assert isinstance(path, Path)
         assert isinstance(ribbon_pts, list)
+        assert isinstance(min_speed_mps, float)
+        assert isinstance(max_speed_mps, float)
 
 
 # ---------------------------------------------------------------------------

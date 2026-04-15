@@ -21,7 +21,7 @@ import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import groupby
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from PIL import Image, ImageFilter, ImageOps
 
@@ -59,19 +59,19 @@ class CompositorError(Exception):
 # pool initialiser; never touched by the main process after fork/spawn)
 # ══════════════════════════════════════════════════════════════════════
 
-_WORKER_CACHE: dict[str, Image.Image] = {}
+_worker_cache: dict[str, Image.Image] = {}
 
 
 def _init_worker_cache(photo_bytes: dict[str, bytes]) -> None:
     """Deserialise pre-fitted photos into each worker process once."""
-    global _WORKER_CACHE
-    _WORKER_CACHE = {
+    global _worker_cache
+    _worker_cache = {
         key: Image.open(io.BytesIO(data)).copy()
         for key, data in photo_bytes.items()
     }
 
 
-def _process_frame_task(task: dict) -> int | None:
+def _process_frame_task(task: dict[str, Any]) -> int | None:
     """Process one frame.
 
     Returns frame_num if a required source file was missing, else None.
@@ -95,7 +95,7 @@ def _process_frame_task(task: dict) -> int | None:
         return frame_num
 
     photo_key = task.get("photo_key")
-    photo_img = _WORKER_CACHE.get(photo_key) if photo_key else None
+    photo_img = _worker_cache.get(photo_key) if photo_key else None
 
     if photo_img is None:
         # No photo available — fall back to copying the terrain frame
@@ -110,7 +110,7 @@ def _process_frame_task(task: dict) -> int | None:
 
     if op == "crossfade":
         next_key = task.get("next_photo_key")
-        next_img = _WORKER_CACHE.get(next_key) if next_key else None
+        next_img = _worker_cache.get(next_key) if next_key else None
         if next_img is not None:
             Image.blend(photo_img, next_img, task["alpha"]).save(str(out_path))
         else:
@@ -136,7 +136,7 @@ def _process_frame_task(task: dict) -> int | None:
 
 def composite_photos(
     pipeline: Pipeline,
-    settings: dict,
+    settings: dict[str, Any],
     progress_cb: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> str:
@@ -279,15 +279,15 @@ def composite_photos(
 # ══════════════════════════════════════════════════════════════════════
 
 def _build_frame_tasks(
-    runs: list[list[dict]],
+    runs: list[list[dict[str, Any]]],
     src_dir: Path,
     out_dir: Path,
     out_w: int, out_h: int,
     transition: str,
     fade_frames: int,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return a flat, ordered list of per-frame task dicts."""
-    tasks: list[dict] = []
+    tasks: list[dict[str, Any]] = []
 
     for run in runs:
         if not run[0]["is_pause"]:
@@ -369,12 +369,12 @@ def _build_frame_tasks(
 # Block / run helpers
 # ══════════════════════════════════════════════════════════════════════
 
-def _group_into_runs(blocks: list[dict]) -> list[list[dict]]:
+def _group_into_runs(blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """Group consecutive pause blocks into carousel runs.
 
     Non-pause blocks are each their own single-element run.
     """
-    runs: list[list[dict]] = []
+    runs: list[list[dict[str, Any]]] = []
     i = 0
     while i < len(blocks):
         if blocks[i]["is_pause"]:
@@ -389,7 +389,7 @@ def _group_into_runs(blocks: list[dict]) -> list[list[dict]]:
     return runs
 
 
-def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict]:
+def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict[str, Any]]:
     """Group consecutive keyframes into pause / non-pause blocks."""
     blocks = []
     for (is_pause, photo_path), group in groupby(
@@ -401,7 +401,7 @@ def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict]:
     return blocks
 
 
-def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> tuple[list[dict], int]:
+def _absorb_photo_gaps(blocks: list[dict[str, Any]], max_gap: int) -> tuple[list[dict[str, Any]], int]:
     """Absorb short fly-through gaps between consecutive photo pause blocks.
 
     When two photo blocks are separated by ≤ *max_gap* fly frames, those
@@ -410,7 +410,7 @@ def _absorb_photo_gaps(blocks: list[dict], max_gap: int) -> tuple[list[dict], in
 
     Returns (updated blocks list, number of gaps absorbed).
     """
-    result: list[dict] = []
+    result: list[dict[str, Any]] = []
     absorbed = 0
     i = 0
     while i < len(blocks):

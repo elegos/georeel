@@ -194,13 +194,13 @@ def _hex_to_hsl(hex_color: str) -> tuple[int, int, int]:
 _HUE_BUCKET_DEG = 15   # coarse hue quantization — keeps visually similar colors together
                         # and avoids the 0°/360° wrap splitting reds
 
-def _sort_key(entry: tuple[str, str]) -> tuple:
+def _sort_key(entry: tuple[str, str]) -> tuple[float, float, float]:
     _, hex_color = entry
     hue, sat, lit = _hex_to_hsl(hex_color)
     if sat < 8:                           # near-achromatic → group at the end by lightness
-        return (999, 0, lit)
-    bucket = hue // _HUE_BUCKET_DEG      # 0…23 coarse hue band
-    return (bucket, lit)
+        return (999.0, 0.0, lit)
+    bucket = float(hue // _HUE_BUCKET_DEG)      # 0…23 coarse hue band
+    return (bucket, 0.0, lit)
 
 
 def _hsl_label(hex_color: str) -> str:

@@ -1,3 +1,4 @@
+from typing import Any
 import threading
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -18,7 +19,7 @@ class _Worker(QObject):
     finished = Signal(str)        # frames_dir
     failed   = Signal(str)        # error message
 
-    def __init__(self, pipeline: Pipeline, settings: dict, blender_exe: str | None):
+    def __init__(self, pipeline: Pipeline, settings: dict[str, Any], blender_exe: str | None):
         super().__init__()
         self._pipeline    = pipeline
         self._settings    = settings
@@ -47,7 +48,7 @@ class _Worker(QObject):
 class RenderProgressDialog(QDialog):
     """Shows frame-by-frame render progress with a cancel button."""
 
-    def __init__(self, pipeline: Pipeline, settings: dict,
+    def __init__(self, pipeline: Pipeline, settings: dict[str, Any],
                  blender_exe: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Rendering frames")

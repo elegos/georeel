@@ -1,8 +1,9 @@
+# pyright: reportUninitializedInstanceVariable=false
 """Clip effects settings widget — fade-in/fade-out, title, and music controls."""
 
 import json
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from PySide6.QtCore import QRect, QSettings, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
@@ -697,9 +698,9 @@ class ClipEffectsWidget(QWidget):
         (which would cause tab-index churn and spurious Qt layout events).
         """
         def _sv(key: str, default: _T, t: type[_T] | None = None) -> _T:
-            return self._settings.value(  # type: ignore[return-value]
+            return cast(Any, self._settings.value(
                 key, default, type=t or type(default)
-            )
+            ))
 
         # Fade-in
         self._fi_group.setChecked(_sv(_KEY_FI_ENABLED, False, bool))
@@ -769,7 +770,7 @@ class ClipEffectsWidget(QWidget):
         self._music_cf_dur.setEnabled(self._music_cf_chk.isChecked())
         self._music_loop_chk.setChecked(_sv(_KEY_MUSIC_LOOP, False, bool))
 
-    def get_settings(self) -> dict:
+    def get_settings(self) -> dict[str, Any]:
         """Return current clip effects settings as a flat dict."""
         return {
             _KEY_FI_ENABLED:   self._fi_group.isChecked(),

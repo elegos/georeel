@@ -1,3 +1,5 @@
+# pyright: reportUninitializedInstanceVariable=false
+from typing import Any
 import logging
 import shutil
 import threading
@@ -189,7 +191,7 @@ class _LoadWorker(QObject):
                 except Exception:
                     gpx_failed = True
 
-            exif_cache: dict = {}
+            exif_cache: dict[str, Any] = {}
             photos = state.photos
             n = len(photos)
             for i, photo in enumerate(photos):
@@ -1630,7 +1632,7 @@ class MainWindow(QMainWindow):
 
         self._start_from_camera_path(render_settings)
 
-    def _start_from_camera_path(self, render_settings: dict) -> None:
+    def _start_from_camera_path(self, render_settings: dict[str, Any]) -> None:
         """Run stages 6–9, assuming self._pipeline already has stages 1–5."""
 
         # Stage 6 — Camera Path Generator

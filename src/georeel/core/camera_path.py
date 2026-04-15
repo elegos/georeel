@@ -14,7 +14,7 @@ import gc
 import logging
 import math
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from scipy.interpolate import splev, splprep
@@ -60,7 +60,7 @@ class CameraPathError(Exception):
 
 def build_camera_path(
     pipeline: Pipeline,
-    settings: dict,
+    settings: dict[str, Any],
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[CameraKeyframe]:
     """Generate CameraKeyframes for the fly-through.

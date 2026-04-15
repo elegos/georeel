@@ -1,3 +1,4 @@
+# pyright: reportUninitializedInstanceVariable=false
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal

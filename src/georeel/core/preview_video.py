@@ -14,7 +14,7 @@ Reuses render_frames.py and assemble_video without modification.
 
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .camera_keyframe import CameraKeyframe
 from .frame_renderer import FrameRenderError, render_frames
@@ -36,7 +36,7 @@ class PreviewVideoError(Exception):
 
 def build_preview_keyframes(
     keyframes: list[CameraKeyframe],
-    settings: dict | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> list[CameraKeyframe]:
     """Return the first N keyframes as the preview clip.
 
@@ -72,7 +72,7 @@ def build_preview_keyframes(
 
 def render_preview_video(
     pipeline: Pipeline,
-    settings: dict,
+    settings: dict[str, Any],
     output_path: str,
     blender_exe: str | None = None,
     progress_cb: Callable[[int, int], None] | None = None,

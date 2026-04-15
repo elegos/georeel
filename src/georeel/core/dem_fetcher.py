@@ -1,7 +1,7 @@
 import logging
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
@@ -66,7 +66,7 @@ def _fill_voids(grid: np.ndarray) -> np.ndarray:
     return filled
 
 
-def _parse_tile(geo_file: object) -> tuple[np.ndarray, int, float, float] | None:
+def _parse_tile(geo_file: Any) -> tuple[np.ndarray, int, float, float] | None:
     """Convert a cached srtm GeoElevationFile to a float32 tile array.
 
     Returns (tile_arr, N, f_lat, f_lon) or None if the tile has no data.

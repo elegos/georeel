@@ -280,13 +280,13 @@ def _fill_hole(
     # Timestamps: linearly interpolate (None when either endpoint has none).
     ts_a, ts_b = a.timestamp, b.timestamp
     have_ts = ts_a is not None and ts_b is not None
-    total_s = (ts_b - ts_a).total_seconds() if have_ts else 0.0  # type: ignore[operator]
+    total_s = (ts_b - ts_a).total_seconds() if (ts_a is not None and ts_b is not None) else 0.0
 
     result: list[Trackpoint] = []
     for i, (lat, lon) in enumerate(latlon_pts):
         frac = (i + 1) / (n + 1)
-        elev = el_a + frac * (el_b - el_a) if have_el else None  # type: ignore[operator]
-        ts   = ts_a + timedelta(seconds=frac * total_s) if have_ts else None  # type: ignore[operator]
+        elev = (el_a + frac * (el_b - el_a)) if (el_a is not None and el_b is not None) else None
+        ts   = (ts_a + timedelta(seconds=frac * total_s)) if (ts_a is not None and ts_b is not None) else None
         result.append(Trackpoint(latitude=lat, longitude=lon, elevation=elev, timestamp=ts,
                                   is_reconstructed=True))
     return result, fell_back

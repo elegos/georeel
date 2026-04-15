@@ -1,3 +1,5 @@
+# pyright: reportUninitializedInstanceVariable=false
+from typing import Any, cast
 import shutil
 
 from PySide6.QtCore import QSettings, Qt
@@ -152,10 +154,10 @@ DEFAULTS = {
 }
 
 
-def get_render_settings(settings: QSettings) -> dict:
+def get_render_settings(settings: QSettings) -> dict[str, Any]:
     """Return all render settings as a plain dict, filled with defaults."""
     return {
-        key: type(default)(settings.value(key, default))
+        key: type(default)(cast(Any, settings.value(key, default)))
         for key, default in DEFAULTS.items()
     }
 

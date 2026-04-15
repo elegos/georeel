@@ -30,9 +30,9 @@ if TYPE_CHECKING:
 try:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # noqa: F811
     from PySide6.QtMultimediaWidgets import QVideoWidget  # noqa: F811
-    _HAS_MULTIMEDIA = True
+    _has_multimedia = True
 except ImportError:
-    _HAS_MULTIMEDIA = False
+    _has_multimedia = False
 
 
 def open_preview_video(video_path: str, parent=None) -> None:
@@ -41,7 +41,7 @@ def open_preview_video(video_path: str, parent=None) -> None:
     If QtMultimedia is available, shows a player dialog.
     Otherwise launches the system default video player.
     """
-    if _HAS_MULTIMEDIA:
+    if _has_multimedia:
         dlg = _PlayerDialog(video_path, parent=parent)
         dlg.exec()
     else:

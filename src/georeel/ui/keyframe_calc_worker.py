@@ -1,3 +1,4 @@
+from typing import Any
 """
 Lightweight background worker: runs stages 1–3 + camera path (stage 6)
 without satellite imagery or Blender scene building.  Used by the
@@ -42,7 +43,7 @@ class KeyframeCalcWorker(QThread):
         gpx_path: str,
         match_mode: str,
         tz_offset_hours: float,
-        render_settings: dict,
+        render_settings: dict[str, Any],
         cached_elevation_grid: ElevationGrid | None,
     ):
         super().__init__()

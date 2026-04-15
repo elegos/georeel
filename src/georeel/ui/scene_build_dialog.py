@@ -1,3 +1,4 @@
+from typing import Any
 """
 Progress dialog for 3D scene building.
 
@@ -31,7 +32,7 @@ class _Worker(QObject):
     failed        = Signal(str)       # error message
 
     def __init__(self, pipeline: Pipeline, blender_exe: str | None,
-                 settings: dict | None):
+                 settings: dict[str, Any] | None):
         super().__init__()
         self._pipeline    = pipeline
         self._blender_exe = blender_exe
@@ -65,7 +66,7 @@ class SceneBuildDialog(QDialog):
     """Shows progress while build_scene() runs in a background thread."""
 
     def __init__(self, pipeline: Pipeline, blender_exe: str | None = None,
-                 settings: dict | None = None, parent=None):
+                 settings: dict[str, Any] | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Building 3D scene")
         self.setMinimumWidth(440)

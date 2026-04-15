@@ -1,3 +1,4 @@
+from typing import Any
 """
 Progress dialog for preview video rendering.
 
@@ -29,7 +30,7 @@ class _Worker(QObject):
     finished       = Signal(str)       # output_path
     failed         = Signal(str)       # error message
 
-    def __init__(self, pipeline: Pipeline, settings: dict,
+    def __init__(self, pipeline: Pipeline, settings: dict[str, Any],
                  output_path: str, blender_exe: str | None):
         super().__init__()
         self._pipeline    = pipeline
@@ -65,7 +66,7 @@ class _Worker(QObject):
 class PreviewVideoProgressDialog(QDialog):
     """Shows rendering progress for the preview video."""
 
-    def __init__(self, pipeline: Pipeline, settings: dict,
+    def __init__(self, pipeline: Pipeline, settings: dict[str, Any],
                  blender_exe: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Rendering preview video")

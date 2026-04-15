@@ -1,3 +1,4 @@
+from typing import Any
 import threading
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -18,7 +19,7 @@ class _Worker(QObject):
     finished = Signal(str)        # composited_frames_dir
     failed   = Signal(str)        # error message
 
-    def __init__(self, pipeline: Pipeline, settings: dict):
+    def __init__(self, pipeline: Pipeline, settings: dict[str, Any]):
         super().__init__()
         self._pipeline = pipeline
         self._settings = settings
@@ -45,7 +46,7 @@ class _Worker(QObject):
 class CompositorProgressDialog(QDialog):
     """Shows photo compositing progress with a cancel button."""
 
-    def __init__(self, pipeline: Pipeline, settings: dict, parent=None):
+    def __init__(self, pipeline: Pipeline, settings: dict[str, Any], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Compositing photo overlays")
         self.setMinimumWidth(440)

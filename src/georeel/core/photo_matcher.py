@@ -1,5 +1,6 @@
 import math
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from .match_result import MatchResult
 from .photo_metadata import PhotoMetadata
@@ -66,7 +67,7 @@ def _match_by_timestamp(
     # subtraction against the UTC-aware GPX timestamps is unambiguous.
     photo_utc = photo.timestamp.replace(tzinfo=tz)
 
-    timed_sorted = sorted(timed, key=lambda x: x[1].timestamp)  # type: ignore[arg-type]
+    timed_sorted = sorted(timed, key=lambda x: cast(datetime, x[1].timestamp))
     first_time = timed_sorted[0][1].timestamp
     last_time  = timed_sorted[-1][1].timestamp
     assert first_time is not None and last_time is not None
@@ -89,7 +90,7 @@ def _match_by_timestamp(
 
     best_i, _ = min(
         timed,
-        key=lambda x: abs((x[1].timestamp - photo_utc).total_seconds()),  # type: ignore[operator]
+        key=lambda x: abs((cast(datetime, x[1].timestamp) - photo_utc).total_seconds()),
     )
     return MatchResult(photo_path=photo.path, trackpoint_index=best_i, sort_key=sort_key)
 
@@ -101,12 +102,14 @@ def _match_by_gps(
     if not photo.has_gps:
         return MatchResult(photo_path=photo.path, error="No GPS coordinates in EXIF")
 
-    assert photo.latitude is not None and photo.longitude is not None
+    lat = photo.latitude
+    lon = photo.longitude
+    assert lat is not None and lon is not None
     best_i = min(
         range(len(trackpoints)),
         key=lambda i: _haversine(
-            photo.latitude,  # type: ignore[arg-type]
-            photo.longitude,  # type: ignore[arg-type]
+            lat,
+            lon,
             trackpoints[i].latitude, trackpoints[i].longitude,
         ),
     )

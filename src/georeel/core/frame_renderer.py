@@ -17,7 +17,7 @@ import math
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .blender_runtime import find_blender
 from .camera_keyframe import CameraKeyframe
@@ -36,7 +36,7 @@ class FrameRenderError(Exception):
 # ------------------------------------------------------------------
 
 def _tile_world_bounds(
-    tile: dict, rows: int, cols: int, lat_m: float, lon_m: float
+    tile: dict[str, Any], rows: int, cols: int, lat_m: float, lon_m: float
 ) -> tuple[float, float, float, float]:
     """Return (x_min, x_max, y_min, y_max) in world metres for a manifest tile.
 
@@ -54,7 +54,7 @@ def _tile_world_bounds(
 
 
 def _filter_tiles(
-    tiles: list[dict],
+    tiles: list[dict[str, Any]],
     cam_xs: list[float],
     cam_ys: list[float],
     margin_m: float,
@@ -92,7 +92,7 @@ def _filter_tiles(
 
 def render_frames(
     pipeline: Pipeline,
-    settings: dict,
+    settings: dict[str, Any],
     blender_exe: str | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
@@ -182,7 +182,7 @@ def _render_single(
     tile_filter: str | None,
     progress_cb: Callable[[int, int], None] | None,
     cancel_check: Callable[[], bool] | None,
-    settings: dict | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> str:
     """Run one Blender render pass and stream progress."""
     # tex_scale < 1.0 for viewport/draft mode: downscales terrain textures in
@@ -249,7 +249,7 @@ def _render_single(
 
 def _render_segmented(
     pipeline: Pipeline,
-    settings: dict,
+    settings: dict[str, Any],
     exe: str,
     kf_path: Path,
     out_dir: Path,
@@ -268,6 +268,7 @@ def _render_segmented(
     cleanly between segments, fully releasing VRAM before the next segment
     starts — this is the key benefit for large satellite textures.
     """
+    assert pipeline.scene is not None
     scene_dir = Path(pipeline.scene).parent  # type: ignore[arg-type]
     meta_path     = scene_dir / "dem_meta.json"
     manifest_path = scene_dir / "sat_manifest.json"
@@ -278,7 +279,7 @@ def _render_segmented(
         and manifest_path.exists()
     )
 
-    tiles: list[dict] = []
+    tiles: list[dict[str, Any]] = []
     rows = cols = 1
     lat_m = lon_m = 1.0
 

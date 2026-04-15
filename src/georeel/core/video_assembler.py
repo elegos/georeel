@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .encoder_registry import EncoderConfig, get_encoder
 from . import temp_manager
@@ -25,7 +25,7 @@ class VideoAssembleError(Exception):
 def assemble_video(
     frames_dir: str,
     output_path: str,
-    settings: dict,
+    settings: dict[str, Any],
     total_frames: int,
     gpx_path: str | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
@@ -258,7 +258,7 @@ def _prepend_black_frames(src_dir: str, dst_dir: Path, n_black: int) -> None:
 
 
 def _fade_filters(
-    settings: dict,
+    settings: dict[str, Any],
     total_frames: int,
     fps: int,
     skip_prepend: bool = False,
@@ -354,7 +354,7 @@ def _title_alpha(t: float, duration: float,
 def _composite_title_frames(
     src_dir: str,
     dst_dir: Path,
-    settings: dict,
+    settings: dict[str, Any],
     fps: int,
     t_offset: float = 0.0,
     content_start: float = 0.0,
@@ -479,7 +479,7 @@ def _composite_title_frames(
     # font instance, loaded lazily on first use.
     _font_local = threading.local()
 
-    def _thread_font() -> "ImageFont.FreeTypeFont":
+    def _thread_font() -> Any:
         if not hasattr(_font_local, "instance"):
             try:
                 _font_local.instance = ImageFont.truetype(
@@ -582,7 +582,7 @@ def _composite_title_frames(
 
 
 def _music_audio_cmd_parts(
-    settings: dict,
+    settings: dict[str, Any],
     total_duration_s: float,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Return (pre_input_args, input_args, filter_args, map_codec_args) for music.
@@ -753,7 +753,7 @@ def _attach_args(gpx_path: str | None, container: str) -> list[str]:
 _SETTINGS_ATTACHMENT_CONTAINERS = {"mkv"}   # MP4 attachment support is unreliable for JSON
 
 
-def _serialise_settings(settings: dict) -> str:
+def _serialise_settings(settings: dict[str, Any]) -> str:
     """Return a pretty-printed JSON string of settings, excluding the API key."""
     safe = {k: v for k, v in settings.items() if k != "imagery/api_key"}
     return json.dumps(safe, indent=2, sort_keys=True, default=str)
@@ -769,7 +769,7 @@ def _attach_settings_args(settings_path: str, container: str) -> list[str]:
     ]
 
 
-def _write_settings(settings: dict, out: Path, container: str) -> None:
+def _write_settings(settings: dict[str, Any], out: Path, container: str) -> None:
     """For non-MKV containers write <stem>_settings.json next to the video."""
     if container in _SETTINGS_ATTACHMENT_CONTAINERS:
         return

@@ -1,3 +1,4 @@
+from typing import Any
 """
 Background worker: runs pipeline stages 1–5 (GPX → DEM → satellite → scene)
 so the Preview Map button can be offered as soon as the GPX is loaded.
@@ -31,7 +32,7 @@ from georeel.core.scene_builder import SceneBuildError, build_scene, _PREVIEW_MA
 from georeel.core.trackpoint import Trackpoint
 
 
-def _quality_rank(q: str, order: dict) -> int:
+def _quality_rank(q: str, order: dict[str, Any]) -> int:
     return order.get(q, 0)
 
 
@@ -48,7 +49,7 @@ class ScenePrepWorker(QThread):
         gpx_path: str,
         match_mode: str,
         tz_offset_hours: float,
-        render_settings: dict,
+        render_settings: dict[str, Any],
         blender_exe: str | None,
         cached_elevation_grid: ElevationGrid | None,
         cached_satellite_texture: SatelliteTexture | None,

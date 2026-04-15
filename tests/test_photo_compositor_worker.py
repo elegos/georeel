@@ -41,12 +41,12 @@ def _make_task(
 
 @pytest.fixture(autouse=True)
 def clear_worker_cache():
-    """Reset _WORKER_CACHE before each test."""
-    original = pc._WORKER_CACHE.copy()
-    pc._WORKER_CACHE.clear()
+    """Reset _worker_cache before each test."""
+    original = pc._worker_cache.copy()
+    pc._worker_cache.clear()
     yield
-    pc._WORKER_CACHE.clear()
-    pc._WORKER_CACHE.update(original)
+    pc._worker_cache.clear()
+    pc._worker_cache.update(original)
 
 
 # ── "copy" op ─────────────────────────────────────────────────────────
@@ -103,7 +103,7 @@ class TestPhotoOp:
         out = tmp_path / "out.png"
         _write_rgb_png(src, color=(0, 0, 0))
         photo = Image.new("RGB", (64, 64), (255, 0, 0))
-        pc._WORKER_CACHE["/photo.jpg"] = photo
+        pc._worker_cache["/photo.jpg"] = photo
 
         task = _make_task(1, str(src), str(out), op="photo", photo_key="/photo.jpg")
         result = _process_frame_task(task)
@@ -128,8 +128,8 @@ class TestCrossfadeOp:
         out = tmp_path / "out.png"
         photo_a = Image.new("RGB", (64, 64), (0, 0, 0))
         photo_b = Image.new("RGB", (64, 64), (200, 200, 200))
-        pc._WORKER_CACHE["/a.jpg"] = photo_a
-        pc._WORKER_CACHE["/b.jpg"] = photo_b
+        pc._worker_cache["/a.jpg"] = photo_a
+        pc._worker_cache["/b.jpg"] = photo_b
 
         task = _make_task(1, str(tmp_path / "t.png"), str(out),
                           op="crossfade", photo_key="/a.jpg",
@@ -144,7 +144,7 @@ class TestCrossfadeOp:
     def test_crossfade_missing_next_writes_current_photo(self, tmp_path):
         out = tmp_path / "out.png"
         photo_a = Image.new("RGB", (64, 64), (255, 0, 0))
-        pc._WORKER_CACHE["/a.jpg"] = photo_a
+        pc._worker_cache["/a.jpg"] = photo_a
 
         task = _make_task(1, str(tmp_path / "t.png"), str(out),
                           op="crossfade", photo_key="/a.jpg",
@@ -171,7 +171,7 @@ class TestFadeInOutOps:
         out = tmp_path / "out.png"
         _write_rgb_png(src, color=(0, 0, 0))
         photo = Image.new("RGB", (64, 64), (200, 200, 200))
-        pc._WORKER_CACHE["/p.jpg"] = photo
+        pc._worker_cache["/p.jpg"] = photo
 
         task = _make_task(1, str(src), str(out), op="fade_in",
                           photo_key="/p.jpg", alpha=0.5, out_w=64, out_h=64)
@@ -184,7 +184,7 @@ class TestFadeInOutOps:
         out = tmp_path / "out.png"
         _write_rgb_png(src, color=(0, 0, 0))
         photo = Image.new("RGB", (64, 64), (200, 200, 200))
-        pc._WORKER_CACHE["/p.jpg"] = photo
+        pc._worker_cache["/p.jpg"] = photo
 
         task = _make_task(1, str(src), str(out), op="fade_out",
                           photo_key="/p.jpg", alpha=0.3, out_w=64, out_h=64)
@@ -195,7 +195,7 @@ class TestFadeInOutOps:
     def test_fade_in_missing_src_writes_photo_and_returns_frame_num(self, tmp_path):
         out = tmp_path / "out.png"
         photo = Image.new("RGB", (64, 64), (255, 0, 0))
-        pc._WORKER_CACHE["/p.jpg"] = photo
+        pc._worker_cache["/p.jpg"] = photo
 
         task = _make_task(9, str(tmp_path / "ghost.png"), str(out),
                           op="fade_in", photo_key="/p.jpg", alpha=0.5,
@@ -212,7 +212,7 @@ class TestFadeInOutOps:
         # Write a 32×32 terrain, request 64×64 output
         Image.new("RGB", (32, 32), (0, 0, 0)).save(str(src))
         photo = Image.new("RGB", (64, 64), (200, 200, 200))
-        pc._WORKER_CACHE["/p.jpg"] = photo
+        pc._worker_cache["/p.jpg"] = photo
 
         task = _make_task(1, str(src), str(out), op="fade_in",
                           photo_key="/p.jpg", alpha=0.5, out_w=64, out_h=64)

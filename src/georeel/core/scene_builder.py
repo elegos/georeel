@@ -6,7 +6,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from georeel.core import temp_manager
 
@@ -36,7 +36,7 @@ _PREVIEW_MAX_TEXTURE_PIXELS = 8_000_000  # ~4K×2K — keeps Blender preview und
 def build_scene(
     pipeline: Pipeline,
     blender_exe: str | None = None,
-    settings: dict | None = None,
+    settings: dict[str, Any] | None = None,
     max_texture_pixels: int | None = None,
     tile_progress_cb: Callable[[int, int], None] | None = None,
     status_cb: Callable[[str], None] | None = None,
@@ -201,7 +201,7 @@ def _write_track(
     pipeline: "Pipeline",
     work_dir: Path,
     ribbon_spacing_m: float = _RIBBON_SAMPLE_SPACING_M,
-) -> tuple[Path, list[dict], float, float]:
+) -> tuple[Path, list[dict[str, Any]], float, float]:
     """Project trackpoints onto a B-spline, resample at *ribbon_spacing_m* intervals,
     sample elevation from the DEM, compute slope and speed, and write JSON.
 
@@ -309,7 +309,7 @@ def _write_track(
     # if either bounding input point is reconstructed.
     u_arr = np.asarray(u)
 
-    points: list[dict] = []
+    points: list[dict[str, Any]] = []
     for i in range(n_samples):
         x, y = float(xs[i]), float(ys[i])
         z = _elev_at_xy(x, y, grid, lat_m, lon_m)
@@ -359,7 +359,7 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _write_pins(
-    pipeline: "Pipeline", work_dir: Path, settings: dict | None = None
+    pipeline: "Pipeline", work_dir: Path, settings: dict[str, Any] | None = None
 ) -> Path:
     """Write per-waypoint pin data (scene XY, elevation, photo path) as JSON.
 
@@ -389,7 +389,7 @@ def _write_pins(
     # Collect raw pins, keyed by trackpoint_index to detect collisions
     from collections import defaultdict
 
-    groups: dict[int, list[dict]] = defaultdict(list)
+    groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for r in pipeline.match_results:
         if not r.ok or r.trackpoint_index is None:
             continue
@@ -401,7 +401,7 @@ def _write_pins(
             {"x": x, "y": y, "z": z, "photo_path": r.photo_path}
         )
 
-    pins: list[dict] = []
+    pins: list[dict[str, Any]] = []
     for tp_idx in sorted(groups):
         group = sorted(groups[tp_idx], key=lambda p: p["photo_path"])
         n = len(group)
@@ -433,9 +433,9 @@ def _write_pins(
 
 def _compute_pause_schedule(
     pipeline: "Pipeline",
-    settings: dict,
-    ribbon_points: list[dict],
-) -> dict:
+    settings: dict[str, Any],
+    ribbon_points: list[dict[str, Any]],
+) -> dict[str, Any]:
     """Compute when each photo pause happens in the scene timeline.
 
     Uses the same logic as camera_path._insert_pauses but works from
@@ -465,7 +465,7 @@ def _compute_pause_schedule(
 
     pre_total = 0
     post_total = 0
-    pauses: list[dict] = []
+    pauses: list[dict[str, Any]] = []
 
     if pipeline.match_results and pipeline.elevation_grid is not None and n_ribbon >= 2:
         grid = pipeline.elevation_grid
@@ -540,7 +540,7 @@ def _compute_pause_schedule(
     }
 
 
-def _resolve_pin_color(settings: dict) -> str:
+def _resolve_pin_color(settings: dict[str, Any]) -> str:
     """Return a #rrggbb color string for the pin from settings."""
     from georeel.ui.color_picker_dialog import get_color_hex  # type: ignore[import]
 
@@ -550,7 +550,7 @@ def _resolve_pin_color(settings: dict) -> str:
     return get_color_hex(color_id, "#228B22")
 
 
-def _resolve_marker_color(settings: dict) -> str:
+def _resolve_marker_color(settings: dict[str, Any]) -> str:
     """Return a #rrggbb color string for the track marker from settings."""
     from georeel.ui.color_picker_dialog import get_color_hex  # type: ignore[import]
 
@@ -643,7 +643,7 @@ def _write_texture_tiles(
     tile_progress_cb: Callable[[int, int], None] | None = None,
     status_cb: Callable[[str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> tuple[Path, dict]:
+) -> tuple[Path, dict[str, Any]]:
     """Dispatch to the tile-cache or PIL-image tiling path."""
     if texture._tile_cache is not None:
         return _write_texture_tiles_from_cache(
@@ -670,7 +670,7 @@ def _write_texture_tiles_from_cache(
     tile_progress_cb: Callable[[int, int], None] | None = None,
     status_cb: Callable[[str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> tuple[Path, dict]:
+) -> tuple[Path, dict[str, Any]]:
     """Build Blender terrain tiles by compositing from the XYZ tile cache.
 
     For each terrain tile the compositor reads only the XYZ source tiles that
@@ -686,7 +686,7 @@ def _write_texture_tiles_from_cache(
     from .satellite.tile_cache import TileCache
     from PIL.Image import Resampling
 
-    cache: TileCache = texture._tile_cache  # type: ignore[assignment]
+    cache: Any = texture._tile_cache  # type: ignore[assignment]
 
     lat_span = grid.max_lat - grid.min_lat
     lon_span = grid.max_lon - grid.min_lon
@@ -695,37 +695,37 @@ def _write_texture_tiles_from_cache(
 
     # Native pixel dimensions for the DEM-extent region at the XYZ zoom level.
     dem_bbox = BoundingBox(grid.min_lat, grid.max_lat, grid.min_lon, grid.max_lon)
-    W, H = cache.canvas_size(dem_bbox)
-    total_pixels = W * H
+    tex_w, tex_h = cache.canvas_size(dem_bbox)
+    total_pixels = tex_w * tex_h
 
     # Apply preview downscale if requested.
     if max_texture_pixels is not None and total_pixels > max_texture_pixels:
         scale = _math.sqrt(max_texture_pixels / total_pixels)
-        W = max(1, int(W * scale))
-        H = max(1, int(H * scale))
-        total_pixels = W * H
-        _log.info("[satellite] Preview downscale: virtual %d×%d px", W, H)
+        tex_w = max(1, int(tex_w * scale))
+        tex_h = max(1, int(tex_h * scale))
+        total_pixels = tex_w * tex_h
+        _log.info("[satellite] Preview downscale: virtual %d×%d px", tex_w, tex_h)
 
     # Determine Blender terrain tile grid (same logic as the image path).
     n_tiles_needed = _math.ceil(total_pixels / _MAX_TILE_PIXELS)
     if n_tiles_needed <= 1:
         n_tile_cols, n_tile_rows = 1, 1
     else:
-        n_tile_cols = max(1, _math.ceil(_math.sqrt(n_tiles_needed * W / H)))
+        n_tile_cols = max(1, _math.ceil(_math.sqrt(n_tiles_needed * tex_w / tex_h)))
         n_tile_rows = max(1, _math.ceil(n_tiles_needed / n_tile_cols))
         while True:
-            tile_w = _math.ceil(W / n_tile_cols)
-            tile_h = _math.ceil(H / n_tile_rows)
+            tile_w = _math.ceil(tex_w / n_tile_cols)
+            tile_h = _math.ceil(tex_h / n_tile_rows)
             if tile_w * tile_h <= _MAX_TILE_PIXELS:
                 break
-            if n_tile_cols * H < n_tile_rows * W:
+            if n_tile_cols * tex_h < n_tile_rows * tex_w:
                 n_tile_cols += 1
             else:
                 n_tile_rows += 1
 
     _log.info(
         "[satellite] Compositing %d×%d px texture from tile cache → %d×%d Blender tiles",
-        W, H, n_tile_rows, n_tile_cols,
+        tex_w, tex_h, n_tile_rows, n_tile_cols,
     )
     if status_cb:
         status_cb(f"Compositing satellite texture ({n_tile_rows * n_tile_cols} tiles)…")
@@ -738,12 +738,12 @@ def _write_texture_tiles_from_cache(
     tiles = []
     for ti in range(n_tile_rows):
         for tj in range(n_tile_cols):
-            # Pixel bounds within the virtual (W×H) canvas — linear fractions
+            # Pixel bounds within the virtual (tex_w×tex_h) canvas — linear fractions
             # so adjacent tiles share their boundary pixel exactly.
-            px_left   = tj * W // n_tile_cols
-            px_right  = (tj + 1) * W // n_tile_cols
-            px_top    = ti * H // n_tile_rows
-            px_bottom = (ti + 1) * H // n_tile_rows
+            px_left   = tj * tex_w // n_tile_cols
+            px_right  = (tj + 1) * tex_w // n_tile_cols
+            px_top    = ti * tex_h // n_tile_rows
+            px_bottom = (ti + 1) * tex_h // n_tile_rows
             tile_px_w = max(1, px_right  - px_left)
             tile_px_h = max(1, px_bottom - px_top)
 
@@ -797,8 +797,8 @@ def _write_texture_tiles_from_cache(
     manifest = {
         "n_tile_rows": n_tile_rows,
         "n_tile_cols": n_tile_cols,
-        "image_width":  W,
-        "image_height": H,
+        "image_width":  tex_w,
+        "image_height": tex_h,
         "tiles": tiles,
     }
     manifest_path = work_dir / "sat_manifest.json"
@@ -812,7 +812,7 @@ def _write_texture_tiles_from_image(
     tile_progress_cb: Callable[[int, int], None] | None = None,
     status_cb: Callable[[str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> tuple[Path, dict]:
+) -> tuple[Path, dict[str, Any]]:
     """Save the satellite texture as tiled PNG files and write a manifest JSON.
 
     Splits the image into an N×M grid so each tile stays under _MAX_TILE_PIXELS,
@@ -871,50 +871,50 @@ def _write_texture_tiles_from_image(
             src_w = c_right  - c_left
             src_h = c_bottom - c_top
 
-    W, H = src_w, src_h
-    total_pixels = W * H
+    tex_w, tex_h = src_w, src_h
+    total_pixels = tex_w * tex_h
 
     # Downscale for preview if requested — this IS a new allocation but the
     # result is small (max_texture_pixels, e.g. 8 MP), so it is fine.
     if max_texture_pixels is not None and total_pixels > max_texture_pixels:
         scale = _math.sqrt(max_texture_pixels / total_pixels)
-        new_w = max(1, int(W * scale))
-        new_h = max(1, int(H * scale))
+        new_w = max(1, int(tex_w * scale))
+        new_h = max(1, int(tex_h * scale))
         _log.info(
             "[satellite] Preview downscale: %dx%d → %dx%d px",
-            W, H, new_w, new_h,
+            tex_w, tex_h, new_w, new_h,
         )
         from PIL.Image import Resampling
         with PIL_LOCK:
             # We must materialise the crop first when there is an offset.
-            region = img.crop((src_left, src_top, src_left + W, src_top + H))
+            region = img.crop((src_left, src_top, src_left + tex_w, src_top + tex_h))
             img = region.resize((new_w, new_h), resample=Resampling.BICUBIC)
             del region
         src_left = src_top = 0
-        W, H = new_w, new_h
-        total_pixels = W * H
+        tex_w, tex_h = new_w, new_h
+        total_pixels = tex_w * tex_h
 
     # Determine tile grid dimensions — aim for roughly square tiles
     n_tiles_needed = _math.ceil(total_pixels / _MAX_TILE_PIXELS)
     if n_tiles_needed <= 1:
         n_tile_cols, n_tile_rows = 1, 1
     else:
-        n_tile_cols = max(1, _math.ceil(_math.sqrt(n_tiles_needed * W / H)))
+        n_tile_cols = max(1, _math.ceil(_math.sqrt(n_tiles_needed * tex_w / tex_h)))
         n_tile_rows = max(1, _math.ceil(n_tiles_needed / n_tile_cols))
         # Adjust until each tile fits
         while True:
-            tile_w = _math.ceil(W / n_tile_cols)
-            tile_h = _math.ceil(H / n_tile_rows)
+            tile_w = _math.ceil(tex_w / n_tile_cols)
+            tile_h = _math.ceil(tex_h / n_tile_rows)
             if tile_w * tile_h <= _MAX_TILE_PIXELS:
                 break
-            if n_tile_cols * H < n_tile_rows * W:
+            if n_tile_cols * tex_h < n_tile_rows * tex_w:
                 n_tile_cols += 1
             else:
                 n_tile_rows += 1
 
     _log.info(
         "[satellite] Splitting %dx%d px texture into %d×%d tiles",
-        W, H, n_tile_rows, n_tile_cols,
+        tex_w, tex_h, n_tile_rows, n_tile_cols,
     )
     if status_cb:
         status_cb(f"Splitting satellite texture into {n_tile_rows * n_tile_cols} tiles…")
@@ -931,16 +931,16 @@ def _write_texture_tiles_from_image(
     for ti in range(n_tile_rows):
         for tj in range(n_tile_cols):
             # Image pixel bounds within the (possibly offset) source region
-            px_left   = src_left + tj * W // n_tile_cols
-            px_right  = src_left + (tj + 1) * W // n_tile_cols
-            px_top    = src_top  + ti * H // n_tile_rows
-            px_bottom = src_top  + (ti + 1) * H // n_tile_rows
+            px_left   = src_left + tj * tex_w // n_tile_cols
+            px_right  = src_left + (tj + 1) * tex_w // n_tile_cols
+            px_top    = src_top  + ti * tex_h // n_tile_rows
+            px_bottom = src_top  + (ti + 1) * tex_h // n_tile_rows
 
             # DEM row/col bounds (inclusive both ends so adjacent tiles share boundary)
-            dem_c_start = round((px_left  - src_left) / W * (dem_cols - 1))
-            dem_c_end   = round((px_right - src_left) / W * (dem_cols - 1))
-            dem_r_start = round((px_top   - src_top)  / H * (dem_rows - 1))
-            dem_r_end   = round((px_bottom - src_top)  / H * (dem_rows - 1))
+            dem_c_start = round((px_left  - src_left) / tex_w * (dem_cols - 1))
+            dem_c_end   = round((px_right - src_left) / tex_w * (dem_cols - 1))
+            dem_r_start = round((px_top   - src_top)  / tex_h * (dem_rows - 1))
+            dem_r_end   = round((px_bottom - src_top)  / tex_h * (dem_rows - 1))
 
             if cancel_check and cancel_check():
                 raise SceneBuildError("Cancelled.")
@@ -977,8 +977,8 @@ def _write_texture_tiles_from_image(
     manifest = {
         "n_tile_rows": n_tile_rows,
         "n_tile_cols": n_tile_cols,
-        "image_width":  W,
-        "image_height": H,
+        "image_width":  tex_w,
+        "image_height": tex_h,
         "tiles": tiles,
     }
     manifest_path = work_dir / "sat_manifest.json"
