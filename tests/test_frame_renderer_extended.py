@@ -1,14 +1,18 @@
 """Extended tests for georeel.core.frame_renderer."""
 
 import json
+import socket
+import time
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import pytest
+from PIL import Image
 
 from georeel.core.frame_renderer import (
     FrameRenderError,
+    _CompressionServer,
     _filter_tiles,
     _tile_world_bounds,
     _render_single,
@@ -17,6 +21,11 @@ from georeel.core.frame_renderer import (
 )
 from georeel.core.camera_keyframe import CameraKeyframe
 from georeel.core.pipeline import Pipeline
+
+
+def _make_png(path: Path, size: tuple[int, int] = (4, 4), compress_level: int = 0) -> None:
+    img = Image.new("RGB", size, color=(128, 64, 32))
+    img.save(str(path), format="PNG", compress_level=compress_level)
 
 
 def _kf(frame=1, x=0.0, y=0.0, z=100.0, is_pause=False):
@@ -360,3 +369,155 @@ class TestRenderSegmented:
                 with patch("georeel.core.frame_renderer._render_single", side_effect=fake_render_single):
                     render_frames(p, settings)
         assert len(called) == 1
+
+    def test_segmented_with_tile_filter(self, tmp_path):
+        """_render_segmented activates tile filtering when manifest metadata exists."""
+        p = self._pipeline_with_kfs(tmp_path, n_kfs=10)
+
+        scene_dir = Path(p.scene).parent
+        meta = {"rows": 10, "cols": 10, "lat_m": 10000.0, "lon_m": 10000.0}
+        manifest = {
+            "tiles": [
+                {"ti": 0, "tj": 0,
+                 "dem_r_start": 0, "dem_r_end": 4, "dem_c_start": 0, "dem_c_end": 4},
+                {"ti": 0, "tj": 1,
+                 "dem_r_start": 0, "dem_r_end": 4, "dem_c_start": 5, "dem_c_end": 9},
+            ]
+        }
+        (scene_dir / "dem_meta.json").write_text(json.dumps(meta))
+        (scene_dir / "sat_manifest.json").write_text(json.dumps(manifest))
+
+        settings = {"render/n_segments": 2}
+        work_dir = tmp_path / "work_tf"
+        work_dir.mkdir()
+        out_dir = work_dir / "frames"
+        calls = []
+
+        def fake_make_temp_dir(prefix):
+            return work_dir
+
+        def fake_render_single(**kwargs):
+            calls.append(kwargs)
+            out_dir.mkdir(exist_ok=True)
+            (out_dir / "frame_0000.png").write_bytes(b"PNG")
+            return str(out_dir)
+
+        with patch("georeel.core.frame_renderer.find_blender", return_value="/usr/bin/blender"):
+            with patch("georeel.core.frame_renderer.temp_manager.make_temp_dir",
+                       side_effect=fake_make_temp_dir):
+                with patch("georeel.core.frame_renderer._render_single",
+                           side_effect=fake_render_single):
+                    render_frames(p, settings)
+
+        assert len(calls) == 2
+        assert all(c["tile_filter"] is not None for c in calls)
+
+    def test_segmented_old_scene_without_lat_lon(self, tmp_path):
+        """Old scenes without lat_m/lon_m disable tile filtering (fallback)."""
+        p = self._pipeline_with_kfs(tmp_path, n_kfs=10)
+
+        scene_dir = Path(p.scene).parent
+        meta = {"rows": 10, "cols": 10}  # no lat_m/lon_m → defaults to 1.0 → filter disabled
+        manifest = {
+            "tiles": [
+                {"ti": 0, "tj": 0,
+                 "dem_r_start": 0, "dem_r_end": 4, "dem_c_start": 0, "dem_c_end": 4},
+                {"ti": 0, "tj": 1,
+                 "dem_r_start": 0, "dem_r_end": 4, "dem_c_start": 5, "dem_c_end": 9},
+            ]
+        }
+        (scene_dir / "dem_meta.json").write_text(json.dumps(meta))
+        (scene_dir / "sat_manifest.json").write_text(json.dumps(manifest))
+
+        settings = {"render/n_segments": 2}
+        work_dir = tmp_path / "work_old"
+        work_dir.mkdir()
+        out_dir = work_dir / "frames"
+        calls = []
+
+        def fake_make_temp_dir(prefix):
+            return work_dir
+
+        def fake_render_single(**kwargs):
+            calls.append(kwargs)
+            out_dir.mkdir(exist_ok=True)
+            (out_dir / "frame_0000.png").write_bytes(b"PNG")
+            return str(out_dir)
+
+        with patch("georeel.core.frame_renderer.find_blender", return_value="/usr/bin/blender"):
+            with patch("georeel.core.frame_renderer.temp_manager.make_temp_dir",
+                       side_effect=fake_make_temp_dir):
+                with patch("georeel.core.frame_renderer._render_single",
+                           side_effect=fake_render_single):
+                    render_frames(p, settings)
+
+        assert all(c["tile_filter"] is None for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# _CompressionServer
+# ---------------------------------------------------------------------------
+
+def _connect_and_send(port: int, messages: list[str]) -> None:
+    """Helper: open one TCP connection, send messages, close."""
+    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    conn.connect(("127.0.0.1", port))
+    for msg in messages:
+        conn.sendall(msg.encode())
+    conn.close()
+
+
+class TestCompressionServer:
+    def test_finish_fast_without_connection(self):
+        """finish() returns quickly even when Blender never connects."""
+        server = _CompressionServer(compress_level=1)
+        t0 = time.monotonic()
+        server.finish()
+        assert time.monotonic() - t0 < 3.0
+
+    def test_round_trip_recompresses_png(self, tmp_path):
+        """Server receives a PNG path and re-saves it with the given compress level."""
+        png_path = tmp_path / "frame_000000.png"
+        _make_png(png_path, compress_level=0)
+
+        server = _CompressionServer(compress_level=6)
+        _connect_and_send(server.port, [f"{png_path}\n"])
+        server.finish()
+
+        img = Image.open(str(png_path))
+        assert img.size == (4, 4)
+        assert img.mode == "RGB"
+
+    def test_multiple_frames(self, tmp_path):
+        """Server compresses multiple frames sent in a single connection."""
+        paths = []
+        for i in range(4):
+            p = tmp_path / f"frame_{i:06d}.png"
+            _make_png(p, compress_level=0)
+            paths.append(p)
+
+        server = _CompressionServer(compress_level=3)
+        _connect_and_send(server.port, [f"{p}\n" for p in paths])
+        server.finish()
+
+        for p in paths:
+            img = Image.open(str(p))
+            assert img.size == (4, 4)
+
+    def test_compress_error_stored_not_raised(self, tmp_path):
+        """Compression failure for a missing file is stored in _errors, not raised."""
+        server = _CompressionServer(compress_level=1)
+        _connect_and_send(server.port, [b"/nonexistent/frame_999.png\n".decode()])
+        server.finish()
+
+        assert len(server._errors) == 1
+        assert "/nonexistent/frame_999.png" in server._errors[0]
+
+    def test_finish_logs_errors(self, tmp_path, capsys):
+        """finish() prints a warning line for each compression error."""
+        server = _CompressionServer(compress_level=1)
+        _connect_and_send(server.port, [b"/no/such/file.png\n".decode()])
+        server.finish()
+
+        out = capsys.readouterr().out
+        assert "PNG compression warning" in out

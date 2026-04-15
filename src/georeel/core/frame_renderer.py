@@ -14,10 +14,16 @@ which is critical for large satellite textures.
 
 import json
 import math
+import os
 import shlex
+import socket
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
+
+from PIL import Image as _PILImage
 
 from .blender_runtime import find_blender
 from .camera_keyframe import CameraKeyframe
@@ -29,6 +35,82 @@ _BLENDER_SCRIPT = Path(__file__).parent / "blender_scripts" / "render_frames.py"
 
 class FrameRenderError(Exception):
     pass
+
+
+class _CompressionServer:
+    """Listens on a localhost TCP port; Blender sends a PNG path (newline-
+    terminated) after each frame is written.  A thread pool re-compresses
+    each file in the background so Blender can start the next frame without
+    waiting for zlib.
+
+    Protocol: one persistent TCP connection from Blender for the duration of
+    the render.  Each message is ``<absolute-path>\\n``.
+    """
+
+    def __init__(self, compress_level: int) -> None:
+        self._level = compress_level
+        self._futures: list = []
+        self._errors: list[str] = []
+
+        n_workers = max(1, min(4, (os.cpu_count() or 2) - 1))
+        self._pool = ThreadPoolExecutor(
+            max_workers=n_workers, thread_name_prefix="png_compress"
+        )
+
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self._sock.settimeout(60.0)  # wait up to 60 s for Blender to connect
+        self.port: int = self._sock.getsockname()[1]
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return  # socket closed or Blender never connected
+        finally:
+            self._sock.close()
+
+        with conn:
+            buf = ""
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk.decode()
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    path = line.strip()
+                    if path:
+                        self._futures.append(self._pool.submit(self._compress, path))
+
+    def _compress(self, path: str) -> None:
+        try:
+            img = _PILImage.open(path)
+            img.load()  # read pixels before overwriting the file
+            img.save(path, format="PNG", compress_level=self._level)
+        except Exception as exc:
+            self._errors.append(f"{path}: {exc}")
+
+    def finish(self) -> None:
+        """Block until all queued compressions finish; log any errors."""
+        # shutdown(SHUT_RDWR) interrupts a blocking accept() in _run on Linux;
+        # close() alone does not.  Both are no-ops if the socket is already gone.
+        for fn in (lambda: self._sock.shutdown(socket.SHUT_RDWR), self._sock.close):
+            try:
+                fn()
+            except OSError:
+                pass
+        self._thread.join(timeout=2)
+        for f in self._futures:
+            f.result()
+        self._pool.shutdown(wait=True)
+        for err in self._errors:
+            print(f"[georeel] PNG compression warning: {err}")
 
 
 # ------------------------------------------------------------------
@@ -187,8 +269,22 @@ def _render_single(
     """Run one Blender render pass and stream progress."""
     # tex_scale < 1.0 for viewport/draft mode: downscales terrain textures in
     # VRAM to relieve GPU memory pressure on scenes with large satellite imagery.
-    tex_scale      = 0.5 if engine == "viewport" else 1.0
-    png_compression = int(settings.get("render/png_compression", 6)) if settings else 6
+    tex_scale = 0.5 if engine == "viewport" else 1.0
+    # Viewport/draft renders frames in milliseconds — never compress PNGs in
+    # that mode or the CPU write time dominates and the GPU starves (~4% usage).
+    # For EEVEE/Cycles the per-frame time is long enough that compression is fine.
+    if engine == "viewport":
+        png_compression = 0
+    else:
+        png_compression = int(settings.get("render/png_compression", 1)) if settings else 1
+
+    # When compression > 0, offload zlib to a background thread pool:
+    # Blender writes frames uncompressed (fastest I/O), notifies the server
+    # over a localhost socket, and the pool re-compresses each PNG while
+    # Blender is already rendering the next frame.
+    comp_server: _CompressionServer | None = None
+    if png_compression > 0:
+        comp_server = _CompressionServer(png_compression)
 
     cmd = [
         exe,
@@ -202,9 +298,10 @@ def _render_single(
         quality,
         str(frame_start),
         str(frame_end),
-        tile_filter if tile_filter is not None else "",  # argv[7]; "" → None in script
-        str(tex_scale),                                  # argv[8]
-        str(png_compression),                            # argv[9]
+        tile_filter if tile_filter is not None else "",       # argv[7]; "" → None in script
+        str(tex_scale),                                       # argv[8]
+        "0" if comp_server else str(png_compression),        # argv[9]: 0 = Blender writes raw
+        str(comp_server.port if comp_server else 0),         # argv[10]: compression server port
     ]
 
     try:
@@ -243,6 +340,9 @@ def _render_single(
 
     if proc.returncode != 0:
         raise FrameRenderError(f"Blender exited with code {proc.returncode}.")
+
+    if comp_server:
+        comp_server.finish()
 
     return str(out_dir)
 

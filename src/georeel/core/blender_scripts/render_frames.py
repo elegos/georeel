@@ -12,6 +12,7 @@ host process can track it.
 
 import json
 import math
+import socket
 import sys
 
 
@@ -113,9 +114,10 @@ def main() -> None:
     # Optional segmented-render arguments (added by frame_renderer.py in multi-segment mode)
     frame_start_arg  = int(argv[5])   if len(argv) > 5 else None
     frame_end_arg    = int(argv[6])   if len(argv) > 6 else None
-    tile_filter_str  = (argv[7] or None) if len(argv) > 7 else None  # "" → None
-    tex_scale        = float(argv[8]) if len(argv) > 8 else 1.0
-    png_compression  = int(argv[9])   if len(argv) > 9 else 6       # zlib level 0–9
+    tile_filter_str   = (argv[7] or None) if len(argv) > 7 else None  # "" → None
+    tex_scale         = float(argv[8]) if len(argv) > 8 else 1.0
+    png_compression   = int(argv[9])   if len(argv) > 9 else 1       # zlib level 0–9
+    compression_port  = int(argv[10])  if len(argv) > 10 else 0      # 0 = no server
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
@@ -344,7 +346,37 @@ def main() -> None:
 
     n_frames = scene.frame_end - scene.frame_start + 1
 
+    # ------------------------------------------------------------------ #
+    # Background compression: connect to the host compression server so   #
+    # it can re-compress each PNG after Blender writes it.  Blender       #
+    # always writes at compression=0 in this mode; the host thread pool   #
+    # does the actual zlib work while the GPU renders the next frame.     #
+    # ------------------------------------------------------------------ #
+    _comp_sock: socket.socket | None = None
+    if compression_port:
+        try:
+            _comp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            _comp_sock.connect(("127.0.0.1", compression_port))
+
+            def _on_render_post(scene, depsgraph):  # noqa: ANN001
+                if _comp_sock:
+                    path = f"{output_dir}/{scene.frame_current:06d}.png\n"
+                    try:
+                        _comp_sock.sendall(path.encode())
+                    except OSError:
+                        pass
+
+            bpy.app.handlers.render_post.append(_on_render_post)
+        except OSError as exc:
+            print(f"[georeel] Could not connect to compression server: {exc}",
+                  file=sys.stderr)
+            _comp_sock = None
+
     bpy.ops.render.render(animation=True)
+
+    if _comp_sock:
+        bpy.app.handlers.render_post.remove(_on_render_post)
+        _comp_sock.close()
 
     print(f"[georeel] Rendered {n_frames} frames "
           f"({scene.frame_start}–{scene.frame_end}) to {output_dir}")

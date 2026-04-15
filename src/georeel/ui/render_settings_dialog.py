@@ -144,7 +144,7 @@ DEFAULTS = {
     KEY_RIBBON_COLOR_MODE:    "slope",
     KEY_RIBBON_SELF_LIT:      False,
     KEY_RENDER_SEGMENTS:      1,
-    KEY_PNG_COMPRESSION:      6,
+    KEY_PNG_COMPRESSION:      1,
     KEY_GPX_REPAIR_MODE:      "none",
     KEY_GPX_MAX_SPEED_KMH:    300,
     KEY_GPX_MAX_GAP_S:        30.0,
