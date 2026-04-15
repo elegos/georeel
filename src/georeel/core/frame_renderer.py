@@ -19,7 +19,7 @@ import shlex
 import socket
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,7 +49,7 @@ class _CompressionServer:
 
     def __init__(self, compress_level: int) -> None:
         self._level = compress_level
-        self._futures: list = []
+        self._futures: list[Future[None]] = []
         self._errors: list[str] = []
 
         n_workers = max(1, min(4, (os.cpu_count() or 2) - 1))
