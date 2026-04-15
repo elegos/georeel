@@ -5,6 +5,88 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-04-15
+
+### Added
+
+- **Viewport draft render engine** — a new *Viewport* option in *Pipeline Settings →
+  Rendering* runs EEVEE at 4 TAA samples with no shadows or ambient occlusion and
+  downscales all satellite textures to 50% resolution in VRAM (¼ the memory
+  footprint). It is the fastest way to verify the camera path and photo timing
+  before committing to a full-quality render.
+- **Scene build progress dialog** — a cancellable modal dialog now tracks tile
+  splitting and Blender assembly step-by-step, replacing the multi-minute UI
+  freeze that occurred during scene construction for large satellite textures.
+- **GPX hole repair** — a *Repair* drop-down in the main window fills recording
+  gaps (paused recorder, lost satellite signal, implausible speed jumps) with
+  synthetic trackpoints using one of three modes:
+  - *None* (default) — gaps are left as-is
+  - *Linear* — straight-line interpolation between the gap endpoints in
+    coordinate space
+  - *Street* — OSRM routing API finds the shortest road route between the
+    endpoints and resamples it uniformly; falls back silently to linear when
+    OSRM is unavailable
+- **Shifting pin** — when hole repair is active, enabling this checkbox makes the
+  animated track marker alternate between its chosen colour and its
+  complementary colour (hue rotated 180°) over reconstructed segments, giving a
+  clear visual indication that part of the track was filled in.
+- **Ribbon colour by GPS speed** — a new *Speed* option in the main window's
+  *Ribbon* tab colours the track ribbon from cool blue (slow) through
+  cyan/green (mid-pace) to orange (fast), scaled to the 5th–95th percentile
+  speed range of the track. The previous slope gradient remains the default.
+- **Ribbon self-lit mode** — a *Self-lit* checkbox in the *Ribbon* tab reduces the
+  ribbon's emission strength so Blender's Filmic tone-mapper does not compress
+  saturated colours toward white — recommended with the speed gradient or any
+  vivid colour scheme.
+- **Multiple audio tracks** — the *Music* tab in Clip Effects now supports any
+  number of audio files (MP3, AAC, FLAC, OGG, WAV, Opus), each with independent
+  start delay, fade-in, fade-out, and loop settings. All tracks are embedded in
+  the `.georeel` project file.
+- **Camera speed presets** — *Hiking* (80 m/s), *Cycling* (120 m/s), and
+  *Driving* (320 m/s) presets with a live expected video duration label. Speed
+  is now a per-project setting in the main window rather than in Pipeline
+  Settings.
+- **Configurable PNG frame compression** — a *Frame PNG compression* spin box
+  (0–9, default 6) in *Pipeline Settings → Rendering* controls the zlib level
+  used for intermediate frame files; set to 0 on slow storage to reduce render
+  time at the cost of temporary disk space.
+- **Tooltips** on all *Pipeline Settings* and *Blender Settings* controls.
+- **Install scripts** — one-line automated installers for Linux/macOS (shell) and
+  Windows (PowerShell); see `INSTALL.md`.
+
+### Changed
+
+- Satellite texture is now split into N×M PNG tiles (≤400 Mpx each) backed by
+  matching terrain sub-meshes, working around Blender's 2 GB texture pack limit
+  and keeping per-segment VRAM proportional to the visible terrain fraction.
+- Satellite imagery quality levels (*Standard / High / Very High*) are now
+  zoom-level-based (z=13/15/17) instead of tile-count-based, ensuring
+  consistent ground resolution regardless of track length.
+- GPX reported max speed now uses the 99th-percentile segment speed, filtering
+  out GPS artifacts that previously inflated the value to implausible figures.
+- All temporary working files (satellite tiles, `.blend` scene, rendered frame
+  PNGs, composited frames) are now managed by a unified temp manager that
+  supports a configurable base directory and prunes stale directories from
+  crashed runs on the next startup.
+- Preview generation uses smaller satellite textures for faster turnaround.
+- GPX track loading and photo thumbnail loading are non-blocking; the UI remains
+  responsive while data is read in background threads.
+- *Render Settings* dialog renamed to *Pipeline Settings* throughout the UI and
+  documentation.
+
+### Fixed
+
+- Camera briefly snapped to an incorrect heading for a single frame during tight
+  curves. The root cause was component-wise Gaussian smoothing of the heading
+  vector, which is mathematically unstable near 180° reversals. Direction
+  smoothing now operates in angle space (`arctan2` → `np.unwrap` → Gaussian
+  filter → back to unit vector) before the camera offset is computed.
+- Corrupted or truncated satellite tiles caused scene construction to abort with
+  an unhandled exception. Invalid tiles are now detected and replaced with a
+  neutral fallback before the texture is assembled.
+
+---
+
 ## [1.2.1] - 2026-04-11
 
 ### Fixed
@@ -91,6 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First version.
 
+[1.3.0]: https://github.com/elegos/georeel/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/elegos/georeel/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/elegos/georeel/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/elegos/georeel/compare/v1.0.0...v1.1.0
