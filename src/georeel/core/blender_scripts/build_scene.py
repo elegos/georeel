@@ -38,10 +38,14 @@ def main() -> None:
     height_offset = float(argv[7]) if len(argv) > 7  else 200.0
     fps           = float(argv[8]) if len(argv) > 8  else 30.0
     speed_mps     = float(argv[9]) if len(argv) > 9  else 80.0
-    pauses_path      = argv[10]        if len(argv) > 10 else None
-    marker_color     = argv[11]        if len(argv) > 11 else "#ADD8E6"
-    shifting_pin     = argv[12] == "1" if len(argv) > 12 else False
-    marker_comp_color = argv[13]       if len(argv) > 13 else None
+    pauses_path       = argv[10]        if len(argv) > 10 else None
+    marker_color      = argv[11]        if len(argv) > 11 else "#ADD8E6"
+    shifting_pin      = argv[12] == "1" if len(argv) > 12 else False
+    marker_comp_color = argv[13]        if len(argv) > 13 else None
+    ribbon_color_mode = argv[14]        if len(argv) > 14 else "slope"
+    min_speed_mps     = float(argv[15]) if len(argv) > 15 else 0.0
+    max_speed_mps     = float(argv[16]) if len(argv) > 16 else 1.0
+    ribbon_self_lit   = argv[17] == "1" if len(argv) > 17 else False
 
     pause_schedule: dict = {}
     if pauses_path and os.path.isfile(pauses_path):
@@ -49,9 +53,9 @@ def main() -> None:
             pause_schedule = json.load(_f)
 
     sun_vec = None
-    if len(argv) >= 17:
+    if len(argv) >= 21:
         try:
-            sun_vec = (float(argv[14]), float(argv[15]), float(argv[16]))
+            sun_vec = (float(argv[18]), float(argv[19]), float(argv[20]))
         except ValueError:
             pass
 
@@ -189,7 +193,11 @@ def main() -> None:
             track_data = json.load(f)
         if len(track_data) >= 2:
             _build_ribbon(bpy, track_data, fps=fps, speed_mps=speed_mps,
-                          pause_schedule=pause_schedule)
+                          pause_schedule=pause_schedule,
+                          color_mode=ribbon_color_mode,
+                          min_speed_mps=min_speed_mps,
+                          max_speed_mps=max_speed_mps,
+                          self_lit=ribbon_self_lit)
             _build_marker(bpy, track_data, height_offset=height_offset,
                           fps=fps, speed_mps=speed_mps,
                           pause_schedule=pause_schedule,
@@ -751,6 +759,31 @@ def _slope_color(slope: float) -> tuple[float, float, float]:
     return r, g, b
 
 
+def _speed_color(
+    speed: float, min_speed: float, max_speed: float
+) -> tuple[float, float, float]:
+    """Return an sRGB color interpolated by normalised speed.
+
+    min → cool blue   (0.20, 0.55, 1.00)
+    mid → cyan/green  (0.05, 0.90, 0.45)
+    max → hot orange  (1.00, 0.35, 0.05)
+    """
+    if max_speed <= min_speed:
+        return (0.20, 0.55, 1.00)
+    t = max(0.0, min(1.0, (speed - min_speed) / (max_speed - min_speed)))
+    if t <= 0.5:
+        u = t * 2.0
+        r = 0.20 + u * (0.05 - 0.20)
+        g = 0.55 + u * (0.90 - 0.55)
+        b = 1.00 + u * (0.45 - 1.00)
+    else:
+        u = (t - 0.5) * 2.0
+        r = 0.05 + u * (1.00 - 0.05)
+        g = 0.90 + u * (0.35 - 0.90)
+        b = 0.45 + u * (0.05 - 0.45)
+    return r, g, b
+
+
 def _build_marker(bpy, track_data: list[dict],
                   height_offset: float = 200.0,
                   fps: float = 30.0, speed_mps: float = 80.0,
@@ -969,8 +1002,18 @@ def _build_marker(bpy, track_data: list[dict],
 def _build_ribbon(bpy, track_data: list[dict],
                   half_width: float = 5.0, z_offset: float = 2.0,
                   fps: float = 30.0, speed_mps: float = 80.0,
-                  pause_schedule: dict | None = None) -> None:
-    """Build a flat ribbon mesh along the track, colored by slope grade.
+                  pause_schedule: dict | None = None,
+                  color_mode: str = "slope",
+                  min_speed_mps: float = 0.0,
+                  max_speed_mps: float = 1.0,
+                  self_lit: bool = False) -> None:
+    """Build a flat ribbon mesh along the track.
+
+    Vertex colors are assigned per-point using either the slope gradient
+    (color_mode="slope") or the speed gradient (color_mode="speed").
+
+    When self_lit is True the emission strength is boosted so the ribbon
+    colours appear vivid and are not washed out by scene exposure settings.
 
     A Build modifier progressively reveals quads so the ribbon unfolds as the
     camera travels.  When pause_schedule is provided, the Build modifier's
@@ -1004,7 +1047,11 @@ def _build_ribbon(bpy, track_data: list[dict],
 
         verts.append((x - half_width * px, y - half_width * py, z))  # left
         verts.append((x + half_width * px, y + half_width * py, z))  # right
-        color = _slope_color(slope)
+        if color_mode == "speed":
+            spd = pt.get("speed", 0.0)
+            color = _speed_color(spd, min_speed_mps, max_speed_mps)
+        else:
+            color = _slope_color(slope)
         vert_colors.extend([color, color])
 
     faces = []
@@ -1098,7 +1145,9 @@ def _build_ribbon(bpy, track_data: list[dict],
     vcol_node.location = (-300, 0)
 
     emit_node = nodes.new("ShaderNodeEmission")
-    emit_node.inputs["Strength"].default_value = 2.0
+    # Self-lit: lower strength stays within Filmic's linear range → vivid, saturated colours.
+    # Normal: higher strength (legacy default) allows some over-exposure / bloom blending.
+    emit_node.inputs["Strength"].default_value = 1.0 if self_lit else 2.0
     emit_node.location = (0, 0)
 
     out_node = nodes.new("ShaderNodeOutputMaterial")

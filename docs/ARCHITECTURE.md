@@ -71,7 +71,7 @@ Downloads XYZ/TMS tile imagery for the track bounding box at an automatically se
 ### 5. 3D Scene Builder (`core/scene_builder.py`)
 Launches Blender headlessly and runs `blender_scripts/build_scene.py` to:
 - Construct the terrain mesh from the elevation grid and apply the satellite texture
-- Build the animated track ribbon (colour-coded by slope) with a Build modifier for progressive reveal
+- Build the animated track ribbon (colour-coded by slope gradient or GPS speed, with an optional self-lit emission mode) with a Build modifier for progressive reveal
 - Place the animated position marker and photo waypoint pins (billboard meshes with camera-facing constraints)
 - Set up sun lighting using computed azimuth/elevation for the track's location and time
 

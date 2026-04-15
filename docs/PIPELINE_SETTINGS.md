@@ -16,6 +16,8 @@ Pipeline Settings is a tabbed dialog that controls every configurable parameter 
 | [Pins](#pins) | Colours of the track marker and photo waypoint pins |
 | [Output](#output) | Video container, codec, hardware encoder, quality, preset |
 
+> **Note:** GPX hole repair (Linear / Street / None + Shifting pin) and ribbon appearance (color mode, self-lit) are **per-project** settings stored in the main window, not in this dialog. See the [Ribbon tab](../README.md#ribbon-tab-main-window) and [GPX hole repair](../README.md#gpx-hole-repair-optional) sections of the README for details.
+
 The most performance-critical settings are in the [Rendering](#rendering) tab. If your render is slow or runs out of GPU memory, start there. See the [Troubleshooting](#troubleshooting-performance-and-memory) section at the end of this document.
 
 ---
@@ -264,6 +266,13 @@ Controls the zoom level used when fetching satellite tiles. Higher quality fetch
 **Key:** `marker/color` | **Default:** `LightBlue`
 
 Colour of the animated position marker that moves along the track ribbon during playback. Choose a named CSS colour or set a custom hex value.
+
+### Shifting pin
+**Key:** `marker/shifting_pin` | **Default:** `false`
+
+When enabled, the track marker alternates between its chosen colour and its complementary colour (hue rotated 180°) over any reconstructed (synthetic) track segments produced by GPX hole repair. The marker returns to its original colour on the next genuine recorded segment. This gives an immediate visual indication that part of the track was filled in rather than recorded.
+
+This option has no visible effect when the GPX repair mode is *None* or the track contains no gaps.
 
 ### Photo waypoint pin colour
 **Key:** `pins/color` | **Default:** `ForestGreen`

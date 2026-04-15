@@ -87,8 +87,9 @@ def build_scene(
     # reveal exactly one face per camera frame — the camera, ribbon, and marker
     # all advance the same metres-per-frame regardless of the chosen speed.
     effective_ribbon_spacing = max(_RIBBON_SAMPLE_SPACING_M, speed_mps / fps)
-    track_path, ribbon_points = _write_track(pipeline, work_dir,
-                                             ribbon_spacing_m=effective_ribbon_spacing)
+    track_path, ribbon_points, min_spd_mps, max_spd_mps = _write_track(
+        pipeline, work_dir, ribbon_spacing_m=effective_ribbon_spacing
+    )
     pins_path = _write_pins(pipeline, work_dir, settings)
     pause_schedule = _compute_pause_schedule(pipeline, settings, ribbon_points)
     pauses_path = work_dir / "pauses.json"
@@ -100,6 +101,8 @@ def build_scene(
     height_offset = float(settings.get("render/camera_height_offset", 200))
     shifting_pin = bool(settings.get("marker/shifting_pin", False))
     marker_comp_color = _complementary_color(marker_color)
+    ribbon_color_mode = str(settings.get("ribbon/color_mode", "slope"))
+    ribbon_self_lit   = bool(settings.get("ribbon/self_lit", False))
 
     cmd = [
         exe,
@@ -107,21 +110,25 @@ def build_scene(
         "--python",
         str(_BLENDER_SCRIPT),
         "--",
-        str(meta_path),
-        str(data_path),
-        str(manifest_path),
-        str(blend_path),
-        str(track_path),
-        str(pins_path),
-        pin_color,
-        str(height_offset),
-        str(fps),
-        str(speed_mps),
-        str(pauses_path),
-        marker_color,
-        "1" if shifting_pin else "0",
-        marker_comp_color,
-    ] + _sun_args(pipeline)
+        str(meta_path),          # argv[0]
+        str(data_path),          # argv[1]
+        str(manifest_path),      # argv[2]
+        str(blend_path),         # argv[3]
+        str(track_path),         # argv[4]
+        str(pins_path),          # argv[5]
+        pin_color,               # argv[6]
+        str(height_offset),      # argv[7]
+        str(fps),                # argv[8]
+        str(speed_mps),          # argv[9]
+        str(pauses_path),        # argv[10]
+        marker_color,            # argv[11]
+        "1" if shifting_pin else "0",  # argv[12]
+        marker_comp_color,       # argv[13]
+        ribbon_color_mode,       # argv[14]
+        str(min_spd_mps),        # argv[15]
+        str(max_spd_mps),        # argv[16]
+        "1" if ribbon_self_lit else "0",  # argv[17]
+    ] + _sun_args(pipeline)     # argv[18..20] (optional)
 
     if status_cb:
         status_cb("Running Blender to assemble 3D scene…")
@@ -194,50 +201,84 @@ def _write_track(
     pipeline: "Pipeline",
     work_dir: Path,
     ribbon_spacing_m: float = _RIBBON_SAMPLE_SPACING_M,
-) -> tuple[Path, list[dict]]:
+) -> tuple[Path, list[dict], float, float]:
     """Project trackpoints onto a B-spline, resample at *ribbon_spacing_m* intervals,
-    sample elevation from the DEM, compute slope, and write JSON.
+    sample elevation from the DEM, compute slope and speed, and write JSON.
 
     *ribbon_spacing_m* is normally the module constant (5 m) but is widened when
     the flythrough speed requires more than 5 m per animation frame so that the
     ribbon Build modifier can advance exactly one face per frame.
 
-    Returns (track_path, ribbon_points) where ribbon_points is the list of
-    {x, y, z, slope} dicts — used by _compute_pause_schedule without re-parsing.
+    Returns (track_path, ribbon_points, min_speed_mps, max_speed_mps) where
+    ribbon_points is the list of {x, y, z, slope, speed, is_reconstructed} dicts —
+    used by _compute_pause_schedule without re-parsing.  min/max_speed_mps are the
+    5th/95th-percentile speeds across all trackpoints (0.0 when no timestamps).
     """
     track_path = work_dir / "track.json"
 
     if not pipeline.trackpoints or pipeline.elevation_grid is None:
         track_path.write_text("[]")
-        return track_path, []
+        return track_path, [], 0.0, 0.0
 
     grid = pipeline.elevation_grid
     mean_lat_rad = math.radians((grid.min_lat + grid.max_lat) / 2)
     lat_m = (grid.max_lat - grid.min_lat) * 111_320.0
     lon_m = (grid.max_lon - grid.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
 
+    # Per-trackpoint speed (m/s): mean of the speeds of the adjacent segments.
+    # When timestamps are absent the speed stays 0.0.
+    tps = pipeline.trackpoints
+    tp_speeds: list[float] = []
+    for i in range(len(tps)):
+        adj: list[float] = []
+        for pair in (
+            ((tps[i - 1], tps[i]) if i > 0 else None),
+            ((tps[i], tps[i + 1]) if i < len(tps) - 1 else None),
+        ):
+            if pair is None:
+                continue
+            a, b = pair
+            if a.timestamp and b.timestamp:
+                dt_s = (b.timestamp - a.timestamp).total_seconds()
+                if dt_s > 0:
+                    d_m = _haversine_m(a.latitude, a.longitude, b.latitude, b.longitude)
+                    adj.append(d_m / dt_s)
+        tp_speeds.append(sum(adj) / len(adj) if adj else 0.0)
+
+    # Percentile range for the speed colour scale (robust against GPS outliers).
+    valid_spd = sorted(s for s in tp_speeds if s > 0.0)
+    if valid_spd:
+        p05 = valid_spd[max(0, int(0.05 * len(valid_spd)))]
+        p95 = valid_spd[min(len(valid_spd) - 1, int(0.95 * len(valid_spd)))]
+        min_speed_mps = p05
+        max_speed_mps = max(p95, p05 + 1e-3)   # ensure range > 0
+    else:
+        min_speed_mps = 0.0
+        max_speed_mps = 1.0
+
     # Project trackpoints to scene XY, removing duplicates.
-    # Also carry the is_reconstructed flag from each source trackpoint.
-    raw: list[tuple[float, float, bool]] = []
-    for tp in pipeline.trackpoints:
+    # Carry is_reconstructed and per-point speed alongside each projected point.
+    raw: list[tuple[float, float, bool, float]] = []
+    for i, tp in enumerate(tps):
         x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
         y = (tp.latitude - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
         if raw and abs(x - raw[-1][0]) < 1e-4 and abs(y - raw[-1][1]) < 1e-4:
             continue
-        raw.append((x, y, tp.is_reconstructed))
+        raw.append((x, y, tp.is_reconstructed, tp_speeds[i]))
 
     if len(raw) < 4:
         # Too few points for a spline: fall back to raw points with slope=0
         points = [
-            {"x": x, "y": y, "z": _elev_at_xy(x, y, grid, lat_m, lon_m), "slope": 0.0,
-             "is_reconstructed": rec}
-            for x, y, rec in raw
+            {"x": x, "y": y, "z": _elev_at_xy(x, y, grid, lat_m, lon_m),
+             "slope": 0.0, "speed": spd, "is_reconstructed": rec}
+            for x, y, rec, spd in raw
         ]
         track_path.write_text(json.dumps(points))
-        return track_path, points
+        return track_path, points, min_speed_mps, max_speed_mps
 
-    pts = np.array([(x, y) for x, y, _ in raw])
-    raw_flags: list[bool] = [rec for _, _, rec in raw]
+    pts = np.array([(x, y) for x, y, _, _ in raw])
+    raw_flags: list[bool]  = [rec  for _, _, rec,  _   in raw]
+    raw_speeds: list[float] = [spd  for _, _, _,    spd in raw]
 
     # Fit parametric cubic B-spline through all trackpoints.
     # splprep returns u: the parameter values corresponding to each input point.
@@ -285,14 +326,19 @@ def _write_track(
             slope = abs(z_next - z_prev) / seg_h if seg_h > 1e-6 else 0.0
         else:
             slope = 0.0
-        # Map sample parameter back to its input segment and propagate is_reconstructed.
+        # Map sample parameter back to its input segment; propagate
+        # is_reconstructed and linearly interpolate speed.
         j = int(np.searchsorted(u_arr, sample_t[i], side="right")) - 1
         j = max(0, min(j, len(raw_flags) - 2))
         is_rec = raw_flags[j] or raw_flags[j + 1]
-        points.append({"x": x, "y": y, "z": z, "slope": slope, "is_reconstructed": is_rec})
+        seg_len = float(u_arr[j + 1]) - float(u_arr[j])
+        frac = (float(sample_t[i]) - float(u_arr[j])) / seg_len if seg_len > 1e-12 else 0.0
+        spd = raw_speeds[j] + frac * (raw_speeds[j + 1] - raw_speeds[j])
+        points.append({"x": x, "y": y, "z": z, "slope": slope,
+                       "speed": spd, "is_reconstructed": is_rec})
 
     track_path.write_text(json.dumps(points))
-    return track_path, points
+    return track_path, points, min_speed_mps, max_speed_mps
 
 
 def _elev_at_xy(
@@ -301,6 +347,15 @@ def _elev_at_xy(
     lat = grid.min_lat + y / lat_m * (grid.max_lat - grid.min_lat)
     lon = grid.min_lon + x / lon_m * (grid.max_lon - grid.min_lon)
     return grid.elevation_at(lat, lon)
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6_371_000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.asin(math.sqrt(min(a, 1.0)))
 
 
 def _write_pins(

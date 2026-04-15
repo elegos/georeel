@@ -72,6 +72,8 @@ from .render_settings_dialog import (
     KEY_GPX_REPAIR_MODE,
     KEY_HEIGHT_OFFSET,
     KEY_MARKER_SHIFTING_PIN,
+    KEY_RIBBON_COLOR_MODE,
+    KEY_RIBBON_SELF_LIT,
     KEY_IMAGERY_API_KEY,
     KEY_IMAGERY_CUSTOM_URL,
     KEY_IMAGERY_PROVIDER,
@@ -285,6 +287,7 @@ class MainWindow(QMainWindow):
         self._clip_effects_widget = ClipEffectsWidget(self._settings)
 
         tabs.addTab(main_tab, "Main")
+        tabs.addTab(self._build_ribbon_tab(), "Ribbon")
         tabs.addTab(self._clip_effects_widget.fade_tab_widget(), "Fade")
         tabs.addTab(self._clip_effects_widget.title_tab_widget(), "Title")
         tabs.addTab(self._clip_effects_widget.music_tab_widget(), "Music")
@@ -817,6 +820,77 @@ class MainWindow(QMainWindow):
         else:
             text = f"≈ {secs} s"
         self._duration_label.setText(text)
+
+    def _build_ribbon_tab(self) -> QWidget:
+        """Per-project ribbon options: color mode and emission style."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # ── Color mode ────────────────────────────────────────────────
+        color_group = QGroupBox("Color")
+        color_layout = QVBoxLayout(color_group)
+        color_layout.setSpacing(6)
+
+        self._ribbon_slope_radio = QRadioButton("Slope gradient")
+        self._ribbon_slope_radio.setToolTip(
+            "Color the ribbon by terrain gradient:\n"
+            "  flat → light blue  |  20% grade → yellow  |  ≥ 40% → red"
+        )
+        self._ribbon_speed_radio = QRadioButton("Speed gradient")
+        self._ribbon_speed_radio.setToolTip(
+            "Color the ribbon by recorded GPS speed, scaled between the\n"
+            "5th and 95th percentile speeds of the track:\n"
+            "  slow → cool blue  |  medium → cyan/green  |  fast → orange"
+        )
+
+        self._ribbon_color_group = QButtonGroup(self)
+        self._ribbon_color_group.addButton(self._ribbon_slope_radio)
+        self._ribbon_color_group.addButton(self._ribbon_speed_radio)
+
+        saved_mode = str(self._settings.value(KEY_RIBBON_COLOR_MODE, "slope"))
+        (self._ribbon_speed_radio if saved_mode == "speed"
+         else self._ribbon_slope_radio).setChecked(True)
+
+        color_layout.addWidget(self._ribbon_slope_radio)
+        color_layout.addWidget(self._ribbon_speed_radio)
+        layout.addWidget(color_group)
+
+        # ── Appearance ────────────────────────────────────────────────
+        appear_group = QGroupBox("Appearance")
+        appear_layout = QVBoxLayout(appear_group)
+        appear_layout.setSpacing(6)
+
+        self._ribbon_self_lit_check = QCheckBox("Self-lit (vivid, sun-independent colors)")
+        self._ribbon_self_lit_check.setToolTip(
+            "When unchecked the ribbon emits at strength 2 — bright enough to stand\n"
+            "out but still blends with scene bloom and exposure.\n"
+            "When checked the emission strength is reduced to 1 so the vertex colors\n"
+            "map linearly through Filmic tone-mapping, keeping hues fully saturated\n"
+            "regardless of sun position or sky brightness."
+        )
+        saved_self_lit = self._settings.value(KEY_RIBBON_SELF_LIT, False)
+        self._ribbon_self_lit_check.setChecked(
+            bool(saved_self_lit) and saved_self_lit != "false"
+        )
+
+        appear_layout.addWidget(self._ribbon_self_lit_check)
+        layout.addWidget(appear_group)
+
+        layout.addStretch()
+
+        # Wire up live-save to QSettings
+        def _on_color_mode_changed():
+            mode = "speed" if self._ribbon_speed_radio.isChecked() else "slope"
+            self._settings.setValue(KEY_RIBBON_COLOR_MODE, mode)
+
+        self._ribbon_slope_radio.toggled.connect(_on_color_mode_changed)
+        self._ribbon_self_lit_check.toggled.connect(
+            lambda v: self._settings.setValue(KEY_RIBBON_SELF_LIT, v)
+        )
+
+        return tab
 
     def _build_action_buttons(self) -> QHBoxLayout:
         row = QHBoxLayout()

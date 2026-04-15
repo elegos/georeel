@@ -16,6 +16,8 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 - **Fly-through camera** that follows the GPX track with a configurable height, speed, tilt, and look-ahead
 - **Photo waypoints** — geotagged photos are placed along the track and shown as full-screen overlays when the camera reaches their position
 - **Flexible photo matching** — by GPS coordinates, by EXIF timestamp, or both
+- **GPX hole repair** — fill recording gaps with linear interpolation or OSRM street-routed paths; a shifting-pin option highlights reconstructed segments visually
+- **Ribbon coloring** — colour the track ribbon by terrain slope gradient or by GPS speed; a self-lit mode preserves full colour saturation in Blender's Filmic tone-mapper
 - **Customisable rendering** — resolution (landscape, portrait, square), frame rate, engine (Viewport draft / EEVEE / Cycles), quality
 - **Hardware encoder support** — NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox, and software fallbacks
 - **Project files** — save and reload work as `.georeel` archives; DEM and satellite data are cached inside
@@ -79,6 +81,18 @@ georeel
 
 Drag and drop a `.gpx` file onto the track area, or click to browse. The panel shows distance, elevation gain/loss, duration, and speed.
 
+#### GPX hole repair (optional)
+
+When a GPX track has gaps (recorder paused, satellite signal lost, implausible speed jumps), GeoReel can fill them with synthetic trackpoints. Select the repair mode from the **Repair** drop-down directly in the main window:
+
+| Mode | Behaviour |
+|---|---|
+| **None** (default) | Gaps are left as-is; the camera jumps directly between the bounding valid points |
+| **Linear** | Synthetic trackpoints are inserted along a straight line between the gap endpoints |
+| **Street (OSRM)** | The OSRM routing API finds the shortest road route between the gap endpoints and resamples it uniformly; falls back silently to linear when OSRM is unavailable |
+
+Enable **Shifting pin** to make the animated track marker alternate between its chosen colour and its complementary colour over any reconstructed (synthetic) segments, giving a clear visual indication that part of the track was repaired.
+
 ### 2. Add photos (optional)
 
 Drag and drop geotagged photos onto the photo panel. GeoReel reads EXIF GPS coordinates and timestamps to place each photo at the correct position along the track.
@@ -106,6 +120,16 @@ Open *Options → Pipeline Settings* to adjust:
 - **Output** — container (MKV/MP4), codec (H.264/H.265/AV1), encoder, quality (CQ/CRF), preset
 
 See [docs/PIPELINE_SETTINGS.md](docs/PIPELINE_SETTINGS.md) for a full reference of all options.
+
+#### Ribbon tab (main window)
+
+The **Ribbon** tab in the main window controls per-project ribbon appearance and is saved inside the project file:
+
+| Setting | Description |
+|---|---|
+| **Color — Slope** (default) | Ribbon is colour-coded by terrain gradient: cool colours for flat sections, warm colours for steep ascents/descents |
+| **Color — Speed** | Ribbon is colour-coded by GPS speed across the 5th–95th percentile range of the track: blue for slow, cyan/green for mid-pace, orange for fast |
+| **Self-lit** | Reduces the ribbon's emission strength so Blender's Filmic tone-mapper does not compress bright colours toward white — recommended when using the speed gradient or any vivid colour scheme |
 
 > [!NOTE]
 > If you run into **insufficient disk space** (the system `/tmp` partition fills up during processing), **GPU or system memory issues**, or **slow render performance**, see the [Troubleshooting: Performance and Memory](docs/PIPELINE_SETTINGS.md#troubleshooting-performance-and-memory) section of the Pipeline Settings reference. It covers how to redirect all temporary files to a different directory, how to reduce VRAM usage, and how to speed up rendering.
