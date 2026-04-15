@@ -15,10 +15,10 @@ from PIL import Image
 
 from georeel.core.satellite.texture import SatelliteTexture
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_png_bytes(width=64, height=48, color=(10, 20, 30)) -> bytes:
     buf = io.BytesIO()
@@ -30,8 +30,10 @@ def _make_texture(width=100, height=80):
     img = Image.new("RGB", (width, height), (128, 64, 32))
     return SatelliteTexture(
         image=img,
-        min_lat=10.0, max_lat=11.0,
-        min_lon=20.0, max_lon=21.0,
+        min_lat=10.0,
+        max_lat=11.0,
+        min_lon=20.0,
+        max_lon=21.0,
         provider_id="esri_world",
         quality="standard",
     )
@@ -50,6 +52,7 @@ def _make_zip_with_png(width=64, height=48) -> tuple[Path, str]:
 # ---------------------------------------------------------------------------
 # has_pixels / memory_bytes
 # ---------------------------------------------------------------------------
+
 
 class TestHasPixels:
     def test_true_when_image_loaded(self):
@@ -75,11 +78,17 @@ class TestMemoryBytes:
 # width / height with cached dims
 # ---------------------------------------------------------------------------
 
+
 class TestDimProperties:
     def test_width_from_dim_width_when_image_none(self):
         t = SatelliteTexture(
-            image=None, min_lat=0, max_lat=1, min_lon=0, max_lon=1,
-            _dim_width=300, _dim_height=200,
+            image=None,
+            min_lat=0,
+            max_lat=1,
+            min_lon=0,
+            max_lon=1,
+            _dim_width=300,
+            _dim_height=200,
         )
         assert t.width == 300
         assert t.height == 200
@@ -87,17 +96,18 @@ class TestDimProperties:
     def test_width_raises_without_image_or_dim(self):
         t = SatelliteTexture(image=None, min_lat=0, max_lat=1, min_lon=0, max_lon=1)
         with pytest.raises(RuntimeError, match="dimensions not available"):
-            _ = t.width
+            t.width
 
     def test_height_raises_without_image_or_dim(self):
         t = SatelliteTexture(image=None, min_lat=0, max_lat=1, min_lon=0, max_lon=1)
         with pytest.raises(RuntimeError, match="dimensions not available"):
-            _ = t.height
+            t.height
 
 
 # ---------------------------------------------------------------------------
 # free_image
 # ---------------------------------------------------------------------------
+
 
 class TestFreeImage:
     def test_image_is_none_after_free(self):
@@ -140,6 +150,7 @@ class TestFreeImage:
 # write_png — RAM path
 # ---------------------------------------------------------------------------
 
+
 class TestWritePngFromImage:
     def test_write_png_produces_valid_png(self):
         t = _make_texture(32, 24)
@@ -162,6 +173,7 @@ class TestWritePngFromImage:
 # ---------------------------------------------------------------------------
 # write_png — lazy ZIP path (streams raw bytes)
 # ---------------------------------------------------------------------------
+
 
 class TestWritePngFromZip:
     def test_streams_raw_bytes_without_decoding(self):
@@ -197,11 +209,15 @@ class TestWritePngFromZip:
 # write_png — tile cache path
 # ---------------------------------------------------------------------------
 
+
 class TestWritePngFromTileCache:
     def test_delegates_to_tile_cache_composite(self):
         t = SatelliteTexture(
             image=None,
-            min_lat=47.0, max_lat=47.1, min_lon=8.0, max_lon=8.1,
+            min_lat=47.0,
+            max_lat=47.1,
+            min_lon=8.0,
+            max_lon=8.1,
         )
         fake_img = Image.new("RGB", (128, 96), (50, 100, 150))
         mock_cache = MagicMock()
@@ -219,7 +235,10 @@ class TestWritePngFromTileCache:
     def test_tile_cache_composite_rgba_converted(self):
         t = SatelliteTexture(
             image=None,
-            min_lat=0, max_lat=1, min_lon=0, max_lon=1,
+            min_lat=0,
+            max_lat=1,
+            min_lon=0,
+            max_lon=1,
         )
         fake_img = Image.new("RGBA", (10, 10), (255, 0, 0, 200))
         mock_cache = MagicMock()
@@ -237,6 +256,7 @@ class TestWritePngFromTileCache:
 # write_png — tiles manifest path (reassembly from Blender tile PNGs)
 # ---------------------------------------------------------------------------
 
+
 class TestWritePngFromManifest:
     def test_reassembles_from_tiles(self, tmp_path):
         # Write two small tile PNGs.
@@ -250,7 +270,7 @@ class TestWritePngFromManifest:
             "image_width": 64,
             "image_height": 32,
             "tiles": [
-                {"path": str(tile_a_path), "px_left": 0,  "px_top": 0},
+                {"path": str(tile_a_path), "px_left": 0, "px_top": 0},
                 {"path": str(tile_b_path), "px_left": 32, "px_top": 0},
             ],
         }
@@ -280,6 +300,7 @@ class TestWritePngFromManifest:
 # ---------------------------------------------------------------------------
 # from_zip_lazy
 # ---------------------------------------------------------------------------
+
 
 class TestFromZipLazy:
     def test_no_image_in_ram(self):
@@ -318,9 +339,12 @@ class TestFromZipLazy:
         zip_path, entry = _make_zip_with_png()
         try:
             t = SatelliteTexture.from_zip_lazy(
-                zip_path, entry,
-                min_lat=10.0, max_lat=11.0,
-                min_lon=20.0, max_lon=21.0,
+                zip_path,
+                entry,
+                min_lat=10.0,
+                max_lat=11.0,
+                min_lon=20.0,
+                max_lon=21.0,
                 provider_id="esri_world",
                 quality="high",
             )
@@ -345,6 +369,7 @@ class TestFromZipLazy:
 # ---------------------------------------------------------------------------
 # load_image
 # ---------------------------------------------------------------------------
+
 
 class TestLoadImage:
     def test_returns_cached_image_if_present(self):
@@ -388,6 +413,7 @@ class TestLoadImage:
 # ---------------------------------------------------------------------------
 # from_png_stream — RGBA conversion
 # ---------------------------------------------------------------------------
+
 
 class TestFromPngStream:
     def test_rgba_converted_to_rgb(self):

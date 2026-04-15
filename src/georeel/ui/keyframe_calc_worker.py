@@ -1,4 +1,5 @@
 from typing import Any
+
 """
 Lightweight background worker: runs stages 1–3 + camera path (stage 6)
 without satellite imagery or Blender scene building.  Used by the
@@ -13,8 +14,6 @@ keyframes_ready(object, object, object) — (list[CameraKeyframe], list[MatchRes
 dem_fetched(object)                    — ElevationGrid (update main-window cache)
 error(str)                             — failure message
 """
-
-import math
 
 from PySide6.QtCore import QThread, Signal
 
@@ -32,11 +31,13 @@ from georeel.core.trackpoint import Trackpoint
 
 
 class KeyframeCalcWorker(QThread):
-    status           = Signal(str)
-    keyframes_ready  = Signal(object, object, object)  # keyframes, match_results, trackpoints
-    dem_fetched      = Signal(object)                  # ElevationGrid
-    error            = Signal(str)
-    progress         = Signal(int, int)                # (current, total)
+    status = Signal(str)
+    keyframes_ready = Signal(
+        object, object, object
+    )  # keyframes, match_results, trackpoints
+    dem_fetched = Signal(object)  # ElevationGrid
+    error = Signal(str)
+    progress = Signal(int, int)  # (current, total)
 
     def __init__(
         self,
@@ -47,11 +48,11 @@ class KeyframeCalcWorker(QThread):
         cached_elevation_grid: ElevationGrid | None,
     ):
         super().__init__()
-        self._gpx_path    = gpx_path
-        self._match_mode  = match_mode
-        self._tz_offset   = tz_offset_hours
-        self._settings    = render_settings
-        self._cached_dem  = cached_elevation_grid
+        self._gpx_path = gpx_path
+        self._match_mode = match_mode
+        self._tz_offset = tz_offset_hours
+        self._settings = render_settings
+        self._cached_dem = cached_elevation_grid
 
     def run(self) -> None:
         pipeline = Pipeline()
@@ -67,13 +68,14 @@ class KeyframeCalcWorker(QThread):
         # Apply the same GPX cleaning that the main pipeline uses, so that
         # (0,0) holes and implausible-speed points don't inflate the track
         # length and produce millions of keyframes.
-        repair_mode    = self._settings.get("gpx/repair_mode", "none")
-        max_speed_mps  = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
-        max_gap_s      = float(self._settings.get("gpx/max_gap_s", 30.0))
-        max_jump_m     = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
-        osrm_profile   = self._settings.get("gpx/osrm_profile", "driving")
+        repair_mode = self._settings.get("gpx/repair_mode", "none")
+        max_speed_mps = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
+        max_gap_s = float(self._settings.get("gpx/max_gap_s", 30.0))
+        max_jump_m = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
+        osrm_profile = self._settings.get("gpx/osrm_profile", "driving")
         trackpoints, _ = detect_and_repair(
-            trackpoints, repair_mode,
+            trackpoints,
+            repair_mode,
             max_speed_mps=max_speed_mps,
             max_gap_s=max_gap_s,
             max_jump_m=max_jump_m,
@@ -82,13 +84,13 @@ class KeyframeCalcWorker(QThread):
         # Recompute bbox from cleaned points only.
         if trackpoints:
             bbox = BoundingBox(
-                min_lat=min(tp.latitude  for tp in trackpoints),
-                max_lat=max(tp.latitude  for tp in trackpoints),
+                min_lat=min(tp.latitude for tp in trackpoints),
+                max_lat=max(tp.latitude for tp in trackpoints),
                 min_lon=min(tp.longitude for tp in trackpoints),
                 max_lon=max(tp.longitude for tp in trackpoints),
             )
 
-        pipeline.trackpoints  = trackpoints
+        pipeline.trackpoints = trackpoints
         pipeline.bounding_box = bbox
 
         # Stage 2 — Photo matcher
@@ -98,7 +100,9 @@ class KeyframeCalcWorker(QThread):
             self.status.emit("Keyframe preview: matching photos…")
             try:
                 match_results = match_photos(
-                    photos, trackpoints, self._match_mode,
+                    photos,
+                    trackpoints,
+                    self._match_mode,
                     tz_offset_hours=self._tz_offset,
                 )
                 pipeline.match_results = match_results
@@ -107,9 +111,9 @@ class KeyframeCalcWorker(QThread):
                 return
 
         # Stage 3 — DEM (required by camera path for terrain heights)
-        _distance_m   = float(self._settings.get("render/camera_height_offset", 200))
-        _tilt_deg     = float(self._settings.get("render/camera_tilt_deg", 45))
-        _max_view_m   = float(self._settings.get("render/frustum_margin_km", 50)) * 1_000
+        _distance_m = float(self._settings.get("render/camera_height_offset", 200))
+        _tilt_deg = float(self._settings.get("render/camera_tilt_deg", 45))
+        _max_view_m = float(self._settings.get("render/frustum_margin_km", 50)) * 1_000
         margin_m = frustum_margin(
             height_m=_distance_m,
             tilt_deg=_tilt_deg,
@@ -130,8 +134,9 @@ class KeyframeCalcWorker(QThread):
         else:
             self.status.emit("Keyframe preview: fetching DEM…")
             try:
-                grid = fetch_dem(fetch_bbox,
-                                 progress_callback=lambda c, t: self.progress.emit(c, t))
+                grid = fetch_dem(
+                    fetch_bbox, progress_callback=lambda c, t: self.progress.emit(c, t)
+                )
             except DemFetchError as e:
                 self.error.emit(f"DEM fetch error: {e}")
                 return
@@ -143,12 +148,14 @@ class KeyframeCalcWorker(QThread):
         for pt in pipeline.trackpoints:
             if pt.elevation is None:
                 elev = pipeline.elevation_grid.elevation_at(pt.latitude, pt.longitude)
-                filled_trackpoints.append(Trackpoint(
-                    latitude=pt.latitude,
-                    longitude=pt.longitude,
-                    elevation=elev,
-                    timestamp=pt.timestamp
-                ))
+                filled_trackpoints.append(
+                    Trackpoint(
+                        latitude=pt.latitude,
+                        longitude=pt.longitude,
+                        elevation=elev,
+                        timestamp=pt.timestamp,
+                    )
+                )
             else:
                 filled_trackpoints.append(pt)
         trackpoints = filled_trackpoints
@@ -158,7 +165,8 @@ class KeyframeCalcWorker(QThread):
         self.status.emit("Keyframe preview: computing camera path…")
         try:
             keyframes = build_camera_path(
-                pipeline, self._settings,
+                pipeline,
+                self._settings,
                 progress_callback=lambda c, t: self.progress.emit(c, t),
             )
         except CameraPathError as e:

@@ -69,7 +69,9 @@ def build_scene(
     atexit.register(shutil.rmtree, work_dir, True)
     meta_path, data_path = _write_dem(pipeline.elevation_grid, work_dir)
     manifest_path, tiles_manifest = _write_texture_tiles(
-        pipeline.satellite_texture, pipeline.elevation_grid, work_dir,
+        pipeline.satellite_texture,
+        pipeline.elevation_grid,
+        work_dir,
         max_texture_pixels=max_texture_pixels,
         tile_progress_cb=tile_progress_cb,
         status_cb=status_cb,
@@ -79,7 +81,9 @@ def build_scene(
     # reads from the files directly.  write_png() (used by project save) will
     # reassemble from tiles on demand so no RAM is wasted between now and save.
     tiles_dir = work_dir / "sat_tiles"
-    pipeline.satellite_texture.free_image(tiles_dir=tiles_dir, tiles_manifest=tiles_manifest)
+    pipeline.satellite_texture.free_image(
+        tiles_dir=tiles_dir, tiles_manifest=tiles_manifest
+    )
     settings = settings or {}
     fps = float(settings.get("render/fps", 30))
     speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
@@ -102,7 +106,7 @@ def build_scene(
     shifting_pin = bool(settings.get("marker/shifting_pin", False))
     marker_comp_color = _complementary_color(marker_color)
     ribbon_color_mode = str(settings.get("ribbon/color_mode", "slope"))
-    ribbon_self_lit   = bool(settings.get("ribbon/self_lit", False))
+    ribbon_self_lit = bool(settings.get("ribbon/self_lit", False))
 
     cmd = [
         exe,
@@ -110,25 +114,25 @@ def build_scene(
         "--python",
         str(_BLENDER_SCRIPT),
         "--",
-        str(meta_path),          # argv[0]
-        str(data_path),          # argv[1]
-        str(manifest_path),      # argv[2]
-        str(blend_path),         # argv[3]
-        str(track_path),         # argv[4]
-        str(pins_path),          # argv[5]
-        pin_color,               # argv[6]
-        str(height_offset),      # argv[7]
-        str(fps),                # argv[8]
-        str(speed_mps),          # argv[9]
-        str(pauses_path),        # argv[10]
-        marker_color,            # argv[11]
+        str(meta_path),  # argv[0]
+        str(data_path),  # argv[1]
+        str(manifest_path),  # argv[2]
+        str(blend_path),  # argv[3]
+        str(track_path),  # argv[4]
+        str(pins_path),  # argv[5]
+        pin_color,  # argv[6]
+        str(height_offset),  # argv[7]
+        str(fps),  # argv[8]
+        str(speed_mps),  # argv[9]
+        str(pauses_path),  # argv[10]
+        marker_color,  # argv[11]
         "1" if shifting_pin else "0",  # argv[12]
-        marker_comp_color,       # argv[13]
-        ribbon_color_mode,       # argv[14]
-        str(min_spd_mps),        # argv[15]
-        str(max_spd_mps),        # argv[16]
+        marker_comp_color,  # argv[13]
+        ribbon_color_mode,  # argv[14]
+        str(min_spd_mps),  # argv[15]
+        str(max_spd_mps),  # argv[16]
         "1" if ribbon_self_lit else "0",  # argv[17]
-    ] + _sun_args(pipeline)     # argv[18..20] (optional)
+    ] + _sun_args(pipeline)  # argv[18..20] (optional)
 
     if status_cb:
         status_cb("Running Blender to assemble 3D scene…")
@@ -251,7 +255,7 @@ def _write_track(
         p05 = valid_spd[max(0, int(0.05 * len(valid_spd)))]
         p95 = valid_spd[min(len(valid_spd) - 1, int(0.95 * len(valid_spd)))]
         min_speed_mps = p05
-        max_speed_mps = max(p95, p05 + 1e-3)   # ensure range > 0
+        max_speed_mps = max(p95, p05 + 1e-3)  # ensure range > 0
     else:
         min_speed_mps = 0.0
         max_speed_mps = 1.0
@@ -269,16 +273,22 @@ def _write_track(
     if len(raw) < 4:
         # Too few points for a spline: fall back to raw points with slope=0
         points = [
-            {"x": x, "y": y, "z": _elev_at_xy(x, y, grid, lat_m, lon_m),
-             "slope": 0.0, "speed": spd, "is_reconstructed": rec}
+            {
+                "x": x,
+                "y": y,
+                "z": _elev_at_xy(x, y, grid, lat_m, lon_m),
+                "slope": 0.0,
+                "speed": spd,
+                "is_reconstructed": rec,
+            }
             for x, y, rec, spd in raw
         ]
         track_path.write_text(json.dumps(points))
         return track_path, points, min_speed_mps, max_speed_mps
 
     pts = np.array([(x, y) for x, y, _, _ in raw])
-    raw_flags: list[bool]  = [rec  for _, _, rec,  _   in raw]
-    raw_speeds: list[float] = [spd  for _, _, _,    spd in raw]
+    raw_flags: list[bool] = [rec for _, _, rec, _ in raw]
+    raw_speeds: list[float] = [spd for _, _, _, spd in raw]
 
     # Fit parametric cubic B-spline through all trackpoints.
     # splprep returns u: the parameter values corresponding to each input point.
@@ -287,7 +297,10 @@ def _write_track(
     # Compute total arc length on a dense evaluation
     t_fine = np.linspace(0, 1, max(10_000, len(pts) * 100))
     _ev_fine = splev(t_fine, tck)
-    xs_fine, ys_fine = np.asarray(_ev_fine[0], dtype=float), np.asarray(_ev_fine[1], dtype=float)
+    xs_fine, ys_fine = (
+        np.asarray(_ev_fine[0], dtype=float),
+        np.asarray(_ev_fine[1], dtype=float),
+    )
     dx = np.diff(xs_fine)
     dy = np.diff(ys_fine)
     cumlen = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
@@ -332,10 +345,20 @@ def _write_track(
         j = max(0, min(j, len(raw_flags) - 2))
         is_rec = raw_flags[j] or raw_flags[j + 1]
         seg_len = float(u_arr[j + 1]) - float(u_arr[j])
-        frac = (float(sample_t[i]) - float(u_arr[j])) / seg_len if seg_len > 1e-12 else 0.0
+        frac = (
+            (float(sample_t[i]) - float(u_arr[j])) / seg_len if seg_len > 1e-12 else 0.0
+        )
         spd = raw_speeds[j] + frac * (raw_speeds[j + 1] - raw_speeds[j])
-        points.append({"x": x, "y": y, "z": z, "slope": slope,
-                       "speed": spd, "is_reconstructed": is_rec})
+        points.append(
+            {
+                "x": x,
+                "y": y,
+                "z": z,
+                "slope": slope,
+                "speed": spd,
+                "is_reconstructed": is_rec,
+            }
+        )
 
     track_path.write_text(json.dumps(points))
     return track_path, points, min_speed_mps, max_speed_mps
@@ -354,7 +377,10 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    )
     return R * 2 * math.asin(math.sqrt(min(a, 1.0)))
 
 
@@ -382,7 +408,7 @@ def _write_pins(
     scale = height_offset / 200.0
     # Pin geometry (mirrors build_scene.py _build_pins)
     marker_r = max(1.5, 4.0 * scale)
-    r_head   = marker_r * 0.8   # radius of the circular head
+    r_head = marker_r * 0.8  # radius of the circular head
     # Gap between adjacent pins: small fixed margin so they almost touch
     PIN_GAP_M = max(2.0, marker_r * 0.1)
 
@@ -413,7 +439,7 @@ def _write_pins(
                 # almost touch (gap ≈ PIN_GAP_M between edges).
                 # Chord between adjacent pins = 2*r_head + PIN_GAP_M
                 # Chord = 2 * R * sin(π/n)  →  R = chord / (2*sin(π/n))
-                chord    = 2 * r_head + PIN_GAP_M
+                chord = 2 * r_head + PIN_GAP_M
                 circle_r = chord / (2 * math.sin(math.pi / n))
                 angle = 2 * math.pi * k / n
                 dx = circle_r * math.cos(angle)
@@ -634,11 +660,15 @@ def _write_dem(grid: ElevationGrid, work_dir: Path) -> tuple[Path, Path]:
     return meta_path, data_path
 
 
-_MAX_TILE_PIXELS = 400_000_000  # ~1.2 GB as RGB — safely below Blender's 2 GB pack limit
+_MAX_TILE_PIXELS = (
+    400_000_000  # ~1.2 GB as RGB — safely below Blender's 2 GB pack limit
+)
 
 
 def _write_texture_tiles(
-    texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
+    texture: SatelliteTexture,
+    grid: ElevationGrid,
+    work_dir: Path,
     max_texture_pixels: int | None = None,
     tile_progress_cb: Callable[[int, int], None] | None = None,
     status_cb: Callable[[str], None] | None = None,
@@ -647,14 +677,18 @@ def _write_texture_tiles(
     """Dispatch to the tile-cache or PIL-image tiling path."""
     if texture._tile_cache is not None:
         return _write_texture_tiles_from_cache(
-            texture, grid, work_dir,
+            texture,
+            grid,
+            work_dir,
             max_texture_pixels=max_texture_pixels,
             tile_progress_cb=tile_progress_cb,
             status_cb=status_cb,
             cancel_check=cancel_check,
         )
     return _write_texture_tiles_from_image(
-        texture, grid, work_dir,
+        texture,
+        grid,
+        work_dir,
         max_texture_pixels=max_texture_pixels,
         tile_progress_cb=tile_progress_cb,
         status_cb=status_cb,
@@ -682,9 +716,10 @@ def _write_texture_tiles_from_cache(
     write_png() reassembly and the Blender script are unchanged.
     """
     import math as _math
-    from .bounding_box import BoundingBox
-    from .satellite.tile_cache import TileCache
+
     from PIL.Image import Resampling
+
+    from .bounding_box import BoundingBox
 
     cache: Any = texture._tile_cache  # type: ignore[assignment]
 
@@ -725,7 +760,10 @@ def _write_texture_tiles_from_cache(
 
     _log.info(
         "[satellite] Compositing %d×%d px texture from tile cache → %d×%d Blender tiles",
-        tex_w, tex_h, n_tile_rows, n_tile_cols,
+        tex_w,
+        tex_h,
+        n_tile_rows,
+        n_tile_cols,
     )
     if status_cb:
         status_cb(f"Compositing satellite texture ({n_tile_rows * n_tile_cols} tiles)…")
@@ -740,26 +778,28 @@ def _write_texture_tiles_from_cache(
         for tj in range(n_tile_cols):
             # Pixel bounds within the virtual (tex_w×tex_h) canvas — linear fractions
             # so adjacent tiles share their boundary pixel exactly.
-            px_left   = tj * tex_w // n_tile_cols
-            px_right  = (tj + 1) * tex_w // n_tile_cols
-            px_top    = ti * tex_h // n_tile_rows
+            px_left = tj * tex_w // n_tile_cols
+            px_right = (tj + 1) * tex_w // n_tile_cols
+            px_top = ti * tex_h // n_tile_rows
             px_bottom = (ti + 1) * tex_h // n_tile_rows
-            tile_px_w = max(1, px_right  - px_left)
+            tile_px_w = max(1, px_right - px_left)
             tile_px_h = max(1, px_bottom - px_top)
 
             # DEM row/col bounds (shared boundary so terrain seams are seamless).
-            dem_r_start = round(ti       * (dem_rows - 1) / n_tile_rows)
-            dem_r_end   = round((ti + 1) * (dem_rows - 1) / n_tile_rows)
-            dem_c_start = round(tj       * (dem_cols - 1) / n_tile_cols)
-            dem_c_end   = round((tj + 1) * (dem_cols - 1) / n_tile_cols)
+            dem_r_start = round(ti * (dem_rows - 1) / n_tile_rows)
+            dem_r_end = round((ti + 1) * (dem_rows - 1) / n_tile_rows)
+            dem_c_start = round(tj * (dem_cols - 1) / n_tile_cols)
+            dem_c_end = round((tj + 1) * (dem_cols - 1) / n_tile_cols)
 
             # Geographic bounds from DEM fractions — works regardless of
             # whether satellite and DEM extents differ.
             tile_max_lat = grid.max_lat - dem_r_start / (dem_rows - 1) * lat_span
-            tile_min_lat = grid.max_lat - dem_r_end   / (dem_rows - 1) * lat_span
+            tile_min_lat = grid.max_lat - dem_r_end / (dem_rows - 1) * lat_span
             tile_min_lon = grid.min_lon + dem_c_start / (dem_cols - 1) * lon_span
-            tile_max_lon = grid.min_lon + dem_c_end   / (dem_cols - 1) * lon_span
-            tile_bbox = BoundingBox(tile_min_lat, tile_max_lat, tile_min_lon, tile_max_lon)
+            tile_max_lon = grid.min_lon + dem_c_end / (dem_cols - 1) * lon_span
+            tile_bbox = BoundingBox(
+                tile_min_lat, tile_max_lat, tile_min_lon, tile_max_lon
+            )
 
             if cancel_check and cancel_check():
                 raise SceneBuildError("Cancelled.")
@@ -781,23 +821,26 @@ def _write_texture_tiles_from_cache(
             if tile_progress_cb:
                 tile_progress_cb(tile_idx, total_tiles)
 
-            tiles.append({
-                "ti": ti, "tj": tj,
-                "path": str(tile_path),
-                "px_left":   px_left,
-                "px_top":    px_top,
-                "px_right":  px_right,
-                "px_bottom": px_bottom,
-                "dem_r_start": dem_r_start,
-                "dem_r_end":   dem_r_end,
-                "dem_c_start": dem_c_start,
-                "dem_c_end":   dem_c_end,
-            })
+            tiles.append(
+                {
+                    "ti": ti,
+                    "tj": tj,
+                    "path": str(tile_path),
+                    "px_left": px_left,
+                    "px_top": px_top,
+                    "px_right": px_right,
+                    "px_bottom": px_bottom,
+                    "dem_r_start": dem_r_start,
+                    "dem_r_end": dem_r_end,
+                    "dem_c_start": dem_c_start,
+                    "dem_c_end": dem_c_end,
+                }
+            )
 
     manifest = {
         "n_tile_rows": n_tile_rows,
         "n_tile_cols": n_tile_cols,
-        "image_width":  tex_w,
+        "image_width": tex_w,
         "image_height": tex_h,
         "tiles": tiles,
     }
@@ -807,7 +850,9 @@ def _write_texture_tiles_from_cache(
 
 
 def _write_texture_tiles_from_image(
-    texture: SatelliteTexture, grid: ElevationGrid, work_dir: Path,
+    texture: SatelliteTexture,
+    grid: ElevationGrid,
+    work_dir: Path,
     max_texture_pixels: int | None = None,
     tile_progress_cb: Callable[[int, int], None] | None = None,
     status_cb: Callable[[str], None] | None = None,
@@ -860,15 +905,15 @@ def _write_texture_tiles_from_image(
         lat_span = texture.max_lat - texture.min_lat
         lon_span = texture.max_lon - texture.min_lon
         # Satellite image: row 0 = max_lat (north), col 0 = min_lon (west).
-        c_left   = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
-        c_right  = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
-        c_top    = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
+        c_left = int(round((grid.min_lon - texture.min_lon) / lon_span * w))
+        c_right = int(round((grid.max_lon - texture.min_lon) / lon_span * w))
+        c_top = int(round((texture.max_lat - grid.max_lat) / lat_span * h))
         c_bottom = int(round((texture.max_lat - grid.min_lat) / lat_span * h))
-        c_left, c_right  = max(0, c_left),  min(w, c_right)
-        c_top,  c_bottom = max(0, c_top),   min(h, c_bottom)
+        c_left, c_right = max(0, c_left), min(w, c_right)
+        c_top, c_bottom = max(0, c_top), min(h, c_bottom)
         if c_right > c_left and c_bottom > c_top:
             src_left, src_top = c_left, c_top
-            src_w = c_right  - c_left
+            src_w = c_right - c_left
             src_h = c_bottom - c_top
 
     tex_w, tex_h = src_w, src_h
@@ -882,9 +927,13 @@ def _write_texture_tiles_from_image(
         new_h = max(1, int(tex_h * scale))
         _log.info(
             "[satellite] Preview downscale: %dx%d → %dx%d px",
-            tex_w, tex_h, new_w, new_h,
+            tex_w,
+            tex_h,
+            new_w,
+            new_h,
         )
         from PIL.Image import Resampling
+
         with PIL_LOCK:
             # We must materialise the crop first when there is an offset.
             region = img.crop((src_left, src_top, src_left + tex_w, src_top + tex_h))
@@ -914,10 +963,15 @@ def _write_texture_tiles_from_image(
 
     _log.info(
         "[satellite] Splitting %dx%d px texture into %d×%d tiles",
-        tex_w, tex_h, n_tile_rows, n_tile_cols,
+        tex_w,
+        tex_h,
+        n_tile_rows,
+        n_tile_cols,
     )
     if status_cb:
-        status_cb(f"Splitting satellite texture into {n_tile_rows * n_tile_cols} tiles…")
+        status_cb(
+            f"Splitting satellite texture into {n_tile_rows * n_tile_cols} tiles…"
+        )
 
     tiles_dir = work_dir / "sat_tiles"
     tiles_dir.mkdir(exist_ok=True)
@@ -931,16 +985,16 @@ def _write_texture_tiles_from_image(
     for ti in range(n_tile_rows):
         for tj in range(n_tile_cols):
             # Image pixel bounds within the (possibly offset) source region
-            px_left   = src_left + tj * tex_w // n_tile_cols
-            px_right  = src_left + (tj + 1) * tex_w // n_tile_cols
-            px_top    = src_top  + ti * tex_h // n_tile_rows
-            px_bottom = src_top  + (ti + 1) * tex_h // n_tile_rows
+            px_left = src_left + tj * tex_w // n_tile_cols
+            px_right = src_left + (tj + 1) * tex_w // n_tile_cols
+            px_top = src_top + ti * tex_h // n_tile_rows
+            px_bottom = src_top + (ti + 1) * tex_h // n_tile_rows
 
             # DEM row/col bounds (inclusive both ends so adjacent tiles share boundary)
-            dem_c_start = round((px_left  - src_left) / tex_w * (dem_cols - 1))
-            dem_c_end   = round((px_right - src_left) / tex_w * (dem_cols - 1))
-            dem_r_start = round((px_top   - src_top)  / tex_h * (dem_rows - 1))
-            dem_r_end   = round((px_bottom - src_top)  / tex_h * (dem_rows - 1))
+            dem_c_start = round((px_left - src_left) / tex_w * (dem_cols - 1))
+            dem_c_end = round((px_right - src_left) / tex_w * (dem_cols - 1))
+            dem_r_start = round((px_top - src_top) / tex_h * (dem_rows - 1))
+            dem_r_end = round((px_bottom - src_top) / tex_h * (dem_rows - 1))
 
             if cancel_check and cancel_check():
                 raise SceneBuildError("Cancelled.")
@@ -959,25 +1013,28 @@ def _write_texture_tiles_from_image(
             if tile_progress_cb:
                 tile_progress_cb(tile_idx, total_tiles)
 
-            tiles.append({
-                "ti": ti, "tj": tj,
-                "path": str(tile_path),
-                # Pixel bounds in the output image coordinate space (origin = src_left, src_top)
-                # stored so the image can be reassembled from tiles on demand.
-                "px_left":   px_left   - src_left,
-                "px_top":    px_top    - src_top,
-                "px_right":  px_right  - src_left,
-                "px_bottom": px_bottom - src_top,
-                "dem_r_start": dem_r_start,
-                "dem_r_end":   dem_r_end,
-                "dem_c_start": dem_c_start,
-                "dem_c_end":   dem_c_end,
-            })
+            tiles.append(
+                {
+                    "ti": ti,
+                    "tj": tj,
+                    "path": str(tile_path),
+                    # Pixel bounds in the output image coordinate space (origin = src_left, src_top)
+                    # stored so the image can be reassembled from tiles on demand.
+                    "px_left": px_left - src_left,
+                    "px_top": px_top - src_top,
+                    "px_right": px_right - src_left,
+                    "px_bottom": px_bottom - src_top,
+                    "dem_r_start": dem_r_start,
+                    "dem_r_end": dem_r_end,
+                    "dem_c_start": dem_c_start,
+                    "dem_c_end": dem_c_end,
+                }
+            )
 
     manifest = {
         "n_tile_rows": n_tile_rows,
         "n_tile_cols": n_tile_cols,
-        "image_width":  tex_w,
+        "image_width": tex_w,
         "image_height": tex_h,
         "tiles": tiles,
     }

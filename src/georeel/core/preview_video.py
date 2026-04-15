@@ -12,8 +12,6 @@ the files are renamed to a sequential series for ffmpeg.
 Reuses render_frames.py and assemble_video without modification.
 """
 
-import tempfile
-from pathlib import Path
 from typing import Any, Callable
 
 from .camera_keyframe import CameraKeyframe
@@ -22,7 +20,7 @@ from .photo_compositor import CompositorError, composite_photos
 from .pipeline import Pipeline
 from .video_assembler import VideoAssembleError, assemble_video
 
-_PREVIEW_FRACTION = 0.02   # render the first 2 % of total frames (minimum 2)
+_PREVIEW_FRACTION = 0.02  # render the first 2 % of total frames (minimum 2)
 _PREVIEW_MIN_CONTENT_S = 3.0  # seconds of post-fade content always visible in preview
 
 
@@ -33,6 +31,7 @@ class PreviewVideoError(Exception):
 # ------------------------------------------------------------------
 # Public helpers
 # ------------------------------------------------------------------
+
 
 def build_preview_keyframes(
     keyframes: list[CameraKeyframe],
@@ -58,7 +57,7 @@ def build_preview_keyframes(
     if settings:
         if settings.get("clip_effects/fade_in_enabled", False):
             fi_black = float(settings.get("clip_effects/fade_in_black_dur", 5.0))
-            fi_fade  = float(settings.get("clip_effects/fade_in_fade_dur",  1.0))
+            fi_fade = float(settings.get("clip_effects/fade_in_fade_dur", 1.0))
             # fi_black from tpad doesn't consume rendered frames, but we extend
             # the base by fi_black too so the preview is proportionally longer
             # and the user can see content well after the fade completes.
@@ -108,20 +107,21 @@ def render_preview_video(
     # user's chosen aspect ratio so portrait/square previews keep their shape.
     _PREVIEW_RESOLUTION = {
         "landscape": "720p",
-        "portrait":  "portrait_720p",
-        "square":    "square_720",
+        "portrait": "portrait_720p",
+        "square": "square_720",
     }
     aspect = settings.get("render/aspect_ratio", "landscape")
     preview_settings = dict(settings)
     preview_settings["render/resolution"] = _PREVIEW_RESOLUTION.get(aspect, "720p")
-    preview_settings["render/quality"]    = "low"
+    preview_settings["render/quality"] = "low"
 
     # ------------------------------------------------------------------ #
     # Stage 7: render preview frames                                       #
     # ------------------------------------------------------------------ #
     try:
         frames_dir = render_frames(
-            preview_pipeline, preview_settings,
+            preview_pipeline,
+            preview_settings,
             blender_exe=blender_exe,
             progress_cb=progress_cb,
             cancel_check=cancel_check,
@@ -138,7 +138,8 @@ def render_preview_video(
     preview_pipeline.rendered_frames_dir = frames_dir
     try:
         frames_dir = composite_photos(
-            preview_pipeline, preview_settings,
+            preview_pipeline,
+            preview_settings,
             cancel_check=cancel_check,
         )
     except CompositorError as e:

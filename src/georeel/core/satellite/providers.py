@@ -2,14 +2,14 @@
 Registry of supported satellite imagery providers and quality tiers.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class ProviderConfig:
     id: str
     label: str
-    url_template: str   # {z}/{x}/{y} xyz format; use {api_key} for key substitution
+    url_template: str  # {z}/{x}/{y} xyz format; use {api_key} for key substitution
     max_zoom: int
     requires_key: bool
     key_label: str = ""
@@ -72,7 +72,7 @@ def get_provider(provider_id: str) -> ProviderConfig:
 # The same zoom is used regardless of track size, so "Very High" always means
 # the same ground resolution whether the track is 5 km or 500 km.
 QUALITY_ZOOM: dict[str, int] = {
-    "standard":  13,
-    "high":      15,
+    "standard": 13,
+    "high": 15,
     "very_high": 17,
 }

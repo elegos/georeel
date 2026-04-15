@@ -1,10 +1,10 @@
-from typing import Any
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QDropEvent, QIcon, QImage, QImageReader, QKeyEvent, QPixmap
+from PySide6.QtGui import QColor, QDropEvent, QIcon, QImageReader, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
 
 from georeel.core.camera_keyframe import CameraKeyframe
 from georeel.core.exif_reader import read_photo_metadata
-from georeel.core.photo_metadata import PhotoMetadata
 from georeel.core.match_result import MatchResult
+from georeel.core.photo_metadata import PhotoMetadata
 from georeel.core.photo_store import PhotoStore
 from georeel.core.trackpoint import Trackpoint
 
@@ -51,7 +51,9 @@ class PhotoListArea(DropArea):
         self._store = PhotoStore.instance()
         self._tz_offset_hours: float = 0.0
         # clipboard holds (timestamp | None, latitude | None, longitude | None)
-        self._clipboard: tuple[datetime | None, float | None, float | None] | None = None
+        self._clipboard: tuple[datetime | None, float | None, float | None] | None = (
+            None
+        )
         self._preview_windows: list[PhotoPreviewWindow] = []
         # Thumbnail loading: decode one JPEG per event-loop tick on the main thread.
         # Running QImageReader in any background thread races Qt's font engine
@@ -65,7 +67,9 @@ class PhotoListArea(DropArea):
         self._original_exif: dict[str, PhotoMetadata] = {}
         self._match_results: dict[str, MatchResult] = {}
         self._trackpoints: list[Trackpoint] = []
-        self._pause_frames: dict[str, list[int]] = {}  # photo_path → [first_frame, last_frame]
+        self._pause_frames: dict[
+            str, list[int]
+        ] = {}  # photo_path → [first_frame, last_frame]
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -75,10 +79,18 @@ class PhotoListArea(DropArea):
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_TS, QHeaderView.ResizeMode.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_GPS, QHeaderView.ResizeMode.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(
+            _COL_NAME, QHeaderView.ResizeMode.Stretch
+        )
+        self._table.horizontalHeader().setSectionResizeMode(
+            _COL_TS, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self._table.horizontalHeader().setSectionResizeMode(
+            _COL_GPS, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self._table.horizontalHeader().setSectionResizeMode(
+            _COL_STATUS, QHeaderView.ResizeMode.ResizeToContents
+        )
         self._table.verticalHeader().setVisible(False)
         # Icon size set but thumbnails currently disabled (see _rebuild_table).
         self._table.setIconSize(QSize(_THUMBNAIL_HEIGHT * 2, _THUMBNAIL_HEIGHT))
@@ -123,12 +135,16 @@ class PhotoListArea(DropArea):
     def update_match_statuses(self, results: list[MatchResult]) -> None:
         self._match_results = {r.photo_path: r for r in results}
         for row in range(self._table.rowCount()):
-            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(
+                Qt.ItemDataRole.UserRole
+            )
             result = self._match_results.get(path)
             if result is None:
                 continue
             item = QTableWidgetItem(result.status_text)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
             if result.error:
                 item.setForeground(Qt.GlobalColor.red)
             elif result.warning:
@@ -148,7 +164,9 @@ class PhotoListArea(DropArea):
             self._pause_frames = {}
             for kf in keyframes:
                 if kf.is_pause and kf.photo_path:
-                    entry = self._pause_frames.setdefault(kf.photo_path, [kf.frame, kf.frame])
+                    entry = self._pause_frames.setdefault(
+                        kf.photo_path, [kf.frame, kf.frame]
+                    )
                     entry[0] = min(entry[0], kf.frame)
                     entry[1] = max(entry[1], kf.frame)
             self._update_keyframe_statuses()
@@ -222,7 +240,9 @@ class PhotoListArea(DropArea):
         if not selected_rows:
             return
         for row in selected_rows:
-            path = (self._table.item(row, 0) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+            path = (self._table.item(row, 0) or QTableWidgetItem()).data(
+                Qt.ItemDataRole.UserRole
+            )
             self._store.remove(path)
             self._original_exif.pop(path, None)
         self._rebuild_table()
@@ -231,7 +251,9 @@ class PhotoListArea(DropArea):
     def _update_keyframe_statuses(self) -> None:
         """Overwrite the Status column with keyframe-range info for each photo."""
         for row in range(self._table.rowCount()):
-            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(
+                Qt.ItemDataRole.UserRole
+            )
             frames = self._pause_frames.get(path)
             result = self._match_results.get(path)
 
@@ -248,17 +270,28 @@ class PhotoListArea(DropArea):
                 else:
                     text = f"frames {first}–{last}{pos_label}"
                 item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                )
                 self._table.setItem(row, _COL_STATUS, item)
 
     def _table_key_press(self, event: QKeyEvent):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._remove_selected()
-        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_A:
+        elif (
+            event.modifiers() == Qt.KeyboardModifier.ControlModifier
+            and event.key() == Qt.Key.Key_A
+        ):
             self._table.selectAll()
-        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
+        elif (
+            event.modifiers() == Qt.KeyboardModifier.ControlModifier
+            and event.key() == Qt.Key.Key_C
+        ):
             self._copy_metadata()
-        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
+        elif (
+            event.modifiers() == Qt.KeyboardModifier.ControlModifier
+            and event.key() == Qt.Key.Key_V
+        ):
             self._paste_metadata()
         else:
             QTableWidget.keyPressEvent(self._table, event)
@@ -267,10 +300,16 @@ class PhotoListArea(DropArea):
         selected_rows = sorted({idx.row() for idx in self._table.selectedIndexes()})
         if not selected_rows:
             return
-        path = (self._table.item(selected_rows[0], _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+        path = (
+            self._table.item(selected_rows[0], _COL_NAME) or QTableWidgetItem()
+        ).data(Qt.ItemDataRole.UserRole)
         metadata = next((p for p in self._store.all() if p.path == path), None)
         if metadata:
-            self._clipboard = (metadata.timestamp, metadata.latitude, metadata.longitude)
+            self._clipboard = (
+                metadata.timestamp,
+                metadata.latitude,
+                metadata.longitude,
+            )
 
     def _paste_metadata(self):
         if self._clipboard is None:
@@ -280,7 +319,9 @@ class PhotoListArea(DropArea):
         if not selected_rows:
             return
         for row in selected_rows:
-            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+            path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(
+                Qt.ItemDataRole.UserRole
+            )
             if ts is not None:
                 self._store.update_timestamp(path, ts)
             if lat is not None and lon is not None:
@@ -289,7 +330,9 @@ class PhotoListArea(DropArea):
         self.photos_changed.emit()
 
     def _on_cell_double_clicked(self, row: int, col: int):
-        path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+        path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(
+            Qt.ItemDataRole.UserRole
+        )
         self._show_exif_dialog(path)
 
     def _show_exif_dialog(self, path: str):
@@ -318,8 +361,8 @@ class PhotoListArea(DropArea):
 
         # Timestamp
         orig_ts = original.timestamp
-        cur_ts  = stored.timestamp
-        ts_overridden = (cur_ts != orig_ts)
+        cur_ts = stored.timestamp
+        ts_overridden = cur_ts != orig_ts
         if orig_ts:
             orig_ts_str = orig_ts.strftime("%Y-%m-%d %H:%M:%S")
         else:
@@ -328,9 +371,10 @@ class PhotoListArea(DropArea):
             cur_ts_str = cur_ts.strftime("%Y-%m-%d %H:%M:%S")
             if ts_overridden:
                 form.addRow("Timestamp (EXIF):", _val_label(orig_ts_str))
-                form.addRow("Timestamp (current):", _val_label(
-                    f"{cur_ts_str}  ← overridden", overridden=True
-                ))
+                form.addRow(
+                    "Timestamp (current):",
+                    _val_label(f"{cur_ts_str}  ← overridden", overridden=True),
+                )
             else:
                 form.addRow("Timestamp:", _val_label(cur_ts_str))
         else:
@@ -343,16 +387,17 @@ class PhotoListArea(DropArea):
             return f"{lat:.6f}°, {lon:.6f}°"
 
         orig_gps_str = _fmt_gps(original.latitude, original.longitude)
-        cur_gps_str  = _fmt_gps(stored.latitude,   stored.longitude)
+        cur_gps_str = _fmt_gps(stored.latitude, stored.longitude)
         gps_overridden = (
-            stored.latitude  != original.latitude or
-            stored.longitude != original.longitude
+            stored.latitude != original.latitude
+            or stored.longitude != original.longitude
         )
         if gps_overridden:
             form.addRow("GPS (EXIF):", _val_label(orig_gps_str))
-            form.addRow("GPS (current):", _val_label(
-                f"{cur_gps_str}  ← overridden", overridden=True
-            ))
+            form.addRow(
+                "GPS (current):",
+                _val_label(f"{cur_gps_str}  ← overridden", overridden=True),
+            )
         else:
             form.addRow("GPS:", _val_label(cur_gps_str))
 
@@ -360,9 +405,13 @@ class PhotoListArea(DropArea):
 
         # Buttons
         btn_box = QDialogButtonBox()
-        edit_ts_btn  = btn_box.addButton("Edit timestamp…", QDialogButtonBox.ButtonRole.ActionRole)
-        view_btn     = btn_box.addButton("View photo",      QDialogButtonBox.ButtonRole.ActionRole)
-        close_btn    = btn_box.addButton(QDialogButtonBox.StandardButton.Close)
+        edit_ts_btn = btn_box.addButton(
+            "Edit timestamp…", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        view_btn = btn_box.addButton(
+            "View photo", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        close_btn = btn_box.addButton(QDialogButtonBox.StandardButton.Close)
 
         def _edit_ts():
             dlg.accept()
@@ -392,7 +441,9 @@ class PhotoListArea(DropArea):
 
     def _open_preview(self, path: str):
         paths = [
-            (self._table.item(r, _COL_NAME) or QTableWidgetItem()).data(Qt.ItemDataRole.UserRole)
+            (self._table.item(r, _COL_NAME) or QTableWidgetItem()).data(
+                Qt.ItemDataRole.UserRole
+            )
             for r in range(self._table.rowCount())
         ]
         index = paths.index(path) if path in paths else 0
@@ -401,7 +452,8 @@ class PhotoListArea(DropArea):
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(
             lambda: self._preview_windows.remove(window)
-            if window in self._preview_windows else None
+            if window in self._preview_windows
+            else None
         )
         window.photo_removed.connect(self._on_preview_photo_removed)
         window.show()
@@ -425,7 +477,9 @@ class PhotoListArea(DropArea):
         size = reader.size()
         if size.isValid() and size.height() > _THUMBNAIL_HEIGHT:
             ratio = _THUMBNAIL_HEIGHT / size.height()
-            reader.setScaledSize(QSize(max(1, round(size.width() * ratio)), _THUMBNAIL_HEIGHT))
+            reader.setScaledSize(
+                QSize(max(1, round(size.width() * ratio)), _THUMBNAIL_HEIGHT)
+            )
         image = reader.read()
         if not image.isNull():
             icon = QIcon(QPixmap.fromImage(image))
@@ -440,9 +494,7 @@ class PhotoListArea(DropArea):
     def set_calc_kf_running(self, running: bool) -> None:
         """Disable/enable the Calculate keyframes button during a background run."""
         self._calc_kf_btn.setEnabled(not running and self._table.rowCount() > 0)
-        self._calc_kf_btn.setText(
-            "Calculating…" if running else "Calculate keyframes"
-        )
+        self._calc_kf_btn.setText("Calculating…" if running else "Calculate keyframes")
 
     def _rebuild_table(self):
         def sort_key(m):
@@ -472,7 +524,9 @@ class PhotoListArea(DropArea):
                 offset = self._tz_offset_hours
                 if offset != 0.0:
                     utc_ts = ts - timedelta(hours=offset)
-                    display = f"{ts.strftime('%H:%M:%S')} → {utc_ts.strftime('%H:%M:%S')} UTC"
+                    display = (
+                        f"{ts.strftime('%H:%M:%S')} → {utc_ts.strftime('%H:%M:%S')} UTC"
+                    )
                     tooltip = (
                         f"EXIF local: {ts.strftime('%Y-%m-%d %H:%M:%S')}\n"
                         f"UTC:        {utc_ts.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -494,8 +548,8 @@ class PhotoListArea(DropArea):
                 ts_item.setForeground(_COLOR_WARNING)
 
             gps_overridden = (
-                metadata.latitude  != original.latitude or
-                metadata.longitude != original.longitude
+                metadata.latitude != original.latitude
+                or metadata.longitude != original.longitude
             )
             if metadata.has_gps:
                 gps_text = f"{metadata.latitude:.4f}°, {metadata.longitude:.4f}°"
@@ -509,7 +563,9 @@ class PhotoListArea(DropArea):
                 gps_item.setForeground(_COLOR_WARNING)
 
             status_item = QTableWidgetItem("—")
-            status_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            status_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
 
             self._table.setItem(row, _COL_NAME, name_item)
             self._table.setItem(row, _COL_TS, ts_item)

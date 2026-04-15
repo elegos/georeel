@@ -1,5 +1,4 @@
 import logging
-import xml.etree.ElementTree as ET
 from datetime import timezone
 
 import gpxpy
@@ -55,18 +54,23 @@ def parse_gpx(path: str) -> tuple[list[Trackpoint], BoundingBox]:
                     elevation = _elevation_from_extensions(point)
                     if elevation is None:
                         missing_ele += 1
-                trackpoints.append(Trackpoint(
-                    latitude=point.latitude,
-                    longitude=point.longitude,
-                    elevation=elevation,
-                    timestamp=point.time.astimezone(timezone.utc) if point.time else None,
-                ))
+                trackpoints.append(
+                    Trackpoint(
+                        latitude=point.latitude,
+                        longitude=point.longitude,
+                        elevation=elevation,
+                        timestamp=point.time.astimezone(timezone.utc)
+                        if point.time
+                        else None,
+                    )
+                )
 
     if missing_ele:
         total = len(trackpoints)
         _log.warning(
             "[gpx_parser] %d/%d trackpoints have no elevation data%s",
-            missing_ele, total,
+            missing_ele,
+            total,
             " — elevation stats will be unavailable." if missing_ele == total else ".",
         )
 

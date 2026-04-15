@@ -8,7 +8,6 @@ falls back to opening the video in the system default player otherwise.
 
 import subprocess
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QUrl
@@ -30,6 +29,7 @@ if TYPE_CHECKING:
 try:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # noqa: F811
     from PySide6.QtMultimediaWidgets import QVideoWidget  # noqa: F811
+
     _has_multimedia = True
 except ImportError:
     _has_multimedia = False
@@ -52,6 +52,7 @@ def open_preview_video(video_path: str, parent=None) -> None:
 # Qt player dialog (used when QtMultimedia is available)
 # ------------------------------------------------------------------
 
+
 class _PlayerDialog(QDialog):
     def __init__(self, video_path: str, parent=None):
         super().__init__(parent)
@@ -63,11 +64,13 @@ class _PlayerDialog(QDialog):
 
         # Video surface
         self._video_widget = QVideoWidget()
-        self._video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._video_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
 
         # Player
         self._player = QMediaPlayer(self)
-        self._audio  = QAudioOutput(self)
+        self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
         self._player.setVideoOutput(self._video_widget)
         self._player.setSource(QUrl.fromLocalFile(video_path))
@@ -75,7 +78,7 @@ class _PlayerDialog(QDialog):
         # ------------------------------------------------------------------ #
         # Controls                                                             #
         # ------------------------------------------------------------------ #
-        self._play_btn  = QPushButton("▶")
+        self._play_btn = QPushButton("▶")
         self._play_btn.setFixedWidth(36)
         self._play_btn.clicked.connect(self._toggle_play)
 
@@ -152,6 +155,7 @@ class _PlayerDialog(QDialog):
 # Helpers
 # ------------------------------------------------------------------
 
+
 def _fmt_ms(ms: int) -> str:
     s = ms // 1000
     return f"{s // 60}:{s % 60:02d}"
@@ -160,6 +164,7 @@ def _fmt_ms(ms: int) -> str:
 def _open_system_player(path: str) -> None:
     if sys.platform == "win32":
         import os
+
         os.startfile(path)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", path])

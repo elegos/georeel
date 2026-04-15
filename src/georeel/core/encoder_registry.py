@@ -3,7 +3,6 @@ Defines all supported video encoders, their FFmpeg flags, quality ranges,
 and suggested default settings.  Also provides encoder auto-detection.
 """
 
-import re
 import shlex
 import subprocess
 from dataclasses import dataclass

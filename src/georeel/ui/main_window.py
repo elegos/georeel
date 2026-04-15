@@ -1,9 +1,9 @@
 # pyright: reportUninitializedInstanceVariable=false
-from typing import Any
 import logging
 import shutil
 import threading
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QObject, QSettings, QThread, Signal
 from PySide6.QtGui import QCloseEvent
@@ -31,24 +31,29 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from georeel.core import temp_manager
 from georeel.core.bounding_box import BoundingBox
 from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
-from georeel.core.frustum import frustum_margin
 from georeel.core.exif_reader import read_photo_metadata
-from georeel.core.gpx_cleaner import REPAIR_LINEAR, REPAIR_NONE, detect_and_repair
+from georeel.core.frustum import frustum_margin
+from georeel.core.gpx_cleaner import REPAIR_NONE, detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.gpx_stats import compute_stats
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
+from georeel.core.pipeline_memory import log_pipeline_memory
 from georeel.core.preview_map import PreviewMapError, render_preview_map
-from georeel.core.project import ProjectState, autosave_tilde, load_project, save_project
+from georeel.core.project import (
+    ProjectState,
+    autosave_tilde,
+    load_project,
+    save_project,
+)
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
-from georeel.core.pipeline_memory import log_pipeline_memory
-from georeel.core import temp_manager
 
 from .blender_settings_dialog import BlenderSettingsDialog
 from .clip_effects_widget import ClipEffectsWidget
@@ -73,14 +78,14 @@ from .render_settings_dialog import (
     KEY_GPX_OSRM_PROFILE,
     KEY_GPX_REPAIR_MODE,
     KEY_HEIGHT_OFFSET,
-    KEY_MARKER_SHIFTING_PIN,
-    KEY_RIBBON_COLOR_MODE,
-    KEY_RIBBON_SELF_LIT,
     KEY_IMAGERY_API_KEY,
     KEY_IMAGERY_CUSTOM_URL,
     KEY_IMAGERY_PROVIDER,
     KEY_IMAGERY_QUALITY,
+    KEY_MARKER_SHIFTING_PIN,
     KEY_PHOTO_TZ_OFFSET,
+    KEY_RIBBON_COLOR_MODE,
+    KEY_RIBBON_SELF_LIT,
     KEY_TILT_DEG,
     RenderSettingsDialog,
     get_render_settings,
@@ -110,7 +115,7 @@ _MATCH_MODES = [
 # producing ~5 min video at 30 fps.  Cycling and driving cover more ground so
 # a higher speed keeps the video a sensible length.
 _SPEED_PRESETS = [
-    ("Hiking",   80.0),
+    ("Hiking", 80.0),
     ("Cycling", 120.0),
     ("Driving", 320.0),
 ]
@@ -137,11 +142,12 @@ class _SaveWorker(QObject):
 
 class _LoadResult:
     """All pre-computed data produced by _LoadWorker so the main thread only does UI."""
+
     __slots__ = ("state", "gpx_stats", "gpx_failed", "exif_cache")
 
     def __init__(self, state, gpx_stats, gpx_failed, exif_cache):
         self.state = state
-        self.gpx_stats = gpx_stats      # GpxStats | None
+        self.gpx_stats = gpx_stats  # GpxStats | None
         self.gpx_failed = gpx_failed
         self.exif_cache = exif_cache
 
@@ -149,9 +155,9 @@ class _LoadResult:
 class _LoadWorker(QObject):
     """Loads a project and pre-computes GPX + EXIF data in a background thread."""
 
-    finished = Signal(object)   # _LoadResult
-    failed   = Signal(str)
-    progress = Signal(str)      # status-bar message
+    finished = Signal(object)  # _LoadResult
+    failed = Signal(str)
+    progress = Signal(str)  # status-bar message
 
     def __init__(
         self,
@@ -213,21 +219,27 @@ class _InjectWorker(QObject):
     """Runs inject_camera_and_open headlessly in a background thread."""
 
     finished = Signal()
-    failed   = Signal(str)
+    failed = Signal(str)
 
-    def __init__(self, exe: str, blend_path: str, keyframes, resolution: str, fps: int = 30):
+    def __init__(
+        self, exe: str, blend_path: str, keyframes, resolution: str, fps: int = 30
+    ):
         super().__init__()
-        self._exe        = exe
+        self._exe = exe
         self._blend_path = blend_path
-        self._keyframes  = keyframes
+        self._keyframes = keyframes
         self._resolution = resolution
-        self._fps        = fps
+        self._fps = fps
 
     def run(self):
-        from georeel.core.open_in_blender import OpenInBlenderError, inject_camera_and_open
+        from georeel.core.open_in_blender import inject_camera_and_open
+
         try:
             inject_camera_and_open(
-                self._exe, self._blend_path, self._keyframes, self._resolution,
+                self._exe,
+                self._blend_path,
+                self._keyframes,
+                self._resolution,
                 fps=self._fps,
             )
             self.finished.emit()
@@ -248,7 +260,7 @@ class MainWindow(QMainWindow):
         self._cached_satellite_texture: SatelliteTexture | None = None
         self._dirty = False
         self._suppress_dirty = False
-        self._tilde_fresh = False           # True when path~ is ready to rename on save
+        self._tilde_fresh = False  # True when path~ is ready to rename on save
         self._autosave_thread: threading.Thread | None = None
         self._scene_stale = True  # True → stage 5 must rerun in _start()
         self._scene_prep_worker: ScenePrepWorker | None = None
@@ -514,9 +526,7 @@ class MainWindow(QMainWindow):
         pidx = self._gpx_osrm_profile_combo.findData(saved_profile)
         if pidx >= 0:
             self._gpx_osrm_profile_combo.setCurrentIndex(pidx)
-        self._gpx_osrm_profile_combo.setToolTip(
-            "Routing profile sent to the OSRM API."
-        )
+        self._gpx_osrm_profile_combo.setToolTip("Routing profile sent to the OSRM API.")
         self._gpx_osrm_profile_widget = QWidget()
         profile_row = QHBoxLayout(self._gpx_osrm_profile_widget)
         profile_row.setContentsMargins(0, 0, 0, 0)
@@ -630,16 +640,22 @@ class MainWindow(QMainWindow):
         self._gpx_osrm_profile_combo.blockSignals(False)
 
         self._gpx_speed_spin.blockSignals(True)
-        self._gpx_speed_spin.setValue(int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))))
+        self._gpx_speed_spin.setValue(
+            int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+        )
         self._gpx_speed_spin.blockSignals(False)
 
         self._gpx_gap_spin.blockSignals(True)
-        self._gpx_gap_spin.setValue(float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))))
+        self._gpx_gap_spin.setValue(
+            float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+        )
         self._gpx_gap_spin.blockSignals(False)
 
         saved_shifting = self._settings.value(KEY_MARKER_SHIFTING_PIN, False)
         self._shifting_pin_check.blockSignals(True)
-        self._shifting_pin_check.setChecked(bool(saved_shifting) and saved_shifting != "false")
+        self._shifting_pin_check.setChecked(
+            bool(saved_shifting) and saved_shifting != "false"
+        )
         self._shifting_pin_check.blockSignals(False)
 
     def _reload_speed_control(self) -> None:
@@ -801,7 +817,7 @@ class MainWindow(QMainWindow):
         for i, (_, v) in enumerate(_SPEED_PRESETS):
             if abs(value - v) < 0.5:
                 return i
-        return len(_SPEED_PRESETS)   # "Custom"
+        return len(_SPEED_PRESETS)  # "Custom"
 
     def _update_duration_label(self) -> None:
         """Recompute and display the estimated video duration next to the speed control."""
@@ -812,7 +828,9 @@ class MainWindow(QMainWindow):
         if speed <= 0:
             self._duration_label.setText("")
             return
-        pause_duration_s = float(str(self._settings.value("render/photo_pause_duration", 3.0)))
+        pause_duration_s = float(
+            str(self._settings.value("render/photo_pause_duration", 3.0))
+        )
         n_photos = len(self._store.all())
         total_s = self._track_length_m / speed + n_photos * pause_duration_s
         mins = int(total_s) // 60
@@ -852,8 +870,11 @@ class MainWindow(QMainWindow):
         self._ribbon_color_group.addButton(self._ribbon_speed_radio)
 
         saved_mode = str(self._settings.value(KEY_RIBBON_COLOR_MODE, "slope"))
-        (self._ribbon_speed_radio if saved_mode == "speed"
-         else self._ribbon_slope_radio).setChecked(True)
+        (
+            self._ribbon_speed_radio
+            if saved_mode == "speed"
+            else self._ribbon_slope_radio
+        ).setChecked(True)
 
         color_layout.addWidget(self._ribbon_slope_radio)
         color_layout.addWidget(self._ribbon_speed_radio)
@@ -864,7 +885,9 @@ class MainWindow(QMainWindow):
         appear_layout = QVBoxLayout(appear_group)
         appear_layout.setSpacing(6)
 
-        self._ribbon_self_lit_check = QCheckBox("Self-lit (vivid, sun-independent colors)")
+        self._ribbon_self_lit_check = QCheckBox(
+            "Self-lit (vivid, sun-independent colors)"
+        )
         self._ribbon_self_lit_check.setToolTip(
             "When unchecked the ribbon emits at strength 2 — bright enough to stand\n"
             "out but still blends with scene bloom and exposure.\n"
@@ -991,7 +1014,9 @@ class MainWindow(QMainWindow):
             self._dirty = True
             self._tilde_fresh = False
 
-    def _autosave_tilde(self, *, update_dem: bool = False, update_sat: bool = False) -> None:
+    def _autosave_tilde(
+        self, *, update_dem: bool = False, update_sat: bool = False
+    ) -> None:
         """Fire-and-forget write of current DEM/satellite to project_path~.
 
         Skipped when no project has been saved/loaded yet.  Runs in a daemon
@@ -1000,7 +1025,7 @@ class MainWindow(QMainWindow):
         """
         if not self._project_path:
             return
-        path  = self._project_path
+        path = self._project_path
         state = self._current_state()
 
         # Wait for any previous autosave before starting a new one.
@@ -1009,7 +1034,9 @@ class MainWindow(QMainWindow):
 
         def _run() -> None:
             try:
-                autosave_tilde(state, path, update_dem=update_dem, update_sat=update_sat)
+                autosave_tilde(
+                    state, path, update_dem=update_dem, update_sat=update_sat
+                )
                 self._tilde_fresh = True
             except Exception:
                 pass  # autosave failure is silent; user can always do a full save
@@ -1131,9 +1158,13 @@ class MainWindow(QMainWindow):
             trackpoints, _ = detect_and_repair(
                 trackpoints,
                 str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-                max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6,
+                max_speed_mps=float(
+                    str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+                )
+                / 3.6,
                 max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-                max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000,
+                max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
+                * 1_000,
             )
             self._gpx_stats.update_stats(trackpoints)
             self._track_length_m = compute_stats(trackpoints).total_distance_m
@@ -1247,7 +1278,8 @@ class MainWindow(QMainWindow):
             self._fetch_progress_bar.show()
             try:
                 self._pipeline.camera_keyframes = build_camera_path(
-                    self._pipeline, render_settings,
+                    self._pipeline,
+                    render_settings,
                     progress_callback=self._camera_path_progress,
                 )
             except CameraPathError as e:
@@ -1317,7 +1349,8 @@ class MainWindow(QMainWindow):
             self._fetch_progress_bar.show()
             try:
                 self._pipeline.camera_keyframes = build_camera_path(
-                    self._pipeline, render_settings,
+                    self._pipeline,
+                    render_settings,
                     progress_callback=self._camera_path_progress,
                 )
             except CameraPathError as e:
@@ -1335,7 +1368,7 @@ class MainWindow(QMainWindow):
             return
 
         self._status_show("Injecting camera into scene…")
-        self._fetch_progress_bar.setRange(0, 0)   # indeterminate spinner
+        self._fetch_progress_bar.setRange(0, 0)  # indeterminate spinner
         self._fetch_progress_bar.show()
         self.centralWidget().setEnabled(False)
 
@@ -1355,7 +1388,7 @@ class MainWindow(QMainWindow):
         worker.failed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         self._inject_thread = thread
-        self._inject_worker = worker   # keep reference alive
+        self._inject_worker = worker  # keep reference alive
         thread.start()
 
     def _on_inject_finished(self):
@@ -1433,9 +1466,13 @@ class MainWindow(QMainWindow):
         if repair_mode != REPAIR_NONE:
             osrm_profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
             self._status_show(f"Repairing GPX holes ({repair_mode} mode)…")
-            max_speed_mps = float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6
-            max_gap_s     = float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
-            max_jump_m    = float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000
+            max_speed_mps = (
+                float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6
+            )
+            max_gap_s = float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+            max_jump_m = (
+                float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000
+            )
             trackpoints, _cs = detect_and_repair(
                 trackpoints,
                 repair_mode,
@@ -1457,8 +1494,8 @@ class MainWindow(QMainWindow):
         # DEM / satellite fetch region.
         if trackpoints:
             bbox = BoundingBox(
-                min_lat=min(p.latitude  for p in trackpoints),
-                max_lat=max(p.latitude  for p in trackpoints),
+                min_lat=min(p.latitude for p in trackpoints),
+                max_lat=max(p.latitude for p in trackpoints),
                 min_lon=min(p.longitude for p in trackpoints),
                 max_lon=max(p.longitude for p in trackpoints),
             )
@@ -1552,10 +1589,10 @@ class MainWindow(QMainWindow):
         log_pipeline_memory(self._pipeline, "after DEM fetch")
 
         # Stage 4 — Satellite Imagery Fetcher
-        provider_id = str(self._settings.value("imagery/provider",    "esri_world"))
-        img_quality = str(self._settings.value("imagery/quality",     "standard"))
-        fetch_mode  = str(self._settings.value("imagery/fetch_mode",  "prefetch"))
-        on_demand   = fetch_mode == "on_demand"
+        provider_id = str(self._settings.value("imagery/provider", "esri_world"))
+        img_quality = str(self._settings.value("imagery/quality", "standard"))
+        fetch_mode = str(self._settings.value("imagery/fetch_mode", "prefetch"))
+        on_demand = fetch_mode == "on_demand"
         cached_sat = self._cached_satellite_texture
         if (
             cached_sat is not None
@@ -1640,8 +1677,11 @@ class MainWindow(QMainWindow):
         self._fetch_progress_bar.setRange(0, 0)
         self._fetch_progress_bar.show()
         try:
-            keyframes = build_camera_path(self._pipeline, render_settings,
-                                          progress_callback=self._camera_path_progress)
+            keyframes = build_camera_path(
+                self._pipeline,
+                render_settings,
+                progress_callback=self._camera_path_progress,
+            )
         except CameraPathError as e:
             self._fetch_progress_bar.hide()
             QMessageBox.critical(self, "Camera path error", str(e))
@@ -1908,9 +1948,11 @@ class MainWindow(QMainWindow):
         worker = _LoadWorker(
             path,
             repair_mode=str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-            max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6,
+            max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+            / 3.6,
             max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-            max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000,
+            max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
+            * 1_000,
         )
         thread = QThread(self)
         worker.moveToThread(thread)

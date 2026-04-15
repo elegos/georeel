@@ -1,4 +1,5 @@
 from typing import Any
+
 """
 Background worker: runs pipeline stages 1–5 (GPX → DEM → satellite → scene)
 so the Preview Map button can be offered as soon as the GPX is loaded.
@@ -12,8 +13,6 @@ satellite_fetched     — satellite texture was fetched/reused
 error(str)            — a stage failed; blend_path will be empty
 """
 
-import math
-
 from PySide6.QtCore import QThread, Signal
 
 from georeel.core.bounding_box import BoundingBox
@@ -25,10 +24,14 @@ from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
+from georeel.core.pipeline_memory import log_pipeline_memory
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
-from georeel.core.pipeline_memory import log_pipeline_memory
-from georeel.core.scene_builder import SceneBuildError, build_scene, _PREVIEW_MAX_TEXTURE_PIXELS
+from georeel.core.scene_builder import (
+    _PREVIEW_MAX_TEXTURE_PIXELS,
+    SceneBuildError,
+    build_scene,
+)
 from georeel.core.trackpoint import Trackpoint
 
 
@@ -37,12 +40,12 @@ def _quality_rank(q: str, order: dict[str, Any]) -> int:
 
 
 class ScenePrepWorker(QThread):
-    status         = Signal(str)
-    scene_ready    = Signal(str, object)   # (blend_path, pipeline)
-    dem_fetched    = Signal(object)        # ElevationGrid
-    satellite_fetched = Signal(object)     # SatelliteTexture
-    error          = Signal(str)
-    progress       = Signal(int, int)      # (current, total)
+    status = Signal(str)
+    scene_ready = Signal(str, object)  # (blend_path, pipeline)
+    dem_fetched = Signal(object)  # ElevationGrid
+    satellite_fetched = Signal(object)  # SatelliteTexture
+    error = Signal(str)
+    progress = Signal(int, int)  # (current, total)
 
     def __init__(
         self,
@@ -58,17 +61,17 @@ class ScenePrepWorker(QThread):
         cleaned_trackpoints: list[Trackpoint] | None = None,
     ):
         super().__init__()
-        self._gpx_path              = gpx_path
-        self._match_mode            = match_mode
-        self._tz_offset             = tz_offset_hours
-        self._settings              = render_settings
-        self._blender_exe           = blender_exe
-        self._cached_dem            = cached_elevation_grid
-        self._cached_sat            = cached_satellite_texture
-        self._api_key               = api_key
-        self._custom_url            = custom_url
-        self._cleaned_trackpoints   = cleaned_trackpoints
-        self._quality_order         = {q: i for i, q in enumerate(QUALITY_ZOOM)}
+        self._gpx_path = gpx_path
+        self._match_mode = match_mode
+        self._tz_offset = tz_offset_hours
+        self._settings = render_settings
+        self._blender_exe = blender_exe
+        self._cached_dem = cached_elevation_grid
+        self._cached_sat = cached_satellite_texture
+        self._api_key = api_key
+        self._custom_url = custom_url
+        self._cleaned_trackpoints = cleaned_trackpoints
+        self._quality_order = {q: i for i, q in enumerate(QUALITY_ZOOM)}
 
     def run(self) -> None:
         pipeline = Pipeline()
@@ -89,13 +92,14 @@ class ScenePrepWorker(QThread):
                 return
             # Apply the same cleaning as the keyframe worker so (0,0) holes
             # and speed outliers don't inflate the bbox for DEM/satellite fetches.
-            repair_mode   = self._settings.get("gpx/repair_mode", "none")
+            repair_mode = self._settings.get("gpx/repair_mode", "none")
             max_speed_mps = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
-            max_gap_s     = float(self._settings.get("gpx/max_gap_s", 30.0))
-            max_jump_m    = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
-            osrm_profile  = self._settings.get("gpx/osrm_profile", "driving")
+            max_gap_s = float(self._settings.get("gpx/max_gap_s", 30.0))
+            max_jump_m = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
+            osrm_profile = self._settings.get("gpx/osrm_profile", "driving")
             trackpoints, _ = detect_and_repair(
-                trackpoints, repair_mode,
+                trackpoints,
+                repair_mode,
                 max_speed_mps=max_speed_mps,
                 max_gap_s=max_gap_s,
                 max_jump_m=max_jump_m,
@@ -107,12 +111,12 @@ class ScenePrepWorker(QThread):
             return
 
         bbox = BoundingBox(
-            min_lat=min(tp.latitude  for tp in trackpoints),
-            max_lat=max(tp.latitude  for tp in trackpoints),
+            min_lat=min(tp.latitude for tp in trackpoints),
+            max_lat=max(tp.latitude for tp in trackpoints),
             min_lon=min(tp.longitude for tp in trackpoints),
             max_lon=max(tp.longitude for tp in trackpoints),
         )
-        pipeline.trackpoints  = trackpoints
+        pipeline.trackpoints = trackpoints
         pipeline.bounding_box = bbox
 
         # Stage 2 — Photo Matcher (best-effort; mismatches don't stop preview)
@@ -120,15 +124,19 @@ class ScenePrepWorker(QThread):
         if photos:
             self.status.emit("Auto-build: matching photos…")
             try:
-                results = match_photos(photos, trackpoints, self._match_mode,
-                                       tz_offset_hours=self._tz_offset)
+                results = match_photos(
+                    photos,
+                    trackpoints,
+                    self._match_mode,
+                    tz_offset_hours=self._tz_offset,
+                )
                 pipeline.match_results = results
             except Exception:
-                pass   # preview still works without pins
+                pass  # preview still works without pins
 
         # Expand bbox for DEM + imagery
         _distance_m = float(self._settings.get("render/camera_height_offset", 200))
-        _tilt_deg   = float(self._settings.get("render/camera_tilt_deg", 45))
+        _tilt_deg = float(self._settings.get("render/camera_tilt_deg", 45))
         _max_view_m = float(self._settings.get("render/frustum_margin_km", 50)) * 1_000
         margin_m = frustum_margin(
             height_m=_distance_m,
@@ -153,8 +161,9 @@ class ScenePrepWorker(QThread):
         else:
             self.status.emit("Auto-build: fetching DEM…")
             try:
-                grid = fetch_dem(fetch_bbox,
-                                 progress_callback=lambda c, t: self.progress.emit(c, t))
+                grid = fetch_dem(
+                    fetch_bbox, progress_callback=lambda c, t: self.progress.emit(c, t)
+                )
             except DemFetchError as e:
                 self.error.emit(f"DEM fetch error: {e}")
                 return
@@ -168,22 +177,24 @@ class ScenePrepWorker(QThread):
         for pt in pipeline.trackpoints:
             if pt.elevation is None:
                 elev = pipeline.elevation_grid.elevation_at(pt.latitude, pt.longitude)
-                filled_trackpoints.append(Trackpoint(
-                    latitude=pt.latitude,
-                    longitude=pt.longitude,
-                    elevation=elev,
-                    timestamp=pt.timestamp
-                ))
+                filled_trackpoints.append(
+                    Trackpoint(
+                        latitude=pt.latitude,
+                        longitude=pt.longitude,
+                        elevation=elev,
+                        timestamp=pt.timestamp,
+                    )
+                )
             else:
                 filled_trackpoints.append(pt)
         pipeline.trackpoints = filled_trackpoints
 
         # Stage 4 — Satellite imagery
-        provider_id  = self._settings.get("imagery/provider",    "esri_world")
-        img_quality  = self._settings.get("imagery/quality",     "standard")
-        fetch_mode   = self._settings.get("imagery/fetch_mode",  "prefetch")
-        on_demand    = fetch_mode == "on_demand"
-        cached_sat  = self._cached_sat
+        provider_id = self._settings.get("imagery/provider", "esri_world")
+        img_quality = self._settings.get("imagery/quality", "standard")
+        fetch_mode = self._settings.get("imagery/fetch_mode", "prefetch")
+        on_demand = fetch_mode == "on_demand"
+        cached_sat = self._cached_sat
         if (
             cached_sat is not None
             and cached_sat.min_lat <= fetch_bbox.min_lat
@@ -192,7 +203,7 @@ class ScenePrepWorker(QThread):
             and cached_sat.max_lon >= fetch_bbox.max_lon
             and cached_sat.provider_id == provider_id
             and _quality_rank(cached_sat.quality, self._quality_order)
-                >= _quality_rank(img_quality, self._quality_order)
+            >= _quality_rank(img_quality, self._quality_order)
         ):
             pipeline.satellite_texture = cached_sat
             self.status.emit("Auto-build: satellite texture cached, reusing.")
@@ -226,9 +237,12 @@ class ScenePrepWorker(QThread):
         # Stage 5 — 3D Scene Builder
         self.status.emit("Auto-build: building 3D scene (Blender)…")
         try:
-            blend_path = build_scene(pipeline, blender_exe=self._blender_exe,
-                                     settings=self._settings,
-                                     max_texture_pixels=_PREVIEW_MAX_TEXTURE_PIXELS)
+            blend_path = build_scene(
+                pipeline,
+                blender_exe=self._blender_exe,
+                settings=self._settings,
+                max_texture_pixels=_PREVIEW_MAX_TEXTURE_PIXELS,
+            )
         except SceneBuildError as e:
             self.error.emit(f"Scene build error: {e}")
             return

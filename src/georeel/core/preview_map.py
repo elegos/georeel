@@ -9,7 +9,6 @@ directory as the .blend.
 import logging
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path
 
 from .blender_runtime import find_blender
@@ -24,7 +23,7 @@ class PreviewMapError(Exception):
     pass
 
 
-_PREVIEW_SCALE = 3   # render at 3× the display resolution for sharpness
+_PREVIEW_SCALE = 3  # render at 3× the display resolution for sharpness
 
 
 def render_preview_map(
@@ -48,11 +47,13 @@ def render_preview_map(
 
     cmd = [
         exe,
-        "--background", blend_path,
-        "--python", str(_PREVIEW_SCRIPT),
+        "--background",
+        blend_path,
+        "--python",
+        str(_PREVIEW_SCRIPT),
         "--",
         out_path,
-        str(width  * _PREVIEW_SCALE),
+        str(width * _PREVIEW_SCALE),
         str(height * _PREVIEW_SCALE),
     ]
 
@@ -65,17 +66,16 @@ def render_preview_map(
             shell=True,
         )
     except subprocess.TimeoutExpired:
-        raise PreviewMapError(
-            f"Blender timed out after {_TIMEOUT_SECONDS} seconds."
-        )
+        raise PreviewMapError(f"Blender timed out after {_TIMEOUT_SECONDS} seconds.")
 
     blender_output = (result.stderr or "") + (result.stdout or "")
     if blender_output:
         _log.debug("Blender preview output:\n%s", blender_output)
 
     if result.returncode != 0 or not Path(out_path).is_file():
-        _log.error("Preview render failed (exit %d):\n%s",
-                   result.returncode, blender_output)
+        _log.error(
+            "Preview render failed (exit %d):\n%s", result.returncode, blender_output
+        )
         tail = blender_output[-2000:]
         raise PreviewMapError(
             f"Preview render failed (exit {result.returncode}).\n{tail}"

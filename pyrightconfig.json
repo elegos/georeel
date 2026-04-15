@@ -1,3 +1,5 @@
 {
-  "exclude": ["src/georeel/core/blender_scripts", "tests"]
+  "exclude": ["src/georeel/core/blender_scripts", "tests"],
+  "reportImplicitStringConcatenation": false,
+  "reportUnusedCallResult": false,
 }

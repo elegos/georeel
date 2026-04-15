@@ -11,10 +11,9 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .blender_runtime import find_blender
 from .camera_keyframe import CameraKeyframe
 
-_INJECT_SCRIPT        = Path(__file__).parent / "blender_scripts" / "inject_camera.py"
+_INJECT_SCRIPT = Path(__file__).parent / "blender_scripts" / "inject_camera.py"
 _SETUP_VIEWPORT_SCRIPT = Path(__file__).parent / "blender_scripts" / "setup_viewport.py"
 
 
@@ -41,20 +40,20 @@ def inject_camera_and_open(
     """
     blend = Path(blend_path)
     out_blend = blend.with_name("scene_with_camera.blend")
-    kf_path   = blend.with_name("camera_keyframes.json")
+    kf_path = blend.with_name("camera_keyframes.json")
 
     # Write keyframes JSON (include is_pause so inject_camera.py can apply
     # CONSTANT interpolation during photo-pause segments)
     kf_data = [
         {
-            "frame":      kf.frame,
-            "x":          kf.x,
-            "y":          kf.y,
-            "z":          kf.z,
-            "look_at_x":  kf.look_at_x,
-            "look_at_y":  kf.look_at_y,
-            "look_at_z":  kf.look_at_z,
-            "is_pause":   kf.is_pause,
+            "frame": kf.frame,
+            "x": kf.x,
+            "y": kf.y,
+            "z": kf.z,
+            "look_at_x": kf.look_at_x,
+            "look_at_y": kf.look_at_y,
+            "look_at_z": kf.look_at_z,
+            "is_pause": kf.is_pause,
         }
         for kf in keyframes
     ]
@@ -65,8 +64,10 @@ def inject_camera_and_open(
     # in a background thread, and injection is now fast thanks to subsampling.
     cmd = [
         blender_exe,
-        "--background", str(blend),
-        "--python", str(_INJECT_SCRIPT),
+        "--background",
+        str(blend),
+        "--python",
+        str(_INJECT_SCRIPT),
         "--",
         str(kf_path),
         str(out_blend),
@@ -91,7 +92,11 @@ def inject_camera_and_open(
     # setup_viewport.py fires via a timer once the UI event loop is ready,
     # switching every 3D viewport to Material Preview / camera view and
     # pre-selecting FlyCamera in the scene collection.
-    subprocess.Popen([
-        blender_exe, str(out_blend),
-        "--python", str(_SETUP_VIEWPORT_SCRIPT),
-    ])
+    subprocess.Popen(
+        [
+            blender_exe,
+            str(out_blend),
+            "--python",
+            str(_SETUP_VIEWPORT_SCRIPT),
+        ]
+    )

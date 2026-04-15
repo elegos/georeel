@@ -1,8 +1,8 @@
 # pyright: reportUninitializedInstanceVariable=false
-from typing import Any, cast
 import shutil
+from typing import Any, cast
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,82 +23,91 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from georeel.core.satellite.providers import PROVIDERS
-from georeel.ui.color_picker_dialog import CSS3_COLORS, ColorPickerDialog, get_color_hex
-
 from georeel.core.encoder_registry import (
     EncoderConfig,
     detect_available_encoders,
     encoders_for_codec,
     get_encoder,
 )
+from georeel.core.satellite.providers import PROVIDERS
+from georeel.ui.color_picker_dialog import ColorPickerDialog, get_color_hex
 
 # ------------------------------------------------------------------
 # QSettings keys and defaults
 # ------------------------------------------------------------------
 
-KEY_PATH_SMOOTHING        = "render/path_smoothing"          # "spline" | "dp_spline"
-KEY_HEIGHT_MODE           = "render/camera_height_mode"      # "dem_fixed" | "dem_smooth"
-KEY_HEIGHT_OFFSET         = "render/camera_height_offset"    # slant distance to track point (metres)
-KEY_ORIENTATION           = "render/camera_orientation"      # "tangent" | "lookat"
-KEY_TILT_DEG              = "render/camera_tilt_deg"         # degrees below horizontal (int)
-KEY_PHOTO_PAUSE_MODE      = "render/photo_pause_mode"        # "hold" | "ease"
-KEY_PHOTO_PAUSE_DURATION  = "render/photo_pause_duration"    # seconds (float)
-KEY_FPS                   = "render/fps"                     # int: 24 | 30 | 60
-KEY_CAMERA_SPEED          = "render/camera_speed_mps"        # metres per second (float)
-KEY_ENGINE                = "render/engine"                  # "eevee" | "cycles" | "viewport"
-KEY_ASPECT_RATIO          = "render/aspect_ratio"            # "landscape" | "portrait" | "square"
-KEY_RESOLUTION            = "render/resolution"              # see _ASPECT_RESOLUTIONS values
-KEY_QUALITY               = "render/quality"                 # "low" | "medium" | "high"
-KEY_PHOTO_TZ_OFFSET       = "render/photo_tz_offset_hours"   # float: UTC offset of camera clock
-KEY_PHOTO_TRANSITION      = "render/photo_transition"        # "fade" | "cut"
-KEY_PHOTO_FILL            = "render/photo_fill"              # "blurred" | "black"
-KEY_PHOTO_FADE_DURATION   = "render/photo_fade_duration"     # seconds (float)
-KEY_TANGENT_LOOKAHEAD_S   = "render/tangent_lookahead_s"     # seconds (float)
-KEY_TANGENT_WEIGHT        = "render/tangent_weight"          # "uniform" | "linear" | "exponential"
-KEY_PIN_COLOR             = "pins/color"                     # named color id or "custom"
-KEY_PIN_CUSTOM_COLOR      = "pins/custom_color"              # "#rrggbb" when color=="custom"
-KEY_MARKER_COLOR          = "marker/color"                   # named color id or "custom"
-KEY_MARKER_CUSTOM_COLOR   = "marker/custom_color"            # "#rrggbb" when color=="custom"
-KEY_MARKER_SHIFTING_PIN   = "marker/shifting_pin"            # bool — fade to complementary on reconstructed segments
-KEY_RIBBON_COLOR_MODE     = "ribbon/color_mode"              # "slope" | "speed"
-KEY_RIBBON_SELF_LIT       = "ribbon/self_lit"                # bool — emit at full saturation, unaffected by scene lighting
-KEY_IMAGERY_PROVIDER      = "imagery/provider"               # provider id
-KEY_IMAGERY_QUALITY       = "imagery/quality"                # "standard" | "high" | "very_high"
-KEY_IMAGERY_API_KEY       = "imagery/api_key"                # per-provider key (provider-prefixed)
-KEY_IMAGERY_CUSTOM_URL    = "imagery/custom_url"
-KEY_IMAGERY_FETCH_MODE    = "imagery/fetch_mode"             # "prefetch" | "on_demand"
-KEY_CONTAINER             = "output/container"               # "mkv" | "mp4"
-KEY_CODEC                 = "output/codec"                   # "h264" | "h265" | "av1"
-KEY_ENCODER               = "output/encoder"                 # FFmpeg encoder name
-KEY_OUTPUT_CQ             = "output/cq"                      # int
-KEY_OUTPUT_PRESET         = "output/preset"                  # string
-KEY_FRUSTUM_MARGIN_KM     = "render/frustum_margin_km"       # float km — max terrain view distance
-KEY_RENDER_SEGMENTS       = "render/n_segments"              # int: render passes (1 = single pass)
-KEY_PNG_COMPRESSION       = "render/png_compression"         # int 0–9: zlib level (0=none, 9=max)
-KEY_GPX_REPAIR_MODE       = "gpx/repair_mode"                # "none" | "ground" | "street"
-KEY_GPX_OSRM_PROFILE      = "gpx/osrm_profile"               # "driving" | "cycling" | "walking"
-KEY_GPX_MAX_SPEED_KMH     = "gpx/max_speed_kmh"             # int km/h — above this is nullified
-KEY_GPX_MAX_GAP_S         = "gpx/max_gap_s"                 # float s — gaps longer than this are filled
-KEY_GPX_MAX_JUMP_KM       = "gpx/max_jump_km"               # float km — no-timestamp fallback distance
-KEY_CACHE_USE_CUSTOM_DIR  = "cache/use_custom_dir"           # bool — use custom temp dir
-KEY_CACHE_BASE_DIR        = "cache/base_dir"                 # str  — path to custom temp dir
+KEY_PATH_SMOOTHING = "render/path_smoothing"  # "spline" | "dp_spline"
+KEY_HEIGHT_MODE = "render/camera_height_mode"  # "dem_fixed" | "dem_smooth"
+KEY_HEIGHT_OFFSET = (
+    "render/camera_height_offset"  # slant distance to track point (metres)
+)
+KEY_ORIENTATION = "render/camera_orientation"  # "tangent" | "lookat"
+KEY_TILT_DEG = "render/camera_tilt_deg"  # degrees below horizontal (int)
+KEY_PHOTO_PAUSE_MODE = "render/photo_pause_mode"  # "hold" | "ease"
+KEY_PHOTO_PAUSE_DURATION = "render/photo_pause_duration"  # seconds (float)
+KEY_FPS = "render/fps"  # int: 24 | 30 | 60
+KEY_CAMERA_SPEED = "render/camera_speed_mps"  # metres per second (float)
+KEY_ENGINE = "render/engine"  # "eevee" | "cycles" | "viewport"
+KEY_ASPECT_RATIO = "render/aspect_ratio"  # "landscape" | "portrait" | "square"
+KEY_RESOLUTION = "render/resolution"  # see _ASPECT_RESOLUTIONS values
+KEY_QUALITY = "render/quality"  # "low" | "medium" | "high"
+KEY_PHOTO_TZ_OFFSET = (
+    "render/photo_tz_offset_hours"  # float: UTC offset of camera clock
+)
+KEY_PHOTO_TRANSITION = "render/photo_transition"  # "fade" | "cut"
+KEY_PHOTO_FILL = "render/photo_fill"  # "blurred" | "black"
+KEY_PHOTO_FADE_DURATION = "render/photo_fade_duration"  # seconds (float)
+KEY_TANGENT_LOOKAHEAD_S = "render/tangent_lookahead_s"  # seconds (float)
+KEY_TANGENT_WEIGHT = "render/tangent_weight"  # "uniform" | "linear" | "exponential"
+KEY_PIN_COLOR = "pins/color"  # named color id or "custom"
+KEY_PIN_CUSTOM_COLOR = "pins/custom_color"  # "#rrggbb" when color=="custom"
+KEY_MARKER_COLOR = "marker/color"  # named color id or "custom"
+KEY_MARKER_CUSTOM_COLOR = "marker/custom_color"  # "#rrggbb" when color=="custom"
+KEY_MARKER_SHIFTING_PIN = (
+    "marker/shifting_pin"  # bool — fade to complementary on reconstructed segments
+)
+KEY_RIBBON_COLOR_MODE = "ribbon/color_mode"  # "slope" | "speed"
+KEY_RIBBON_SELF_LIT = (
+    "ribbon/self_lit"  # bool — emit at full saturation, unaffected by scene lighting
+)
+KEY_IMAGERY_PROVIDER = "imagery/provider"  # provider id
+KEY_IMAGERY_QUALITY = "imagery/quality"  # "standard" | "high" | "very_high"
+KEY_IMAGERY_API_KEY = "imagery/api_key"  # per-provider key (provider-prefixed)
+KEY_IMAGERY_CUSTOM_URL = "imagery/custom_url"
+KEY_IMAGERY_FETCH_MODE = "imagery/fetch_mode"  # "prefetch" | "on_demand"
+KEY_CONTAINER = "output/container"  # "mkv" | "mp4"
+KEY_CODEC = "output/codec"  # "h264" | "h265" | "av1"
+KEY_ENCODER = "output/encoder"  # FFmpeg encoder name
+KEY_OUTPUT_CQ = "output/cq"  # int
+KEY_OUTPUT_PRESET = "output/preset"  # string
+KEY_FRUSTUM_MARGIN_KM = (
+    "render/frustum_margin_km"  # float km — max terrain view distance
+)
+KEY_RENDER_SEGMENTS = "render/n_segments"  # int: render passes (1 = single pass)
+KEY_PNG_COMPRESSION = "render/png_compression"  # int 0–9: zlib level (0=none, 9=max)
+KEY_GPX_REPAIR_MODE = "gpx/repair_mode"  # "none" | "ground" | "street"
+KEY_GPX_OSRM_PROFILE = "gpx/osrm_profile"  # "driving" | "cycling" | "walking"
+KEY_GPX_MAX_SPEED_KMH = "gpx/max_speed_kmh"  # int km/h — above this is nullified
+KEY_GPX_MAX_GAP_S = "gpx/max_gap_s"  # float s — gaps longer than this are filled
+KEY_GPX_MAX_JUMP_KM = "gpx/max_jump_km"  # float km — no-timestamp fallback distance
+KEY_CACHE_USE_CUSTOM_DIR = "cache/use_custom_dir"  # bool — use custom temp dir
+KEY_CACHE_BASE_DIR = "cache/base_dir"  # str  — path to custom temp dir
 
 _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
     "landscape": [
-        ("720p   (1280 × 720)",   "720p"),
+        ("720p   (1280 × 720)", "720p"),
         ("1080p  (1920 × 1080)", "1080p"),
         ("1440p  (2560 × 1440)", "1440p"),
         ("4K     (3840 × 2160)", "4k"),
     ],
     "portrait": [
-        ("720 × 1280",                    "portrait_720p"),
+        ("720 × 1280", "portrait_720p"),
         ("1080 × 1920 (Instagram reel)", "portrait_1080p"),
-        ("1440 × 2560",                  "portrait_1440p"),
-        ("2160 × 3840",                  "portrait_4k"),
+        ("1440 × 2560", "portrait_1440p"),
+        ("2160 × 3840", "portrait_4k"),
     ],
     "square": [
-        ("720 × 720",   "square_720"),
+        ("720 × 720", "square_720"),
         ("1080 × 1080", "square_1080"),
         ("1440 × 1440", "square_1440"),
         ("2160 × 2160", "square_2160"),
@@ -106,51 +115,51 @@ _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
 }
 
 DEFAULTS = {
-    KEY_PATH_SMOOTHING:       "spline",
-    KEY_HEIGHT_MODE:          "dem_fixed",
-    KEY_HEIGHT_OFFSET:        2000,
-    KEY_ORIENTATION:          "tangent",
-    KEY_TILT_DEG:             45,
-    KEY_PHOTO_PAUSE_MODE:     "hold",
+    KEY_PATH_SMOOTHING: "spline",
+    KEY_HEIGHT_MODE: "dem_fixed",
+    KEY_HEIGHT_OFFSET: 2000,
+    KEY_ORIENTATION: "tangent",
+    KEY_TILT_DEG: 45,
+    KEY_PHOTO_PAUSE_MODE: "hold",
     KEY_PHOTO_PAUSE_DURATION: 3.0,
-    KEY_FPS:                  30,
-    KEY_CAMERA_SPEED:         80.0,
-    KEY_ENGINE:               "eevee",
-    KEY_ASPECT_RATIO:         "landscape",
-    KEY_RESOLUTION:           "1080p",
-    KEY_QUALITY:              "medium",
-    KEY_PHOTO_TRANSITION:     "fade",
-    KEY_PHOTO_FILL:           "blurred",
-    KEY_PHOTO_FADE_DURATION:  0.5,
-    KEY_CONTAINER:            "mkv",
-    KEY_CODEC:                "h265",
-    KEY_ENCODER:              "libx265",
-    KEY_OUTPUT_CQ:            28,
-    KEY_OUTPUT_PRESET:        "medium",
-    KEY_PHOTO_TZ_OFFSET:      0.0,
-    KEY_TANGENT_LOOKAHEAD_S:  60.0,
-    KEY_TANGENT_WEIGHT:       "linear",
-    KEY_FRUSTUM_MARGIN_KM:    50.0,
-    KEY_IMAGERY_PROVIDER:     "esri_world",
-    KEY_IMAGERY_QUALITY:      "standard",
-    KEY_IMAGERY_API_KEY:      "",
-    KEY_IMAGERY_CUSTOM_URL:   "",
-    KEY_IMAGERY_FETCH_MODE:   "prefetch",
-    KEY_PIN_COLOR:            "ForestGreen",
-    KEY_PIN_CUSTOM_COLOR:     "#228B22",
-    KEY_MARKER_COLOR:         "LightBlue",
-    KEY_MARKER_CUSTOM_COLOR:  "#ADD8E6",
-    KEY_MARKER_SHIFTING_PIN:  False,
-    KEY_RIBBON_COLOR_MODE:    "slope",
-    KEY_RIBBON_SELF_LIT:      False,
-    KEY_RENDER_SEGMENTS:      1,
-    KEY_PNG_COMPRESSION:      1,
-    KEY_GPX_REPAIR_MODE:      "none",
-    KEY_GPX_MAX_SPEED_KMH:    300,
-    KEY_GPX_MAX_GAP_S:        30.0,
-    KEY_GPX_MAX_JUMP_KM:      50.0,
+    KEY_FPS: 30,
+    KEY_CAMERA_SPEED: 80.0,
+    KEY_ENGINE: "eevee",
+    KEY_ASPECT_RATIO: "landscape",
+    KEY_RESOLUTION: "1080p",
+    KEY_QUALITY: "medium",
+    KEY_PHOTO_TRANSITION: "fade",
+    KEY_PHOTO_FILL: "blurred",
+    KEY_PHOTO_FADE_DURATION: 0.5,
+    KEY_CONTAINER: "mkv",
+    KEY_CODEC: "h265",
+    KEY_ENCODER: "libx265",
+    KEY_OUTPUT_CQ: 28,
+    KEY_OUTPUT_PRESET: "medium",
+    KEY_PHOTO_TZ_OFFSET: 0.0,
+    KEY_TANGENT_LOOKAHEAD_S: 60.0,
+    KEY_TANGENT_WEIGHT: "linear",
+    KEY_FRUSTUM_MARGIN_KM: 50.0,
+    KEY_IMAGERY_PROVIDER: "esri_world",
+    KEY_IMAGERY_QUALITY: "standard",
+    KEY_IMAGERY_API_KEY: "",
+    KEY_IMAGERY_CUSTOM_URL: "",
+    KEY_IMAGERY_FETCH_MODE: "prefetch",
+    KEY_PIN_COLOR: "ForestGreen",
+    KEY_PIN_CUSTOM_COLOR: "#228B22",
+    KEY_MARKER_COLOR: "LightBlue",
+    KEY_MARKER_CUSTOM_COLOR: "#ADD8E6",
+    KEY_MARKER_SHIFTING_PIN: False,
+    KEY_RIBBON_COLOR_MODE: "slope",
+    KEY_RIBBON_SELF_LIT: False,
+    KEY_RENDER_SEGMENTS: 1,
+    KEY_PNG_COMPRESSION: 1,
+    KEY_GPX_REPAIR_MODE: "none",
+    KEY_GPX_MAX_SPEED_KMH: 300,
+    KEY_GPX_MAX_GAP_S: 30.0,
+    KEY_GPX_MAX_JUMP_KM: 50.0,
     KEY_CACHE_USE_CUSTOM_DIR: False,
-    KEY_CACHE_BASE_DIR:       "",
+    KEY_CACHE_BASE_DIR: "",
 }
 
 
@@ -166,6 +175,7 @@ def get_render_settings(settings: QSettings) -> dict[str, Any]:
 # Dialog
 # ------------------------------------------------------------------
 
+
 class RenderSettingsDialog(QDialog):
     def __init__(self, settings: QSettings, parent=None):
         super().__init__(parent)
@@ -179,16 +189,18 @@ class RenderSettingsDialog(QDialog):
 
         tabs = QTabWidget()
         tabs.setTabPosition(QTabWidget.TabPosition.West)
-        tabs.addTab(self._build_playback_tab(),  "Playback")
-        tabs.addTab(self._build_camera_tab(),    "Camera")
+        tabs.addTab(self._build_playback_tab(), "Playback")
+        tabs.addTab(self._build_camera_tab(), "Camera")
         tabs.addTab(self._build_rendering_tab(), "Rendering")
-        tabs.addTab(self._build_photos_tab(),    "Photos")
-        tabs.addTab(self._build_map_tab(),       "Map")
-        tabs.addTab(self._build_pins_tab(),      "Pins")
-        tabs.addTab(self._build_output_tab(),    "Output")
+        tabs.addTab(self._build_photos_tab(), "Photos")
+        tabs.addTab(self._build_map_tab(), "Map")
+        tabs.addTab(self._build_pins_tab(), "Pins")
+        tabs.addTab(self._build_output_tab(), "Output")
         root.addWidget(tabs)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(self._save_and_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -212,8 +224,9 @@ class RenderSettingsDialog(QDialog):
         )
         for fps in (24, 30, 60):
             self._fps_combo.addItem(f"{fps} fps", fps)
-        _set_combo(self._fps_combo,
-                   int(str(self._settings.value(KEY_FPS, DEFAULTS[KEY_FPS]))))
+        _set_combo(
+            self._fps_combo, int(str(self._settings.value(KEY_FPS, DEFAULTS[KEY_FPS])))
+        )
         form.addRow("Frame rate:", self._fps_combo)
 
         layout.addWidget(group)
@@ -234,9 +247,13 @@ class RenderSettingsDialog(QDialog):
             "  reduces jitter from noisy GPS at the cost of some positional accuracy."
         )
         self._path_combo.addItem("B-spline through all trackpoints", "spline")
-        self._path_combo.addItem("Douglas-Peucker simplification + B-spline", "dp_spline")
-        _set_combo(self._path_combo,
-                   str(self._settings.value(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING])))
+        self._path_combo.addItem(
+            "Douglas-Peucker simplification + B-spline", "dp_spline"
+        )
+        _set_combo(
+            self._path_combo,
+            str(self._settings.value(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING])),
+        )
         path_form.addRow("Method:", self._path_combo)
 
         # Height
@@ -250,8 +267,10 @@ class RenderSettingsDialog(QDialog):
         )
         self._height_combo.addItem("Fixed offset above DEM", "dem_fixed")
         self._height_combo.addItem("Smoothed DEM offset", "dem_smooth")
-        _set_combo(self._height_combo,
-                   self._settings.value(KEY_HEIGHT_MODE, DEFAULTS[KEY_HEIGHT_MODE]))
+        _set_combo(
+            self._height_combo,
+            self._settings.value(KEY_HEIGHT_MODE, DEFAULTS[KEY_HEIGHT_MODE]),
+        )
         height_form.addRow("Mode:", self._height_combo)
         self._height_spin = QSpinBox()
         self._height_spin.setRange(5, 5000)
@@ -262,7 +281,11 @@ class RenderSettingsDialog(QDialog):
             "Typical values: 500–1500 m for hiking, 1000–3000 m for cycling/driving."
         )
         self._height_spin.setValue(
-            int(str(self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET])))
+            int(
+                str(
+                    self._settings.value(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET])
+                )
+            )
         )
         height_form.addRow("Distance to track:", self._height_spin)
 
@@ -278,8 +301,10 @@ class RenderSettingsDialog(QDialog):
         )
         self._orient_combo.addItem("Path tangent (look forward)", "tangent")
         self._orient_combo.addItem("Look at next waypoint", "lookat")
-        _set_combo(self._orient_combo,
-                   self._settings.value(KEY_ORIENTATION, DEFAULTS[KEY_ORIENTATION]))
+        _set_combo(
+            self._orient_combo,
+            self._settings.value(KEY_ORIENTATION, DEFAULTS[KEY_ORIENTATION]),
+        )
         orient_form.addRow("Method:", self._orient_combo)
         self._tilt_spin = QSpinBox()
         self._tilt_spin.setRange(0, 89)
@@ -301,8 +326,13 @@ class RenderSettingsDialog(QDialog):
         self._frustum_spin.setDecimals(0)
         self._frustum_spin.setSuffix(" km")
         self._frustum_spin.setValue(
-            float(str(self._settings.value(KEY_FRUSTUM_MARGIN_KM,
-                                       DEFAULTS[KEY_FRUSTUM_MARGIN_KM])))
+            float(
+                str(
+                    self._settings.value(
+                        KEY_FRUSTUM_MARGIN_KM, DEFAULTS[KEY_FRUSTUM_MARGIN_KM]
+                    )
+                )
+            )
         )
         self._frustum_spin.setToolTip(
             "Maximum terrain fetch distance around the track.\n"
@@ -323,8 +353,13 @@ class RenderSettingsDialog(QDialog):
             "the actual path more tightly. Only applies when Method = Path tangent."
         )
         self._lookahead_spin.setValue(
-            float(str(self._settings.value(KEY_TANGENT_LOOKAHEAD_S,
-                                       DEFAULTS[KEY_TANGENT_LOOKAHEAD_S])))
+            float(
+                str(
+                    self._settings.value(
+                        KEY_TANGENT_LOOKAHEAD_S, DEFAULTS[KEY_TANGENT_LOOKAHEAD_S]
+                    )
+                )
+            )
         )
         orient_form.addRow("Look-ahead:", self._lookahead_spin)
 
@@ -337,10 +372,12 @@ class RenderSettingsDialog(QDialog):
             "Exponential: very strongly biased toward the nearest points — tightest."
         )
         self._tangent_weight_combo.addItem("Linear falloff (recommended)", "linear")
-        self._tangent_weight_combo.addItem("Uniform (equal weight)",        "uniform")
-        self._tangent_weight_combo.addItem("Exponential (near-biased)",     "exponential")
-        _set_combo(self._tangent_weight_combo,
-                   self._settings.value(KEY_TANGENT_WEIGHT, DEFAULTS[KEY_TANGENT_WEIGHT]))
+        self._tangent_weight_combo.addItem("Uniform (equal weight)", "uniform")
+        self._tangent_weight_combo.addItem("Exponential (near-biased)", "exponential")
+        _set_combo(
+            self._tangent_weight_combo,
+            self._settings.value(KEY_TANGENT_WEIGHT, DEFAULTS[KEY_TANGENT_WEIGHT]),
+        )
         orient_form.addRow("Weight distribution:", self._tangent_weight_combo)
 
         # Photo pause (camera movement)
@@ -355,8 +392,10 @@ class RenderSettingsDialog(QDialog):
         )
         self._pause_combo.addItem("Hold (freeze camera)", "hold")
         self._pause_combo.addItem("Ease in / hold / ease out", "ease")
-        _set_combo(self._pause_combo,
-                   self._settings.value(KEY_PHOTO_PAUSE_MODE, DEFAULTS[KEY_PHOTO_PAUSE_MODE]))
+        _set_combo(
+            self._pause_combo,
+            self._settings.value(KEY_PHOTO_PAUSE_MODE, DEFAULTS[KEY_PHOTO_PAUSE_MODE]),
+        )
         pause_form.addRow("Camera movement:", self._pause_combo)
         self._pause_spin = QDoubleSpinBox()
         self._pause_spin.setRange(0.5, 30.0)
@@ -367,8 +406,13 @@ class RenderSettingsDialog(QDialog):
             "Applies to every photo equally. Default: 3 s."
         )
         self._pause_spin.setValue(
-            float(str(self._settings.value(KEY_PHOTO_PAUSE_DURATION,
-                                       DEFAULTS[KEY_PHOTO_PAUSE_DURATION])))
+            float(
+                str(
+                    self._settings.value(
+                        KEY_PHOTO_PAUSE_DURATION, DEFAULTS[KEY_PHOTO_PAUSE_DURATION]
+                    )
+                )
+            )
         )
         pause_form.addRow("Duration per photo:", self._pause_spin)
 
@@ -399,8 +443,9 @@ class RenderSettingsDialog(QDialog):
         self._engine_combo.addItem("Viewport (draft, fastest)", "viewport")
         self._engine_combo.addItem("EEVEE (fast, rasterisation)", "eevee")
         self._engine_combo.addItem("Cycles (slow, path tracing)", "cycles")
-        _set_combo(self._engine_combo,
-                   self._settings.value(KEY_ENGINE, DEFAULTS[KEY_ENGINE]))
+        _set_combo(
+            self._engine_combo, self._settings.value(KEY_ENGINE, DEFAULTS[KEY_ENGINE])
+        )
         form.addRow("Engine:", self._engine_combo)
 
         self._aspect_combo = QComboBox()
@@ -411,9 +456,11 @@ class RenderSettingsDialog(QDialog):
             "Square (1:1) — Instagram feed posts."
         )
         self._aspect_combo.addItem("Landscape (16:9)", "landscape")
-        self._aspect_combo.addItem("Portrait (9:16)",  "portrait")
-        self._aspect_combo.addItem("Square (1:1)",     "square")
-        saved_aspect = str(self._settings.value(KEY_ASPECT_RATIO, DEFAULTS[KEY_ASPECT_RATIO]))
+        self._aspect_combo.addItem("Portrait (9:16)", "portrait")
+        self._aspect_combo.addItem("Square (1:1)", "square")
+        saved_aspect = str(
+            self._settings.value(KEY_ASPECT_RATIO, DEFAULTS[KEY_ASPECT_RATIO])
+        )
         _set_combo(self._aspect_combo, saved_aspect)
         form.addRow("Aspect ratio:", self._aspect_combo)
 
@@ -423,7 +470,9 @@ class RenderSettingsDialog(QDialog):
             "Higher resolutions are sharper but take proportionally longer to render\n"
             "and produce larger files. 1080p is a good default for most uses."
         )
-        saved_resolution = str(self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION]))
+        saved_resolution = str(
+            self._settings.value(KEY_RESOLUTION, DEFAULTS[KEY_RESOLUTION])
+        )
         self._populate_resolution_combo(saved_aspect, saved_resolution)
         form.addRow("Resolution:", self._resolution_combo)
 
@@ -434,17 +483,25 @@ class RenderSettingsDialog(QDialog):
             "Medium: good balance of speed and quality for most scenes.\n"
             "High: clean output suitable for final export; doubles render time vs. Medium."
         )
-        self._quality_combo.addItem("Low    (EEVEE 32  / Cycles 64 samples)",  "low")
+        self._quality_combo.addItem("Low    (EEVEE 32  / Cycles 64 samples)", "low")
         self._quality_combo.addItem("Medium (EEVEE 64  / Cycles 128 samples)", "medium")
         self._quality_combo.addItem("High   (EEVEE 128 / Cycles 256 samples)", "high")
-        _set_combo(self._quality_combo,
-                   self._settings.value(KEY_QUALITY, DEFAULTS[KEY_QUALITY]))
+        _set_combo(
+            self._quality_combo,
+            self._settings.value(KEY_QUALITY, DEFAULTS[KEY_QUALITY]),
+        )
         form.addRow("Quality:", self._quality_combo)
 
         self._png_compression_spin = QSpinBox()
         self._png_compression_spin.setRange(0, 9)
         self._png_compression_spin.setValue(
-            int(str(self._settings.value(KEY_PNG_COMPRESSION, DEFAULTS[KEY_PNG_COMPRESSION])))
+            int(
+                str(
+                    self._settings.value(
+                        KEY_PNG_COMPRESSION, DEFAULTS[KEY_PNG_COMPRESSION]
+                    )
+                )
+            )
         )
         self._png_compression_spin.setToolTip(
             "zlib compression level for intermediate PNG frames (0–9).\n"
@@ -459,7 +516,13 @@ class RenderSettingsDialog(QDialog):
         self._segments_spin = QSpinBox()
         self._segments_spin.setRange(1, 16)
         self._segments_spin.setValue(
-            int(str(self._settings.value(KEY_RENDER_SEGMENTS, DEFAULTS[KEY_RENDER_SEGMENTS])))
+            int(
+                str(
+                    self._settings.value(
+                        KEY_RENDER_SEGMENTS, DEFAULTS[KEY_RENDER_SEGMENTS]
+                    )
+                )
+            )
         )
         self._segments_spin.setToolTip(
             "Split the render into N sequential passes.\n"
@@ -478,7 +541,9 @@ class RenderSettingsDialog(QDialog):
 
     def _populate_resolution_combo(self, aspect: str, saved_resolution: str) -> None:
         self._resolution_combo.clear()
-        for label, value in _ASPECT_RESOLUTIONS.get(aspect, _ASPECT_RESOLUTIONS["landscape"]):
+        for label, value in _ASPECT_RESOLUTIONS.get(
+            aspect, _ASPECT_RESOLUTIONS["landscape"]
+        ):
             self._resolution_combo.addItem(label, value)
         _set_combo(self._resolution_combo, saved_resolution)
         if self._resolution_combo.currentIndex() < 0:
@@ -506,8 +571,10 @@ class RenderSettingsDialog(QDialog):
         )
         self._transition_combo.addItem("Fade (cross-dissolve)", "fade")
         self._transition_combo.addItem("Cut (hard edit)", "cut")
-        _set_combo(self._transition_combo,
-                   self._settings.value(KEY_PHOTO_TRANSITION, DEFAULTS[KEY_PHOTO_TRANSITION]))
+        _set_combo(
+            self._transition_combo,
+            self._settings.value(KEY_PHOTO_TRANSITION, DEFAULTS[KEY_PHOTO_TRANSITION]),
+        )
         form.addRow("Transition:", self._transition_combo)
 
         self._fill_combo = QComboBox()
@@ -519,8 +586,10 @@ class RenderSettingsDialog(QDialog):
         )
         self._fill_combo.addItem("Blurred fill", "blurred")
         self._fill_combo.addItem("Black bars", "black")
-        _set_combo(self._fill_combo,
-                   self._settings.value(KEY_PHOTO_FILL, DEFAULTS[KEY_PHOTO_FILL]))
+        _set_combo(
+            self._fill_combo,
+            self._settings.value(KEY_PHOTO_FILL, DEFAULTS[KEY_PHOTO_FILL]),
+        )
         form.addRow("Letterbox fill:", self._fill_combo)
 
         self._fade_dur_spin = QDoubleSpinBox()
@@ -533,8 +602,13 @@ class RenderSettingsDialog(QDialog):
             "Only used when Transition = Fade. Range: 0.1–2.0 s."
         )
         self._fade_dur_spin.setValue(
-            float(str(self._settings.value(KEY_PHOTO_FADE_DURATION,
-                                       DEFAULTS[KEY_PHOTO_FADE_DURATION])))
+            float(
+                str(
+                    self._settings.value(
+                        KEY_PHOTO_FADE_DURATION, DEFAULTS[KEY_PHOTO_FADE_DURATION]
+                    )
+                )
+            )
         )
         form.addRow("Fade duration:", self._fade_dur_spin)
 
@@ -557,8 +631,10 @@ class RenderSettingsDialog(QDialog):
         )
         for p in PROVIDERS:
             self._provider_combo.addItem(p.label, p.id)
-        _set_combo(self._provider_combo,
-                   self._settings.value(KEY_IMAGERY_PROVIDER, DEFAULTS[KEY_IMAGERY_PROVIDER]))
+        _set_combo(
+            self._provider_combo,
+            self._settings.value(KEY_IMAGERY_PROVIDER, DEFAULTS[KEY_IMAGERY_PROVIDER]),
+        )
         form.addRow("Provider:", self._provider_combo)
 
         self._imagery_quality_combo = QComboBox()
@@ -569,11 +645,17 @@ class RenderSettingsDialog(QDialog):
             "Very High (zoom 17, ~1.2 m/px) — maximum detail; only practical for\n"
             "  short tracks or areas with very dense tile coverage."
         )
-        self._imagery_quality_combo.addItem("Standard  (zoom 13, ~19 m/pixel)", "standard")
+        self._imagery_quality_combo.addItem(
+            "Standard  (zoom 13, ~19 m/pixel)", "standard"
+        )
         self._imagery_quality_combo.addItem("High      (zoom 15,  ~5 m/pixel)", "high")
-        self._imagery_quality_combo.addItem("Very High (zoom 17, ~1.2 m/pixel, slow for large areas)", "very_high")
-        _set_combo(self._imagery_quality_combo,
-                   self._settings.value(KEY_IMAGERY_QUALITY, DEFAULTS[KEY_IMAGERY_QUALITY]))
+        self._imagery_quality_combo.addItem(
+            "Very High (zoom 17, ~1.2 m/pixel, slow for large areas)", "very_high"
+        )
+        _set_combo(
+            self._imagery_quality_combo,
+            self._settings.value(KEY_IMAGERY_QUALITY, DEFAULTS[KEY_IMAGERY_QUALITY]),
+        )
         form.addRow("Detail level:", self._imagery_quality_combo)
 
         self._imagery_fetch_mode_combo = QComboBox()
@@ -588,8 +670,12 @@ class RenderSettingsDialog(QDialog):
             "On-demand: tiles are fetched lazily as each terrain tile is processed — no upfront\n"
             "wait, lower peak memory, but individual scene tiles take slightly longer."
         )
-        _set_combo(self._imagery_fetch_mode_combo,
-                   self._settings.value(KEY_IMAGERY_FETCH_MODE, DEFAULTS[KEY_IMAGERY_FETCH_MODE]))
+        _set_combo(
+            self._imagery_fetch_mode_combo,
+            self._settings.value(
+                KEY_IMAGERY_FETCH_MODE, DEFAULTS[KEY_IMAGERY_FETCH_MODE]
+            ),
+        )
         form.addRow("Fetch mode:", self._imagery_fetch_mode_combo)
 
         self._api_key_label = QLabel("API key:")
@@ -624,7 +710,9 @@ class RenderSettingsDialog(QDialog):
         cache_group = QGroupBox("Temp & cache")
         cache_form = QFormLayout(cache_group)
 
-        self._cache_custom_dir_check = QCheckBox("Use custom directory for temporary files")
+        self._cache_custom_dir_check = QCheckBox(
+            "Use custom directory for temporary files"
+        )
         self._cache_custom_dir_check.setToolTip(
             "By default GeoReel writes temporary tile caches, scene files, rendered\n"
             "frames, etc. to the system temp directory (/tmp on Linux/macOS).\n"
@@ -632,7 +720,9 @@ class RenderSettingsDialog(QDialog):
             "(useful when /tmp is a RAM-disk or has limited space)."
         )
         use_custom = self._settings.value(KEY_CACHE_USE_CUSTOM_DIR, False)
-        self._cache_custom_dir_check.setChecked(bool(use_custom) and use_custom != "false")
+        self._cache_custom_dir_check.setChecked(
+            bool(use_custom) and use_custom != "false"
+        )
         cache_form.addRow(self._cache_custom_dir_check)
 
         dir_row = QWidget()
@@ -649,7 +739,9 @@ class RenderSettingsDialog(QDialog):
         self._cache_dir_edit.setText(str(self._settings.value(KEY_CACHE_BASE_DIR, "")))
         self._cache_dir_browse_btn = QPushButton("Browse…")
         self._cache_dir_browse_btn.setFixedWidth(80)
-        self._cache_dir_browse_btn.setToolTip("Open a folder picker to choose the custom temp directory.")
+        self._cache_dir_browse_btn.setToolTip(
+            "Open a folder picker to choose the custom temp directory."
+        )
         self._cache_dir_browse_btn.clicked.connect(self._browse_cache_dir)
         dir_layout.addWidget(self._cache_dir_edit)
         dir_layout.addWidget(self._cache_dir_browse_btn)
@@ -663,7 +755,7 @@ class RenderSettingsDialog(QDialog):
         layout.addStretch()
 
         self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        self._on_provider_changed()   # set initial visibility
+        self._on_provider_changed()  # set initial visibility
 
         return tab
 
@@ -674,8 +766,14 @@ class RenderSettingsDialog(QDialog):
         marker_group = QGroupBox("Track marker")
         marker_form = QFormLayout(marker_group)
 
-        self._marker_color_name = str(self._settings.value(KEY_MARKER_COLOR,        DEFAULTS[KEY_MARKER_COLOR]))
-        self._marker_custom_color = str(self._settings.value(KEY_MARKER_CUSTOM_COLOR, DEFAULTS[KEY_MARKER_CUSTOM_COLOR]))
+        self._marker_color_name = str(
+            self._settings.value(KEY_MARKER_COLOR, DEFAULTS[KEY_MARKER_COLOR])
+        )
+        self._marker_custom_color = str(
+            self._settings.value(
+                KEY_MARKER_CUSTOM_COLOR, DEFAULTS[KEY_MARKER_CUSTOM_COLOR]
+            )
+        )
 
         marker_swatch_row = QWidget()
         marker_swatch_layout = QHBoxLayout(marker_swatch_row)
@@ -687,7 +785,9 @@ class RenderSettingsDialog(QDialog):
         self._marker_color_label = QLabel()
         marker_change_btn = QPushButton("Change…")
         marker_change_btn.setFixedWidth(80)
-        marker_change_btn.setToolTip("Pick a new color for the track-position marker shown in the 3D scene.")
+        marker_change_btn.setToolTip(
+            "Pick a new color for the track-position marker shown in the 3D scene."
+        )
         marker_change_btn.clicked.connect(self._change_marker_color)
         marker_swatch_layout.addWidget(self._marker_swatch)
         marker_swatch_layout.addWidget(self._marker_color_label)
@@ -701,10 +801,12 @@ class RenderSettingsDialog(QDialog):
         group = QGroupBox("Photo waypoint pins")
         form = QFormLayout(group)
 
-        saved_name = str(self._settings.value(KEY_PIN_COLOR,        DEFAULTS[KEY_PIN_COLOR]))
-        saved_custom = str(self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR]))
+        saved_name = str(self._settings.value(KEY_PIN_COLOR, DEFAULTS[KEY_PIN_COLOR]))
+        saved_custom = str(
+            self._settings.value(KEY_PIN_CUSTOM_COLOR, DEFAULTS[KEY_PIN_CUSTOM_COLOR])
+        )
 
-        self._pin_color_name   = saved_name
+        self._pin_color_name = saved_name
         self._pin_custom_color = saved_custom
 
         # One row: swatch + resolved name + "Change…" button
@@ -721,7 +823,9 @@ class RenderSettingsDialog(QDialog):
 
         change_btn = QPushButton("Change…")
         change_btn.setFixedWidth(80)
-        change_btn.setToolTip("Pick a new color for the pins that mark photo waypoints in the 3D scene.")
+        change_btn.setToolTip(
+            "Pick a new color for the pins that mark photo waypoints in the 3D scene."
+        )
         change_btn.clicked.connect(self._change_pin_color)
 
         swatch_layout.addWidget(self._pin_swatch)
@@ -755,7 +859,7 @@ class RenderSettingsDialog(QDialog):
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._marker_color_name   = dlg.selected_name()
+            self._marker_color_name = dlg.selected_name()
             self._marker_custom_color = dlg.custom_hex()
             self._refresh_marker_swatch()
 
@@ -777,7 +881,7 @@ class RenderSettingsDialog(QDialog):
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._pin_color_name   = dlg.selected_name()
+            self._pin_color_name = dlg.selected_name()
             self._pin_custom_color = dlg.custom_hex()
             self._refresh_pin_swatch()
 
@@ -795,6 +899,7 @@ class RenderSettingsDialog(QDialog):
 
     def _on_provider_changed(self) -> None:
         from georeel.core.satellite.providers import get_provider
+
         p = get_provider(self._provider_combo.currentData() or "esri_world")
         show_key = p.requires_key
         show_url = p.id == "custom"
@@ -810,14 +915,14 @@ class RenderSettingsDialog(QDialog):
 
         # Detect available encoders once at dialog open (fast, < 1 s)
         ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-        self._available_encoders = detect_available_encoders(ffmpeg)
-        self._ffmpeg_path = ffmpeg
+        self._available_encoders: set[str] = detect_available_encoders(ffmpeg)
+        self._ffmpeg_path: str = ffmpeg
 
         group = QGroupBox("Video output")
         form = QFormLayout(group)
 
         # Container
-        self._container_combo = QComboBox()
+        self._container_combo: QComboBox = QComboBox()
         self._container_combo.setToolTip(
             "Output file container format.\n"
             "MKV: open standard, supports metadata attachments (GPX, settings);\n"
@@ -826,13 +931,15 @@ class RenderSettingsDialog(QDialog):
             "  does not support embedded metadata attachments."
         )
         self._container_combo.addItem("Matroska (.mkv)", "mkv")
-        self._container_combo.addItem("MPEG-4 (.mp4)",   "mp4")
-        _set_combo(self._container_combo,
-                   self._settings.value(KEY_CONTAINER, DEFAULTS[KEY_CONTAINER]))
+        self._container_combo.addItem("MPEG-4 (.mp4)", "mp4")
+        _set_combo(
+            self._container_combo,
+            self._settings.value(KEY_CONTAINER, DEFAULTS[KEY_CONTAINER]),
+        )
         form.addRow("Container:", self._container_combo)
 
         # Codec
-        self._out_codec_combo = QComboBox()
+        self._out_codec_combo: QComboBox = QComboBox()
         self._out_codec_combo.setToolTip(
             "Video compression codec.\n"
             "H.264: fastest encode/decode, widest compatibility — good default.\n"
@@ -840,15 +947,16 @@ class RenderSettingsDialog(QDialog):
             "  hardware-accelerated on most modern GPUs.\n"
             "AV1: best compression, royalty-free; encode is very slow on CPU."
         )
-        self._out_codec_combo.addItem("H.264 (AVC)",  "h264")
+        self._out_codec_combo.addItem("H.264 (AVC)", "h264")
         self._out_codec_combo.addItem("H.265 (HEVC)", "h265")
-        self._out_codec_combo.addItem("AV1",           "av1")
-        _set_combo(self._out_codec_combo,
-                   self._settings.value(KEY_CODEC, DEFAULTS[KEY_CODEC]))
+        self._out_codec_combo.addItem("AV1", "av1")
+        _set_combo(
+            self._out_codec_combo, self._settings.value(KEY_CODEC, DEFAULTS[KEY_CODEC])
+        )
         form.addRow("Codec:", self._out_codec_combo)
 
         # Encoder (dynamic, populated by _refresh_encoders)
-        self._encoder_combo = QComboBox()
+        self._encoder_combo: QComboBox = QComboBox()
         self._encoder_combo.setToolTip(
             "FFmpeg encoder implementation for the chosen codec.\n"
             "Software encoders (libx264, libx265) run on the CPU — universally\n"
@@ -859,7 +967,7 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Encoder:", self._encoder_combo)
 
         # CQ
-        self._out_cq_spin = QSpinBox()
+        self._out_cq_spin: QSpinBox = QSpinBox()
         self._out_cq_spin.setRange(0, 63)
         self._out_cq_spin.setToolTip(
             "Constant Quality factor (CQ/CRF) — lower = higher quality, larger file.\n"
@@ -869,7 +977,7 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Quality (CQ/CRF):", self._out_cq_spin)
 
         # Preset (dynamic)
-        self._preset_combo = QComboBox()
+        self._preset_combo: QComboBox = QComboBox()
         self._preset_combo.setToolTip(
             "Encoder speed preset — controls the trade-off between encode speed\n"
             "and compression efficiency at the same quality level.\n"
@@ -879,12 +987,12 @@ class RenderSettingsDialog(QDialog):
         form.addRow("Preset:", self._preset_combo)
 
         # Suggestion label
-        self._suggestion_label = QLabel()
+        self._suggestion_label: QLabel = QLabel()
         self._suggestion_label.setWordWrap(True)
         form.addRow("Suggestion:", self._suggestion_label)
 
         # Apply suggestion button
-        self._apply_btn = QPushButton("Apply suggestion")
+        self._apply_btn: QPushButton = QPushButton("Apply suggestion")
         self._apply_btn.setToolTip(
             "Automatically fill Encoder, Quality, and Preset with the recommended\n"
             "settings for the chosen codec based on what is available on this system."
@@ -895,7 +1003,7 @@ class RenderSettingsDialog(QDialog):
         layout.addWidget(group)
 
         # Detection status — shown only when something looks wrong
-        self._detect_label = QLabel()
+        self._detect_label: QLabel = QLabel()
         self._detect_label.setWordWrap(True)
         if not self._available_encoders:
             self._detect_label.setText(
@@ -907,11 +1015,15 @@ class RenderSettingsDialog(QDialog):
         layout.addStretch()
 
         # Populate encoder combo for the current codec (blocks signals during init)
-        self._refreshing = False
+        self._refreshing: bool = False
         self._refresh_encoders(
-            saved_encoder = str(self._settings.value(KEY_ENCODER, DEFAULTS[KEY_ENCODER])),
-            saved_cq=int(str(self._settings.value(KEY_OUTPUT_CQ, DEFAULTS[KEY_OUTPUT_CQ]))),
-            saved_preset = str(self._settings.value(KEY_OUTPUT_PRESET, DEFAULTS[KEY_OUTPUT_PRESET])),
+            saved_encoder=str(self._settings.value(KEY_ENCODER, DEFAULTS[KEY_ENCODER])),
+            saved_cq=int(
+                str(self._settings.value(KEY_OUTPUT_CQ, DEFAULTS[KEY_OUTPUT_CQ]))
+            ),
+            saved_preset=str(
+                self._settings.value(KEY_OUTPUT_PRESET, DEFAULTS[KEY_OUTPUT_PRESET])
+            ),
         )
 
         # Connect signals after init to avoid spurious resets
@@ -966,8 +1078,9 @@ class RenderSettingsDialog(QDialog):
         """Update CQ range, preset combo, and suggestion for *enc*."""
         self._out_cq_spin.blockSignals(True)
         self._out_cq_spin.setRange(*enc.cq_range)
-        self._out_cq_spin.setValue(cq if enc.cq_range[0] <= cq <= enc.cq_range[1]
-                                   else enc.default_cq)
+        self._out_cq_spin.setValue(
+            cq if enc.cq_range[0] <= cq <= enc.cq_range[1] else enc.default_cq
+        )
         self._out_cq_spin.blockSignals(False)
 
         self._preset_combo.blockSignals(True)
@@ -1000,48 +1113,65 @@ class RenderSettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _save_and_accept(self):
-        self._settings.setValue(KEY_FPS,                 self._fps_combo.currentData())
-        self._settings.setValue(KEY_PATH_SMOOTHING,      self._path_combo.currentData())
-        self._settings.setValue(KEY_HEIGHT_MODE,         self._height_combo.currentData())
-        self._settings.setValue(KEY_HEIGHT_OFFSET,        self._height_spin.value())
-        self._settings.setValue(KEY_ORIENTATION,          self._orient_combo.currentData())
-        self._settings.setValue(KEY_TILT_DEG,             self._tilt_spin.value())
-        self._settings.setValue(KEY_FRUSTUM_MARGIN_KM,    self._frustum_spin.value())
-        self._settings.setValue(KEY_TANGENT_LOOKAHEAD_S,  self._lookahead_spin.value())
-        self._settings.setValue(KEY_TANGENT_WEIGHT,       self._tangent_weight_combo.currentData())
-        self._settings.setValue(KEY_PHOTO_PAUSE_MODE,    self._pause_combo.currentData())
+        self._settings.setValue(KEY_FPS, self._fps_combo.currentData())
+        self._settings.setValue(KEY_PATH_SMOOTHING, self._path_combo.currentData())
+        self._settings.setValue(KEY_HEIGHT_MODE, self._height_combo.currentData())
+        self._settings.setValue(KEY_HEIGHT_OFFSET, self._height_spin.value())
+        self._settings.setValue(KEY_ORIENTATION, self._orient_combo.currentData())
+        self._settings.setValue(KEY_TILT_DEG, self._tilt_spin.value())
+        self._settings.setValue(KEY_FRUSTUM_MARGIN_KM, self._frustum_spin.value())
+        self._settings.setValue(KEY_TANGENT_LOOKAHEAD_S, self._lookahead_spin.value())
+        self._settings.setValue(
+            KEY_TANGENT_WEIGHT, self._tangent_weight_combo.currentData()
+        )
+        self._settings.setValue(KEY_PHOTO_PAUSE_MODE, self._pause_combo.currentData())
         self._settings.setValue(KEY_PHOTO_PAUSE_DURATION, self._pause_spin.value())
-        self._settings.setValue(KEY_ENGINE,              self._engine_combo.currentData())
-        self._settings.setValue(KEY_ASPECT_RATIO,        self._aspect_combo.currentData())
-        self._settings.setValue(KEY_RESOLUTION,          self._resolution_combo.currentData())
-        self._settings.setValue(KEY_QUALITY,             self._quality_combo.currentData())
-        self._settings.setValue(KEY_PNG_COMPRESSION,     self._png_compression_spin.value())
-        self._settings.setValue(KEY_RENDER_SEGMENTS,     self._segments_spin.value())
-        self._settings.setValue(KEY_PHOTO_TRANSITION,    self._transition_combo.currentData())
-        self._settings.setValue(KEY_PHOTO_FILL,          self._fill_combo.currentData())
+        self._settings.setValue(KEY_ENGINE, self._engine_combo.currentData())
+        self._settings.setValue(KEY_ASPECT_RATIO, self._aspect_combo.currentData())
+        self._settings.setValue(KEY_RESOLUTION, self._resolution_combo.currentData())
+        self._settings.setValue(KEY_QUALITY, self._quality_combo.currentData())
+        self._settings.setValue(KEY_PNG_COMPRESSION, self._png_compression_spin.value())
+        self._settings.setValue(KEY_RENDER_SEGMENTS, self._segments_spin.value())
+        self._settings.setValue(
+            KEY_PHOTO_TRANSITION, self._transition_combo.currentData()
+        )
+        self._settings.setValue(KEY_PHOTO_FILL, self._fill_combo.currentData())
         self._settings.setValue(KEY_PHOTO_FADE_DURATION, self._fade_dur_spin.value())
-        self._settings.setValue(KEY_CONTAINER,  self._container_combo.currentData())
-        self._settings.setValue(KEY_CODEC,       self._out_codec_combo.currentData())
-        self._settings.setValue(KEY_ENCODER,     self._encoder_combo.currentData())
-        self._settings.setValue(KEY_OUTPUT_CQ,   self._out_cq_spin.value())
-        self._settings.setValue(KEY_OUTPUT_PRESET, self._preset_combo.currentData() or "")
-        self._settings.setValue(KEY_IMAGERY_PROVIDER,    self._provider_combo.currentData())
-        self._settings.setValue(KEY_IMAGERY_QUALITY,     self._imagery_quality_combo.currentData())
-        self._settings.setValue(KEY_IMAGERY_FETCH_MODE,  self._imagery_fetch_mode_combo.currentData())
-        self._settings.setValue(KEY_IMAGERY_API_KEY,     self._api_key_edit.text().strip())
-        self._settings.setValue(KEY_IMAGERY_CUSTOM_URL,  self._custom_url_edit.text().strip())
-        self._settings.setValue(KEY_CACHE_USE_CUSTOM_DIR, self._cache_custom_dir_check.isChecked())
-        self._settings.setValue(KEY_CACHE_BASE_DIR,       self._cache_dir_edit.text().strip())
-        self._settings.setValue(KEY_MARKER_COLOR,        self._marker_color_name)
+        self._settings.setValue(KEY_CONTAINER, self._container_combo.currentData())
+        self._settings.setValue(KEY_CODEC, self._out_codec_combo.currentData())
+        self._settings.setValue(KEY_ENCODER, self._encoder_combo.currentData())
+        self._settings.setValue(KEY_OUTPUT_CQ, self._out_cq_spin.value())
+        self._settings.setValue(
+            KEY_OUTPUT_PRESET, self._preset_combo.currentData() or ""
+        )
+        self._settings.setValue(
+            KEY_IMAGERY_PROVIDER, self._provider_combo.currentData()
+        )
+        self._settings.setValue(
+            KEY_IMAGERY_QUALITY, self._imagery_quality_combo.currentData()
+        )
+        self._settings.setValue(
+            KEY_IMAGERY_FETCH_MODE, self._imagery_fetch_mode_combo.currentData()
+        )
+        self._settings.setValue(KEY_IMAGERY_API_KEY, self._api_key_edit.text().strip())
+        self._settings.setValue(
+            KEY_IMAGERY_CUSTOM_URL, self._custom_url_edit.text().strip()
+        )
+        self._settings.setValue(
+            KEY_CACHE_USE_CUSTOM_DIR, self._cache_custom_dir_check.isChecked()
+        )
+        self._settings.setValue(KEY_CACHE_BASE_DIR, self._cache_dir_edit.text().strip())
+        self._settings.setValue(KEY_MARKER_COLOR, self._marker_color_name)
         self._settings.setValue(KEY_MARKER_CUSTOM_COLOR, self._marker_custom_color)
-        self._settings.setValue(KEY_PIN_COLOR,           self._pin_color_name)
-        self._settings.setValue(KEY_PIN_CUSTOM_COLOR,    self._pin_custom_color)
+        self._settings.setValue(KEY_PIN_COLOR, self._pin_color_name)
+        self._settings.setValue(KEY_PIN_CUSTOM_COLOR, self._pin_custom_color)
         self.accept()
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _make_tab() -> tuple[QWidget, QVBoxLayout]:
     """Return a (widget, layout) pair for a tab page."""

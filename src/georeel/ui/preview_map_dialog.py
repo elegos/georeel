@@ -6,8 +6,8 @@ Default: image scaled to fit the window (zoom-to-fit).
 Zoom in/out: Ctrl+scroll wheel, or the + / - / Fit buttons.
 """
 
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QCursor, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -19,14 +19,13 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
-    QWidget,
 )
 
 
 class PreviewMapDialog(QDialog):
-    _ZOOM_STEP   = 1.25
-    _ZOOM_MIN    = 0.05
-    _ZOOM_MAX    = 20.0
+    _ZOOM_STEP = 1.25
+    _ZOOM_MIN = 0.05
+    _ZOOM_MAX = 20.0
 
     def __init__(self, image_path: str, initial_dir: str = "", parent=None):
         super().__init__(parent)
@@ -36,9 +35,9 @@ class PreviewMapDialog(QDialog):
 
         self._source_path = image_path
         self._initial_dir = initial_dir
-        self._pixmap      = QPixmap(image_path)
-        self._zoom       = 1.0      # 1.0 = fit; set properly in showEvent
-        self._fit_mode   = True
+        self._pixmap = QPixmap(image_path)
+        self._zoom = 1.0  # 1.0 = fit; set properly in showEvent
+        self._fit_mode = True
         self._drag_origin: QPoint | None = None
 
         # ------------------------------------------------------------------ #
@@ -46,7 +45,9 @@ class PreviewMapDialog(QDialog):
         # ------------------------------------------------------------------ #
         self._img_label = QLabel()
         self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._img_label.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
 
         self._scroll = QScrollArea()
         self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -56,17 +57,17 @@ class PreviewMapDialog(QDialog):
         # ------------------------------------------------------------------ #
         # Toolbar                                                             #
         # ------------------------------------------------------------------ #
-        self._zoom_in_btn  = QPushButton("+")
+        self._zoom_in_btn = QPushButton("+")
         self._zoom_out_btn = QPushButton("−")
-        self._fit_btn      = QPushButton("Fit")
-        self._save_btn     = QPushButton("Save…")
+        self._fit_btn = QPushButton("Fit")
+        self._save_btn = QPushButton("Save…")
         for btn in (self._zoom_in_btn, self._zoom_out_btn, self._fit_btn):
             btn.setFixedWidth(40)
         self._zoom_label = QLabel()
-        self._zoom_in_btn .clicked.connect(self._on_zoom_in)
+        self._zoom_in_btn.clicked.connect(self._on_zoom_in)
         self._zoom_out_btn.clicked.connect(self._on_zoom_out)
-        self._fit_btn     .clicked.connect(self._on_fit)
-        self._save_btn    .clicked.connect(self._on_save)
+        self._fit_btn.clicked.connect(self._on_fit)
+        self._save_btn.clicked.connect(self._on_save)
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
@@ -125,19 +126,30 @@ class PreviewMapDialog(QDialog):
                     bar.setValue(bar.value() - delta)
                     return True
             elif isinstance(event, QMouseEvent):
-                if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                if (
+                    event.type() == event.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton
+                ):
                     self._drag_origin = event.position().toPoint()
                     self._scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
                     return True
-                elif event.type() == event.Type.MouseMove and self._drag_origin is not None:
+                elif (
+                    event.type() == event.Type.MouseMove
+                    and self._drag_origin is not None
+                ):
                     delta = event.position().toPoint() - self._drag_origin
                     self._drag_origin = event.position().toPoint()
                     self._scroll.horizontalScrollBar().setValue(
-                        self._scroll.horizontalScrollBar().value() - delta.x())
+                        self._scroll.horizontalScrollBar().value() - delta.x()
+                    )
                     self._scroll.verticalScrollBar().setValue(
-                        self._scroll.verticalScrollBar().value() - delta.y())
+                        self._scroll.verticalScrollBar().value() - delta.y()
+                    )
                     return True
-                elif event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                elif (
+                    event.type() == event.Type.MouseButtonRelease
+                    and event.button() == Qt.MouseButton.LeftButton
+                ):
                     self._drag_origin = None
                     self._scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
                     return True
@@ -151,7 +163,7 @@ class PreviewMapDialog(QDialog):
         if self._pixmap.isNull():
             return
         vp = self._scroll.viewport().size()
-        sx = vp.width()  / self._pixmap.width()
+        sx = vp.width() / self._pixmap.width()
         sy = vp.height() / self._pixmap.height()
         self._zoom = min(sx, sy)
         self._render_at_zoom()
@@ -184,9 +196,14 @@ class PreviewMapDialog(QDialog):
     def _render_at_zoom(self):
         if self._pixmap.isNull():
             return
-        w = max(1, int(self._pixmap.width()  * self._zoom))
+        w = max(1, int(self._pixmap.width() * self._zoom))
         h = max(1, int(self._pixmap.height() * self._zoom))
-        scaled = self._pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        scaled = self._pixmap.scaled(
+            w,
+            h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
         self._img_label.setPixmap(scaled)
         self._img_label.resize(scaled.size())
         self._update_zoom_label()
@@ -211,9 +228,11 @@ class PreviewMapDialog(QDialog):
     def _on_save(self):
         import shutil
         from pathlib import Path
+
         base_dir = self._initial_dir or str(Path(self._source_path).parent)
         dest, _ = QFileDialog.getSaveFileName(
-            self, "Save Preview Map",
+            self,
+            "Save Preview Map",
             str(Path(base_dir) / "preview_map.png"),
             "PNG image (*.png);;JPEG image (*.jpg *.jpeg)",
         )
