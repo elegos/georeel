@@ -187,39 +187,91 @@ def build_locality_timeline(
     return entries
 
 
-def start_nominatim_container(
-    pbf_url: str,
-    port: int = 8080,
-    keep_volume: bool = False,
+def get_container_port(
     runtime: str | None = None,
-) -> tuple[bool, str]:
-    """Start georeel-nominatim Docker/Podman container. Returns (success, message)."""
+    container_name: str = _NOMINATIM_CONTAINER_NAME,
+) -> int | None:
+    """Return the host port bound to container port 8080/tcp, or None on failure."""
     import subprocess
 
     rt = runtime or get_container_runtime()
     if rt is None:
-        return False, "Docker/Podman not available."
+        return None
+    try:
+        result = subprocess.run(
+            [rt, "port", container_name, "8080/tcp"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        # Output lines look like "0.0.0.0:54321" or "127.0.0.1:54321"
+        for line in result.stdout.strip().splitlines():
+            if ":" in line:
+                return int(line.rsplit(":", 1)[1])
+    except Exception:
+        pass
+    return None
 
-    subprocess.run([rt, "rm", "-f", _NOMINATIM_CONTAINER_NAME], capture_output=True)
 
-    cmd = [rt, "run", "-d",
-           "-e", f"PBF_URL={pbf_url}",
-           "-p", f"{port}:8080",
-           "--name", _NOMINATIM_CONTAINER_NAME]
+def start_nominatim_container(
+    pbf_url: str,
+    keep_volume: bool = False,
+    runtime: str | None = None,
+    *,
+    _container_name: str = _NOMINATIM_CONTAINER_NAME,
+    _image: str = _NOMINATIM_IMAGE,
+    _extra_cmd: list[str] | None = None,
+) -> tuple[bool, str, int]:
+    """Start georeel-nominatim Docker/Podman container.
+
+    The container's port 8080 is bound to a random local port chosen by the
+    OS (``-p 127.0.0.1::8080``) to avoid conflicts with other services.
+
+    Returns ``(success, message, actual_host_port)``.  ``actual_host_port``
+    is 0 when the container did not start successfully.
+    """
+    import subprocess
+
+    rt = runtime or get_container_runtime()
+    if rt is None:
+        return False, "Docker/Podman not available.", 0
+
+    subprocess.run([rt, "rm", "-f", _container_name], capture_output=True)
+
+    cmd = [
+        rt, "run", "-d",
+        "-e", f"PBF_URL={pbf_url}",
+        "-p", "127.0.0.1::8080",
+        "--name", _container_name,
+    ]
     if keep_volume:
         cmd += ["-v", f"{_NOMINATIM_VOLUME_NAME}:/var/lib/postgresql/14/main"]
-    cmd.append(_NOMINATIM_IMAGE)
+    cmd.append(_image)
+    if _extra_cmd:
+        cmd.extend(_extra_cmd)
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return True, f"Container started (port {port}). Loading PBF — may take minutes."
-        return False, result.stderr.strip() or "docker run failed."
+        if result.returncode != 0:
+            return False, result.stderr.strip() or "docker run failed.", 0
     except Exception as exc:
-        return False, str(exc)
+        return False, str(exc), 0
+
+    actual_port = get_container_port(rt, container_name=_container_name) or 0
+    return (
+        True,
+        f"Container started (port {actual_port}). Loading PBF — may take minutes.",
+        actual_port,
+    )
 
 
-def stop_nominatim_container(runtime: str | None = None) -> tuple[bool, str]:
+def stop_nominatim_container(
+    runtime: str | None = None,
+    *,
+    _container_name: str = _NOMINATIM_CONTAINER_NAME,
+) -> tuple[bool, str]:
     """Stop and remove the Nominatim container."""
     import subprocess
 
@@ -228,7 +280,7 @@ def stop_nominatim_container(runtime: str | None = None) -> tuple[bool, str]:
         return False, "Docker/Podman not available."
     try:
         result = subprocess.run(
-            [rt, "rm", "-f", _NOMINATIM_CONTAINER_NAME],
+            [rt, "rm", "-f", _container_name],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0:

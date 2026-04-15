@@ -15,6 +15,7 @@ from georeel.core.nominatim_client import (
     _frame_at_track_time,
     build_locality_timeline,
     clean_nominatim_volumes,
+    get_container_port,
     get_container_runtime,
     is_docker_available,
     is_podman_available,
@@ -462,30 +463,58 @@ class TestLocalityNameAlpha:
 class TestStartNominatimContainer:
     def test_no_runtime_returns_false(self):
         with patch("georeel.core.nominatim_client.get_container_runtime", return_value=None):
-            ok, msg = start_nominatim_container("http://pbf.example.com/region.pbf")
+            ok, msg, port = start_nominatim_container("http://pbf.example.com/region.pbf")
         assert ok is False
         assert "not available" in msg.lower()
+        assert port == 0
 
-    def test_success(self):
-        mock_run = MagicMock()
-        mock_run.return_value.returncode = 0
-        with patch("subprocess.run", mock_run):
-            ok, msg = start_nominatim_container(
-                "http://example.com/test.pbf", port=8080, runtime="docker"
+    def test_success_returns_actual_port(self):
+        calls: list[Any] = []
+
+        def _run(cmd: Any, **kw: Any) -> MagicMock:
+            calls.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "127.0.0.1:54321\n"
+            return m
+
+        with patch("subprocess.run", side_effect=_run):
+            ok, msg, port = start_nominatim_container(
+                "http://example.com/test.pbf", runtime="docker"
             )
         assert ok is True
-        assert "8080" in msg
+        assert port == 54321
+        assert "54321" in msg
+
+    def test_uses_random_port_binding(self):
+        """docker run command must use 127.0.0.1::8080, not a fixed port."""
+        calls: list[Any] = []
+
+        def _run(cmd: Any, **kw: Any) -> MagicMock:
+            calls.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "127.0.0.1:9999\n"
+            return m
+
+        with patch("subprocess.run", side_effect=_run):
+            start_nominatim_container("http://example.com/test.pbf", runtime="docker")
+
+        run_cmd = calls[1]  # second call is docker run (first is rm -f)
+        joined = " ".join(str(x) for x in run_cmd)
+        assert "127.0.0.1::8080" in joined
 
     def test_failure_stderr(self):
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "pull access denied"
         with patch("subprocess.run", return_value=mock_result):
-            ok, msg = start_nominatim_container(
+            ok, msg, port = start_nominatim_container(
                 "http://example.com/test.pbf", runtime="docker"
             )
         assert ok is False
         assert "pull access denied" in msg
+        assert port == 0
 
     def test_keep_volume_flag(self):
         calls: list[Any] = []
@@ -494,6 +523,7 @@ class TestStartNominatimContainer:
             calls.append(cmd)
             m = MagicMock()
             m.returncode = 0
+            m.stdout = "127.0.0.1:12345\n"
             return m
 
         with patch("subprocess.run", side_effect=_run):
@@ -501,8 +531,7 @@ class TestStartNominatimContainer:
                 "http://example.com/test.pbf", keep_volume=True, runtime="docker"
             )
 
-        # The docker run call (second call after rm -f)
-        run_cmd = calls[-1]
+        run_cmd = calls[1]  # docker run (after rm -f)
         joined = " ".join(str(x) for x in run_cmd)
         assert "georeel-nominatim-data" in joined
 
@@ -513,18 +542,53 @@ class TestStartNominatimContainer:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First call is the rm -f cleanup — return success
                 m = MagicMock()
                 m.returncode = 0
                 return m
             raise TimeoutError("timeout")
 
         with patch("subprocess.run", side_effect=_run_side_effect):
-            ok, msg = start_nominatim_container(
+            ok, msg, port = start_nominatim_container(
                 "http://example.com/test.pbf", runtime="docker"
             )
         assert ok is False
         assert "timeout" in msg.lower()
+        assert port == 0
+
+
+# ------------------------------------------------------------------
+# get_container_port
+# ------------------------------------------------------------------
+
+class TestGetContainerPort:
+    def test_no_runtime_returns_none(self):
+        with patch("georeel.core.nominatim_client.get_container_runtime", return_value=None):
+            assert get_container_port() is None
+
+    def test_parses_ipv4_output(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "0.0.0.0:54321\n127.0.0.1:54321\n"
+        with patch("subprocess.run", return_value=mock_result):
+            assert get_container_port(runtime="docker") == 54321
+
+    def test_parses_localhost_only_output(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "127.0.0.1:8765\n"
+        with patch("subprocess.run", return_value=mock_result):
+            assert get_container_port(runtime="docker") == 8765
+
+    def test_nonzero_returncode_returns_none(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result):
+            assert get_container_port(runtime="docker") is None
+
+    def test_exception_returns_none(self):
+        with patch("subprocess.run", side_effect=OSError("oops")):
+            assert get_container_port(runtime="docker") is None
 
 
 # ------------------------------------------------------------------
@@ -593,3 +657,100 @@ class TestCleanNominatimVolumes:
             ok, msg = clean_nominatim_volumes(runtime="docker")
         assert ok is False
         assert "disk error" in msg
+
+
+# ------------------------------------------------------------------
+# Docker integration test
+# ------------------------------------------------------------------
+
+import shutil
+import time
+
+_DOCKER_AVAILABLE = shutil.which("docker") is not None
+
+# Minimal inline Python HTTP server that returns a Nominatim-like JSON
+# response for any GET request.  Used as the container entrypoint so that
+# the test does not require pulling the real mediagis/nominatim image.
+_FAKE_NOMINATIM_SCRIPT = (
+    "import http.server, json\n"
+    "class H(http.server.BaseHTTPRequestHandler):\n"
+    "    def do_GET(self):\n"
+    "        body = json.dumps({'display_name': 'Integration City'}).encode()\n"
+    "        self.send_response(200)\n"
+    "        self.send_header('Content-Type', 'application/json')\n"
+    "        self.end_headers()\n"
+    "        self.wfile.write(body)\n"
+    "    def log_message(self, *a): pass\n"
+    "http.server.HTTPServer(('', 8080), H).serve_forever()\n"
+)
+
+_ITEST_CONTAINER = "georeel-nominatim-itest"
+
+
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="docker not available on this system")
+def test_nominatim_container_lifecycle() -> None:
+    """Integration test: setup → port discovery → use → teardown.
+
+    Uses ``python:3-alpine`` with an inline HTTP server instead of the real
+    Nominatim image so the test completes in seconds without PBF import.
+    Skipped automatically when Docker is not installed.
+    """
+    import subprocess
+    import urllib.request
+
+    # Clean up any leftover container from a previous run.
+    subprocess.run(["docker", "rm", "-f", _ITEST_CONTAINER], capture_output=True)
+
+    # ── Setup ────────────────────────────────────────────────────────────────
+    ok, msg, port = start_nominatim_container(
+        "http://unused.example.com/fake.pbf",
+        runtime="docker",
+        _container_name=_ITEST_CONTAINER,
+        _image="python:3-alpine",
+        _extra_cmd=["python", "-c", _FAKE_NOMINATIM_SCRIPT],
+    )
+    assert ok, f"Container failed to start: {msg}"
+    assert port > 0, f"Expected non-zero port, got {port}"
+
+    try:
+        # ── Port discovery ───────────────────────────────────────────────────
+        discovered = get_container_port(runtime="docker", container_name=_ITEST_CONTAINER)
+        assert discovered == port, (
+            f"get_container_port returned {discovered}, expected {port}"
+        )
+
+        # Wait up to 10 s for the HTTP server to accept connections.
+        deadline = time.monotonic() + 10.0
+        ready = False
+        while time.monotonic() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
+                ready = True
+                break
+            except Exception:
+                time.sleep(0.2)
+        assert ready, f"Fake Nominatim server on port {port} did not become ready in 10 s"
+
+        # ── Use ──────────────────────────────────────────────────────────────
+        name = reverse_geocode(
+            45.711, 10.406,
+            base_url=f"http://127.0.0.1:{port}",
+            timeout=5.0,
+        )
+        assert name == "Integration City", f"Unexpected geocode result: {name!r}"
+
+    finally:
+        # ── Teardown ─────────────────────────────────────────────────────────
+        stop_ok, stop_msg = stop_nominatim_container(
+            runtime="docker", _container_name=_ITEST_CONTAINER
+        )
+        assert stop_ok, f"Container stop failed: {stop_msg}"
+
+    # Verify port is no longer reachable after teardown.
+    reachable = False
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+        reachable = True
+    except Exception:
+        pass
+    assert not reachable, f"Port {port} still reachable after container stop"

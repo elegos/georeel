@@ -171,11 +171,15 @@ class LocalityNamesWidget(QWidget):
         self._docker_port_spin = QSpinBox()
         self._docker_port_spin.setRange(1024, 65535)
         self._docker_port_spin.setValue(self._qsv(_KEY_DOCKER_PORT, 8080))
-        self._docker_port_spin.setToolTip("Host port to expose the Nominatim HTTP API.")
+        self._docker_port_spin.setReadOnly(True)
+        self._docker_port_spin.setToolTip(
+            "Actual host port assigned to the container after Start.\n"
+            "The OS picks a free port automatically."
+        )
         self._docker_port_spin.valueChanged.connect(
             lambda v: self._settings.setValue(_KEY_DOCKER_PORT, v)
         )
-        docker_form.addRow("Port:", self._docker_port_spin)
+        docker_form.addRow("Port (auto):", self._docker_port_spin)
 
         self._docker_keep_chk = QCheckBox("Keep volume between runs")
         self._docker_keep_chk.setChecked(self._qsv(_KEY_DOCKER_KEEP, False))
@@ -331,9 +335,10 @@ class LocalityNamesWidget(QWidget):
     def _on_docker_start(self) -> None:
         from georeel.core.nominatim_client import start_nominatim_container
         pbf = self._docker_pbf_edit.text().strip()
-        port = self._docker_port_spin.value()
         keep = self._docker_keep_chk.isChecked()
-        ok, msg = start_nominatim_container(pbf, port=port, keep_volume=keep)
+        ok, msg, actual_port = start_nominatim_container(pbf, keep_volume=keep)
+        if ok and actual_port:
+            self._docker_port_spin.setValue(actual_port)
         self._docker_status_lbl.setText(msg)
 
     def _on_docker_stop(self) -> None:
