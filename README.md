@@ -20,6 +20,8 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 - **Ribbon coloring** — colour the track ribbon by terrain slope gradient or by GPS speed; a self-lit mode preserves full colour saturation in Blender's Filmic tone-mapper
 - **Customisable rendering** — resolution (landscape, portrait, square), frame rate, engine (Viewport draft / EEVEE / Cycles), quality
 - **Hardware encoder support** — NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox, and software fallbacks
+- **Clip effects** — optional fade-to-black intro/outro, customisable opening-title overlay, and background music with crossfade support
+- **Locality names overlay** — Nominatim reverse geocoding composites the current place name onto the video with fade-in/fade-out; uses the official OSM servers, a self-hosted Docker/Podman container, or any custom Nominatim endpoint
 - **Project files** — save and reload work as `.georeel` archives; DEM and satellite data are cached inside
 - **Preview tools** — top-down map preview and short video preview before committing to a full render
 - **Open in Blender** — inspect or manually edit the generated scene before rendering
@@ -121,9 +123,21 @@ Open *Options → Pipeline Settings* to adjust:
 
 See [docs/PIPELINE_SETTINGS.md](docs/PIPELINE_SETTINGS.md) for a full reference of all options.
 
-#### Ribbon tab (main window)
+#### Main window tabs
 
-The **Ribbon** tab in the main window controls per-project ribbon appearance and is saved inside the project file:
+The main window also contains several tabs with **per-project** settings saved inside the project file:
+
+| Tab | What it controls |
+|---|---|
+| **Ribbon** | Track-ribbon colour gradient (slope or speed) and emission style |
+| **Fade** | Optional fade-to-black at video start and end |
+| **Title** | Opening-title text overlay — font, anchor, colour, duration, fade-in/out |
+| **Music** | Background audio playlist with delay, fades, crossfade, and loop options |
+| **Locality names** | Nominatim place-name overlay — service backend, check interval, detail level, position, duration, colour, shadow |
+
+See [docs/MAIN_SETTINGS.md](docs/MAIN_SETTINGS.md) for a full reference of all main window settings.
+
+##### Ribbon tab
 
 | Setting | Description |
 |---|---|

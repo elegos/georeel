@@ -41,6 +41,7 @@ class ProjectState:
     satellite_texture: SatelliteTexture | None = None
     render_settings: dict[str, Any] | None = None   # camera + imagery settings at fetch time
     clip_effects: dict[str, Any] | None = None      # fade-in/out, title, music settings
+    locality_names: dict[str, Any] | None = None    # locality names overlay settings
     # Temporary directory created when embedded files are extracted on load.
     # The caller is responsible for deleting it (shutil.rmtree) when done.
     temp_dir: Path | None = field(default=None, compare=False, repr=False)
@@ -155,6 +156,9 @@ def save_project(state: ProjectState, path: str) -> None:
         safe_ce = {k: v for k, v in state.clip_effects.items()
                    if k not in _runtime_keys}
         project_payload["clip_effects"] = safe_ce
+
+    if state.locality_names is not None:
+        project_payload["locality_names"] = state.locality_names
 
     if state.satellite_texture is not None:
         t = state.satellite_texture
@@ -372,6 +376,7 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
         satellite_texture=satellite_texture,
         render_settings=payload.get("render_settings"),
         clip_effects=clip_effects or None,
+        locality_names=payload.get("locality_names"),
         temp_dir=temp_dir,
     )
 

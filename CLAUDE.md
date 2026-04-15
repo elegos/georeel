@@ -41,6 +41,9 @@ The placement mode is a user-facing option (e.g. `--photo-match timestamp|gps|bo
 - Add dependencies with `uv add <package>`, never edit `pyproject.toml` dependencies by hand
 - Entry point: `main.py`
 - Keep pipeline stages modular: parsing → data fetching → 3D scene construction → rendering → video assembly
+- basedpyright needs to be run and there must be no errors
+- pytest tests need to pass and must cover >= 85%
+- docs (md files) need to be updated accordingly to the changes
 
 ## Data Sources (preferred)
 

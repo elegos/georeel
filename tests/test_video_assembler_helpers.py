@@ -11,6 +11,8 @@ from georeel.core.video_assembler import (
     _write_settings,
     _copy_gpx_alongside,
     _composite_title_frames,
+    _composite_locality_frames,
+    _locality_name_alpha,
 )
 
 
@@ -194,3 +196,158 @@ class TestCompositeTitleFrames:
         # No frames in source — should not raise
         _composite_title_frames(str(src), dst, {"clip_effects/title_text": "Hi"}, fps=30)
         assert len(list(dst.glob("*.png"))) == 0
+
+
+# ── _locality_name_alpha ──────────────────────────────────────────
+
+class TestLocalityNameAlphaInAssembler:
+    """Tests for _locality_name_alpha in video_assembler."""
+
+    def test_before_start(self):
+        assert _locality_name_alpha(-1, 30, 5) == 0.0
+
+    def test_at_duration(self):
+        assert _locality_name_alpha(30, 30, 5) == 0.0
+
+    def test_full_opacity(self):
+        assert _locality_name_alpha(15, 30, 5) == 1.0
+
+    def test_fade_in_partial(self):
+        result = _locality_name_alpha(2, 30, 5)
+        assert result == pytest.approx(2 / 5)
+
+    def test_fade_out_partial(self):
+        result = _locality_name_alpha(27, 30, 5)
+        assert result == pytest.approx(3 / 5)
+
+    def test_no_fade(self):
+        assert _locality_name_alpha(0, 30, 0) == 1.0
+
+
+# ── _composite_locality_frames ────────────────────────────────────
+
+def _write_locality_frames(path: Path, count: int, size: tuple[int, int] = (320, 240)) -> None:
+    path.mkdir(exist_ok=True)
+    for i in range(count):
+        Image.new("RGB", size, (80, 120, 160)).save(path / f"{i:06d}.png")
+
+
+class TestCompositeLocalityFrames:
+    def test_empty_source_no_error(self, tmp_path):
+        src = tmp_path / "empty_src"
+        src.mkdir()
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        settings = {"locality_names/timeline_json": "[]"}
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 0
+
+    def test_no_timeline_hard_links_all(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=5)
+        settings: dict = {"locality_names/timeline_json": "[]"}
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 5
+
+    def test_with_timeline_produces_same_count(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=10)
+        timeline = json.dumps([{"frame_start": 0, "name": "Paris"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/position": "bottom-right",
+            "locality_names/duration": 5.0,
+            "locality_names/text_color": "#ffffff",
+            "locality_names/shadow": False,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 10
+
+    def test_output_frames_are_valid_images(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=5, size=(320, 240))
+        timeline = json.dumps([{"frame_start": 0, "name": "Berlin"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 10.0,
+            "locality_names/shadow": True,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        for f in sorted(dst.glob("*.png")):
+            img = Image.open(f)
+            assert img.size == (320, 240)
+
+    def test_progress_cb_called(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=4)
+        timeline = json.dumps([{"frame_start": 0, "name": "Rome"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 10.0,
+        }
+        calls: list[tuple[int, int]] = []
+        _composite_locality_frames(str(src), dst, settings, fps=30,
+                                    progress_cb=lambda d, t: calls.append((d, t)))
+        assert len(calls) == 4
+        assert calls[-1][0] == calls[-1][1]
+
+    def test_malformed_timeline_json_falls_back(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=3)
+        settings = {"locality_names/timeline_json": "NOT_JSON"}
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        # Should not raise; falls back to hard-linking
+        assert len(list(dst.glob("*.png"))) == 3
+
+    def test_positions_top_left(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=5)
+        timeline = json.dumps([{"frame_start": 0, "name": "London"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/position": "top-left",
+            "locality_names/duration": 10.0,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 5
+
+    def test_center_position(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=3)
+        timeline = json.dumps([{"frame_start": 0, "name": "Madrid"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/position": "center",
+            "locality_names/duration": 10.0,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 3
+
+    def test_no_active_frames_hard_linked(self, tmp_path):
+        """Frames outside the locality duration should be hard-linked."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=5)
+        # Start at frame 1000 → none of the 5 frames are in range
+        timeline = json.dumps([{"frame_start": 1000, "name": "Tokyo"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 1.0,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 5

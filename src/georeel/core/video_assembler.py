@@ -72,6 +72,7 @@ def assemble_video(
     # When title fade-in is enabled but video fade-in is not, we still prepend
     # black frames (for title_fi_dur seconds) so the title genuinely fades in
     # from black rather than over content.
+    locality_dir: Optional[Path] = None
     title_dir: Optional[Path] = None
     title_enabled = bool(settings.get("clip_effects/title_enabled", False))
     fi_enabled    = bool(settings.get("clip_effects/fade_in_enabled", False))
@@ -116,6 +117,15 @@ def assemble_video(
             progress_cb=title_progress_cb,
         )
         frames_dir = str(title_dir)
+
+    # Locality names compositing
+    if bool(settings.get("locality_names/enabled", False)) and settings.get("locality_names/timeline_json"):
+        locality_dir = temp_manager.make_temp_dir("georeel_locality_")
+        _composite_locality_frames(
+            frames_dir, locality_dir, settings, fps,
+            progress_cb=None,
+        )
+        frames_dir = str(locality_dir)
 
     # skip_prepend: black frames are real PNGs (tpad start omitted) and the
     # luminance fade is already baked by PIL (fade=in filter also omitted).
@@ -194,6 +204,8 @@ def assemble_video(
         raise VideoAssembleError(f"FFmpeg error: {e}") from e
     finally:
         tmp_settings.unlink(missing_ok=True)
+        if locality_dir and locality_dir.exists():
+            shutil.rmtree(locality_dir, ignore_errors=True)
         if title_dir and title_dir.exists():
             shutil.rmtree(title_dir, ignore_errors=True)
         if prep_dir and prep_dir.exists():
@@ -349,6 +361,180 @@ def _title_alpha(t: float, duration: float,
     if fo_on and fo_dur > 0:
         alpha = min(alpha, min(1.0, (duration - t) / fo_dur))
     return max(0.0, alpha)
+
+
+def _locality_name_alpha(frame_offset: int, duration_frames: int, fade_frames: int) -> float:
+    """Return alpha [0..1] for a locality label at frame_offset since its frame_start."""
+    if frame_offset < 0 or frame_offset >= duration_frames:
+        return 0.0
+    if fade_frames <= 0:
+        return 1.0
+    # fade in
+    if frame_offset < fade_frames:
+        return frame_offset / fade_frames
+    # fade out
+    if frame_offset >= duration_frames - fade_frames:
+        return (duration_frames - frame_offset) / fade_frames
+    return 1.0
+
+
+def _composite_locality_frames(
+    src_dir: str,
+    dst_dir: Path,
+    settings: dict[str, Any],
+    fps: int,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> None:
+    """Composite locality name overlays onto frames.
+
+    Reads ``locality_names/timeline_json`` from settings — a JSON list of
+    ``{"frame_start": int, "name": str}`` objects, sorted by frame_start.
+    Hard-links frames that need no overlay.
+    """
+    import concurrent.futures
+    import threading
+    from PIL import Image, ImageColor, ImageDraw, ImageFont
+
+    timeline_json = settings.get("locality_names/timeline_json", "[]")
+    try:
+        timeline: list[dict[str, Any]] = json.loads(timeline_json) if isinstance(timeline_json, str) else list(timeline_json)
+    except (ValueError, TypeError):
+        timeline = []
+
+    frames = sorted(Path(src_dir).glob("*.png"))
+    total = len(frames)
+
+    if not frames:
+        return
+
+    if not timeline:
+        # No entries — hard-link everything
+        for src in frames:
+            dst = dst_dir / src.name
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+        return
+
+    # Settings
+    position   = str(settings.get("locality_names/position",   "bottom-right"))
+    duration_s = float(settings.get("locality_names/duration",  5.0))
+    color_hex  = str(settings.get("locality_names/text_color",  "#ffffff"))
+    shadow     = bool(settings.get("locality_names/shadow",     True))
+    font_name  = "Noto Serif"
+    fade_s     = 1.0  # fixed 1s fade as per spec
+
+    duration_frames = max(2, round(duration_s * fps))
+    fade_frames     = min(round(fade_s * fps), duration_frames // 2)
+
+    # Anchor → text position
+    parts  = position.split("-") if position != "center" else ["center", "center"]
+    v_part = parts[0]
+    h_part = parts[1] if len(parts) > 1 else "center"
+    margin = 20
+
+    # Probe frame size
+    with Image.open(frames[0]) as probe:
+        frame_w, frame_h = probe.size
+
+    font_size = max(16, frame_h // 36)  # ~30pt at 1080p
+    font_path = _resolve_fontfile(font_name)
+
+    try:
+        base_font = ImageFont.truetype(font_path or font_name, font_size)
+    except (OSError, TypeError):
+        base_font = ImageFont.load_default()
+
+    _ = base_font  # suppress unused warning; thread-local handles actual usage
+
+    _font_local = threading.local()
+
+    def _thread_font() -> Any:
+        if not hasattr(_font_local, "instance"):
+            try:
+                _font_local.instance = ImageFont.truetype(font_path or font_name, font_size)
+            except (OSError, TypeError):
+                _font_local.instance = ImageFont.load_default()
+        return _font_local.instance  # type: ignore[return-value]
+
+    try:
+        base_rgb = ImageColor.getrgb(color_hex)
+    except Exception:
+        base_rgb = (255, 255, 255)
+
+    shadow_off = max(1, round(font_size * 0.03))
+
+    def _active_entries(frame_idx: int) -> list[tuple[str, float]]:
+        """Return (name, alpha) for all active entries at this frame."""
+        result: list[tuple[str, float]] = []
+        for entry in timeline:
+            fs = int(entry["frame_start"])
+            offset = frame_idx - fs
+            alpha = _locality_name_alpha(offset, duration_frames, fade_frames)
+            if alpha > 0:
+                result.append((str(entry["name"]), alpha))
+        return result
+
+    def _text_xy(text: str, font: Any) -> tuple[int, int]:
+        """Compute top-left pixel position for text."""
+        _dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        bbox = _dummy.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+        if h_part == "left":
+            tx = margin
+        elif h_part == "right":
+            tx = frame_w - tw - margin
+        else:
+            tx = (frame_w - tw) // 2
+
+        if v_part == "top":
+            ty = margin
+        elif v_part == "bottom":
+            ty = frame_h - th - margin
+        else:
+            ty = (frame_h - th) // 2
+
+        return max(0, int(tx)), max(0, int(ty))
+
+    def _process(fp: Path) -> None:
+        try:
+            idx = int(fp.stem)
+        except ValueError:
+            idx = 0
+        dst = dst_dir / fp.name
+        active = _active_entries(idx)
+        if not active:
+            try:
+                os.link(fp, dst)
+            except OSError:
+                shutil.copy2(fp, dst)
+            return
+
+        font = _thread_font()
+        img  = Image.open(fp).convert("RGBA")
+        for name, alpha in active:
+            a_int = round(alpha * 255)
+            fill  = (*base_rgb, a_int)
+            shad  = (0, 0, 0, round(0.7 * a_int))
+            tx, ty = _text_xy(name, font)
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+            if shadow:
+                draw.text((tx + shadow_off, ty + shadow_off), name, font=font, fill=shad)  # type: ignore[arg-type]
+            draw.text((tx, ty), name, font=font, fill=fill)  # type: ignore[arg-type]
+            img = Image.alpha_composite(img, overlay)
+
+        img.convert("RGB").save(dst, format="PNG")
+
+    n_workers = max(1, os.cpu_count() or 1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_process, fp): fp for fp in frames}
+        for done, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            fut.result()
+            if progress_cb:
+                progress_cb(done, total)
 
 
 def _composite_title_frames(

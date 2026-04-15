@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Locality names overlay** — a new *Locality names* tab in the main window optionally
+  composites the current location name (from Nominatim reverse geocoding) onto the video
+  as a fade-in/fade-out overlay.
+  - Three Nominatim backend options: OSM public servers, a local Docker/Podman container
+    (`mediagis/nominatim:4.4`), or a custom URL.
+  - Configurable check interval (default: every 60 s of track time), detail level
+    (village → country), display position (9 anchors), duration, text colour, and shadow.
+  - Docker/Podman backend: specify the PBF source URL, port, and choose whether to keep
+    the data volume between runs; includes *Start*, *Stop*, and *Clean volumes* actions.
+  - Cross-fade when the location name changes faster than the configured duration.
+
 ## [1.3.0] - 2026-04-15
 
 ### Added

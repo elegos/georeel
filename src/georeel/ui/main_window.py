@@ -57,6 +57,7 @@ from georeel.core.satellite.providers import QUALITY_ZOOM
 
 from .blender_settings_dialog import BlenderSettingsDialog
 from .clip_effects_widget import ClipEffectsWidget
+from .locality_names_widget import LocalityNamesWidget
 from .compositor_progress_dialog import CompositorProgressDialog
 from .gpx_drop_area import GpxDropArea
 from .gpx_stats_widget import GpxStatsWidget
@@ -299,12 +300,14 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_output_group())
 
         self._clip_effects_widget = ClipEffectsWidget(self._settings)
+        self._locality_names_widget = LocalityNamesWidget(self._settings)
 
         tabs.addTab(main_tab, "Main")
         tabs.addTab(self._build_ribbon_tab(), "Ribbon")
         tabs.addTab(self._clip_effects_widget.fade_tab_widget(), "Fade")
         tabs.addTab(self._clip_effects_widget.title_tab_widget(), "Title")
         tabs.addTab(self._clip_effects_widget.music_tab_widget(), "Music")
+        tabs.addTab(self._locality_names_widget.locality_tab_widget(), "Locality names")
 
         btn_container = QWidget()
         btn_layout = QHBoxLayout(btn_container)
@@ -1137,6 +1140,7 @@ class MainWindow(QMainWindow):
             satellite_texture=self._cached_satellite_texture,
             render_settings=get_render_settings(self._settings),
             clip_effects=self._clip_effects_widget.get_settings(),
+            locality_names=self._locality_names_widget.get_settings(),
         )
 
     # ------------------------------------------------------------------
@@ -1720,12 +1724,33 @@ class MainWindow(QMainWindow):
         self._pipeline.composited_frames_dir = dlg.composited_frames_dir()
         self._status_show(f"Compositing done: {self._pipeline.composited_frames_dir}")
 
+        # Pre-compute locality names timeline (network calls to Nominatim)
+        locality_settings = self._locality_names_widget.get_settings()
+        if locality_settings.get("locality_names/enabled", False):
+            self._status_show("Building locality names timeline…")
+            QApplication.processEvents()
+            try:
+                from georeel.core.nominatim_client import build_locality_timeline
+                import json as _json
+                timeline = build_locality_timeline(
+                    self._pipeline.trackpoints,
+                    len(self._pipeline.camera_keyframes or []),
+                    locality_settings,
+                )
+                locality_settings["locality_names/timeline_json"] = _json.dumps([
+                    {"frame_start": e.frame_start, "name": e.name}
+                    for e in timeline
+                ])
+            except Exception as e:
+                _log.warning("Locality names timeline failed: %s", e)
+
         # Stage 9 — Video Assembler
         output_path = self._output_selector.output_path()
         total_frames = len(self._pipeline.camera_keyframes or [])
         assemble_settings = {
             **render_settings,
             **self._clip_effects_widget.get_settings(),
+            **locality_settings,
         }
         dlg = VideoProgressDialog(
             self._pipeline.composited_frames_dir or "",
@@ -2033,6 +2058,10 @@ class MainWindow(QMainWindow):
             for key, value in state.clip_effects.items():
                 self._settings.setValue(key, value)
         self._clip_effects_widget.reload()
+        if state.locality_names:
+            for key, value in state.locality_names.items():
+                self._settings.setValue(key, value)
+        self._locality_names_widget.reload()
         self._save_last_project_dir(path)
         self._add_recent_file(path)
         self._project_path = path
