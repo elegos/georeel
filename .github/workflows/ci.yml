@@ -35,7 +35,7 @@ jobs:
         run: uv sync --group dev
 
       - name: Run basedpyright (errors)
-        run: uv run basedpyright src/georeel --level error
+        run: uv run basedpyright --level error src/georeel
 
       - name: Run tests with coverage
         run: uv run pytest --cov=src/georeel --cov-report=xml --cov-report=term-missing --cov-fail-under=85
