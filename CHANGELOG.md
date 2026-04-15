@@ -47,9 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now a per-project setting in the main window rather than in Pipeline
   Settings.
 - **Configurable PNG frame compression** — a *Frame PNG compression* spin box
-  (0–9, default 6) in *Pipeline Settings → Rendering* controls the zlib level
-  used for intermediate frame files; set to 0 on slow storage to reduce render
-  time at the cost of temporary disk space.
+  (0–9, default 1, matching Blender's own default) in *Pipeline Settings →
+  Rendering* controls the zlib level used for intermediate frame files.
+  Compression is now performed out-of-process: Blender writes each frame
+  uncompressed for maximum render throughput, then a background thread pool
+  re-compresses the PNG while the GPU is already rendering the next frame.
+  The number of compression workers scales with available CPU cores (up to 4).
 - **Tooltips** on all *Pipeline Settings* and *Blender Settings* controls.
 - **Install scripts** — one-line automated installers for Linux/macOS (shell) and
   Windows (PowerShell); see `INSTALL.md`.
