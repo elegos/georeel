@@ -1,5 +1,3 @@
 {
-  "exclude": ["src/georeel/core/blender_scripts", "tests"],
-  "venvPath": ".",
-  "venv": ".venv"
+  "exclude": ["src/georeel/core/blender_scripts", "tests"]
 }
