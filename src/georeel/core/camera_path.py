@@ -51,6 +51,13 @@ _DP_EPSILON_M = 20.0
 # Look-ahead distance used when computing the look-at point (metres).
 _LOOK_AHEAD_M = 100.0
 
+# Spike-removal threshold for the orientation second pass.
+# A heading transition is flagged as a spike when its absolute angular
+# velocity exceeds this multiple of the median absolute angular velocity
+# across the whole fly-through.  Higher → only very violent spikes are
+# removed; lower → smoother but risks suppressing genuine fast turns.
+_ORIENTATION_SPIKE_MAD_FACTOR = 6.0
+
 
 class CameraPathError(Exception):
     pass
@@ -307,6 +314,7 @@ def build_camera_path(
     angles_smooth = gaussian_filter1d(
         np.unwrap(np.arctan2(nys, nxs)), sigma_dir, mode="nearest"
     )
+    angles_smooth = _smooth_orientation_spikes(angles_smooth)
     nxs = np.cos(angles_smooth)
     nys = np.sin(angles_smooth)
     del angles_smooth
@@ -660,6 +668,70 @@ def _compute_forward_dirs_spline(
             dirs_x[0], dirs_y[0] = 0.0, 1.0
 
     return dirs_x, dirs_y
+
+
+def _smooth_orientation_spikes(
+    angles: np.ndarray,
+    mad_factor: float = _ORIENTATION_SPIKE_MAD_FACTOR,
+) -> np.ndarray:
+    """Remove isolated angular-velocity spikes from a smoothed angle signal.
+
+    After Gaussian smoothing, rare frames can still carry an abrupt heading
+    jump caused by geometry artefacts (e.g. a near-zero-length segment
+    surrounded by long ones).  This second pass detects transitions whose
+    absolute magnitude exceeds *mad_factor* × median(|Δangle|) and replaces
+    the offending frames with linearly interpolated values between the
+    surrounding stable frames.
+
+    Parameters
+    ----------
+    angles:
+        1-D array of unwrapped heading angles (radians), already Gaussian-
+        smoothed.  Modified out-of-place; the input is not mutated.
+    mad_factor:
+        Spike threshold expressed as a multiple of the median absolute
+        angular-velocity.  Default: ``_ORIENTATION_SPIKE_MAD_FACTOR`` (6.0).
+
+    Returns
+    -------
+    np.ndarray
+        A new array of the same length with spike frames replaced by linear
+        interpolation.  If fewer than 2 good (non-spike) frames remain the
+        input is returned unchanged.
+    """
+    n = len(angles)
+    if n < 3:
+        return angles.copy()
+
+    d = np.abs(np.diff(angles))  # |Δangle| per frame-step, length n-1
+    median_d = float(np.median(d))
+    if median_d < 1e-10:
+        return angles.copy()
+
+    threshold = median_d * mad_factor
+    # Both endpoints of each spike transition are bad.
+    spike_idx = np.where(d > threshold)[0]
+    if len(spike_idx) == 0:
+        return angles.copy()
+
+    bad = np.zeros(n, dtype=bool)
+    bad[spike_idx] = True
+    bad[spike_idx + 1] = True
+
+    good_idx = np.where(~bad)[0]
+    if len(good_idx) < 2:
+        return angles.copy()
+
+    out = np.interp(np.arange(n), good_idx, angles[good_idx])
+    _log.debug(
+        "[camera_path] orientation spike smoother: %d spike(s) removed  "
+        "threshold=%.4f rad (median=%.4f × %.1f)",
+        len(spike_idx),
+        threshold,
+        median_d,
+        mad_factor,
+    )
+    return out
 
 
 # ------------------------------------------------------------------

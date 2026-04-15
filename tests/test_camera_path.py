@@ -13,6 +13,7 @@ from georeel.core.camera_path import (
     _compute_forward_dirs_tangent,
     _compute_forward_dirs_spline,
     _make_pause_block,
+    _smooth_orientation_spikes,
 )
 from georeel.core.bounding_box import BoundingBox
 from georeel.core.elevation_grid import ElevationGrid
@@ -311,3 +312,88 @@ class TestMakePauseBlock:
         ref = _kf_ref()
         block = _make_pause_block(ref, "/a.jpg", pause_frames=0)
         assert block == []
+
+
+# ── _smooth_orientation_spikes ────────────────────────────────────
+
+class TestSmoothOrientationSpikes:
+    def test_no_spikes_returned_unchanged(self):
+        angles = np.linspace(0.0, 1.0, 20)
+        out = _smooth_orientation_spikes(angles)
+        npt.assert_allclose(out, angles, atol=1e-12)
+
+    def test_short_array_returned_unchanged(self):
+        angles = np.array([0.0, 1.0])
+        out = _smooth_orientation_spikes(angles)
+        npt.assert_allclose(out, angles)
+
+    def test_single_element(self):
+        angles = np.array([0.5])
+        out = _smooth_orientation_spikes(angles)
+        npt.assert_allclose(out, angles)
+
+    def test_constant_array(self):
+        angles = np.full(10, 1.23)
+        out = _smooth_orientation_spikes(angles)
+        npt.assert_allclose(out, angles)
+
+    def test_single_spike_removed(self):
+        # Smooth ramp with one huge jump at index 5
+        angles = np.linspace(0.0, 0.1, 20)
+        angles[5] += 3.0  # spike: ~30× larger than typical step
+        out = _smooth_orientation_spikes(angles)
+        # After repair the spike value must be closer to the linear ramp
+        ramp_value = np.interp(5, [0, 19], [0.0, 0.1])
+        assert abs(out[5] - ramp_value) < 0.05
+
+    def test_spike_at_start(self):
+        # Ramp with non-zero median step so the spike is detectable
+        angles = np.linspace(0.0, 0.1, 20)
+        angles[0] += 5.0  # large spike at first index
+        out = _smooth_orientation_spikes(angles)
+        # Index 0 should be pulled toward the ramp value
+        ramp_value = np.interp(0, [0, 19], [0.0, 0.1]) + 5.0  # original spiked value
+        # At minimum the spike must be reduced
+        assert abs(out[0] - 0.0) < abs(ramp_value - 0.0)
+
+    def test_spike_at_end(self):
+        angles = np.linspace(0.0, 0.1, 20)
+        angles[-1] += 5.0
+        out = _smooth_orientation_spikes(angles)
+        ramp_end = 0.1 + 5.0
+        assert abs(out[-1] - 0.1) < abs(ramp_end - 0.1)
+
+    def test_output_length_unchanged(self):
+        for n in (3, 10, 100):
+            angles = np.random.default_rng(42).uniform(-3, 3, n)
+            out = _smooth_orientation_spikes(angles)
+            assert len(out) == n
+
+    def test_input_not_mutated(self):
+        angles = np.linspace(0.0, 1.0, 15)
+        angles[7] += 10.0
+        original = angles.copy()
+        _smooth_orientation_spikes(angles)
+        npt.assert_array_equal(angles, original)
+
+    def test_high_mad_factor_skips_removal(self):
+        # With a very high threshold nothing should be removed
+        angles = np.linspace(0.0, 0.1, 20)
+        angles[5] += 3.0
+        out = _smooth_orientation_spikes(angles, mad_factor=1000.0)
+        npt.assert_allclose(out, angles, atol=1e-12)
+
+    def test_low_mad_factor_removes_more(self):
+        angles = np.linspace(0.0, 0.1, 30)
+        angles[10] += 0.5  # moderate bump
+        out_tight = _smooth_orientation_spikes(angles, mad_factor=2.0)
+        out_loose = _smooth_orientation_spikes(angles, mad_factor=10.0)
+        # Tight threshold should change index 10 more than loose
+        assert abs(out_tight[10] - angles[10]) >= abs(out_loose[10] - angles[10])
+
+    def test_all_spikes_no_good_points_fallback(self):
+        # Alternating large jumps so every point is "bad" — should return copy
+        angles = np.array([0.0, 10.0, 0.0, 10.0, 0.0])
+        out = _smooth_orientation_spikes(angles, mad_factor=0.5)
+        # Either unchanged or interpolated — must not raise and must be same length
+        assert len(out) == len(angles)
