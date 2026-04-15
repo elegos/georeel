@@ -32,7 +32,16 @@ jobs:
         run: uv sync --group dev
 
       - name: Run basedpyright (errors)
-        run: uv run basedpyright --level error src/georeel
+        run: |
+          uv run basedpyright --outputjson src/georeel \
+            | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          e = d['summary']['errorCount']
+          w = d['summary']['warningCount']
+          print(f'basedpyright: {e} errors, {w} warnings')
+          sys.exit(1 if e > 0 else 0)
+          "
 
       - name: Run tests with coverage
         run: uv run pytest --cov=src/georeel --cov-report=xml --cov-report=term-missing --cov-fail-under=85
