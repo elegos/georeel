@@ -253,39 +253,39 @@ def build_camera_path(
     horiz_back = height_offset * math.cos(tilt_rad)
     height_above = height_offset * math.sin(tilt_rad)
 
-    # nxs/nys are already numpy arrays returned directly from the direction
-    # functions — no intermediate list-of-tuples conversion needed.
-    # Smooth direction and position arrays in parallel — all gaussian_filter1d
-    # calls are independent and release the GIL, so threading speeds them up.
+    # Smooth the heading in angle space *before* computing the camera offset.
+    # Component-wise Gaussian averaging of unit vectors produces near-zero
+    # magnitudes at ~180° reversals (e.g. averaging (1,0) and (-1,0) gives
+    # (0,0)), which causes undefined headings and the visible direction spikes
+    # on tight curves.  Converting to an unwrapped angle signal first keeps it
+    # continuous, so the Gaussian filter is always well-defined.
     sigma_dir = max(1.0, fps * 2)
     sigma = max(1.0, fps / 2)
+
+    _log.info("[camera_path] smoothing heading in angle space  sigma_dir=%.1f  (RSS %.0f MB)",
+              sigma_dir, _rss_mb())
+    angles_smooth = gaussian_filter1d(np.unwrap(np.arctan2(nys, nxs)), sigma_dir, mode="nearest")
+    nxs = np.cos(angles_smooth)
+    nys = np.sin(angles_smooth)
+    del angles_smooth
 
     cam_xs_raw = xs - nxs * horiz_back
     cam_ys_raw = ys - nys * horiz_back
     cam_zs_raw = terrain_zs + height_above
+    del nxs, nys
 
-    _log.info("[camera_path] smoothing 6 arrays in parallel  (RSS %.0f MB)", _rss_mb())
-    with ThreadPoolExecutor(max_workers=6) as _gpool:
-        f_nxs       = _gpool.submit(gaussian_filter1d, nxs,       sigma_dir, mode="nearest")
-        f_nys       = _gpool.submit(gaussian_filter1d, nys,       sigma_dir, mode="nearest")
+    _log.info("[camera_path] smoothing 4 position arrays in parallel  (RSS %.0f MB)", _rss_mb())
+    with ThreadPoolExecutor(max_workers=4) as _gpool:
         f_cam_xs    = _gpool.submit(gaussian_filter1d, cam_xs_raw, sigma,    mode="nearest")
         f_cam_ys    = _gpool.submit(gaussian_filter1d, cam_ys_raw, sigma,    mode="nearest")
         f_cam_zs    = _gpool.submit(gaussian_filter1d, cam_zs_raw, sigma,    mode="nearest")
         f_look_at_z = _gpool.submit(gaussian_filter1d, terrain_zs, sigma,    mode="nearest")
-        nxs       = f_nxs.result()
-        nys       = f_nys.result()
         cam_xs    = f_cam_xs.result()
         cam_ys    = f_cam_ys.result()
         cam_zs    = f_cam_zs.result()
         look_at_zs = f_look_at_z.result()
 
     del cam_xs_raw, cam_ys_raw, cam_zs_raw
-
-    mags = np.hypot(nxs, nys)
-    mags = np.where(mags > 1e-10, mags, 1.0)
-    nxs /= mags
-    nys /= mags
-    del mags
 
     # Frame numbers start at 1 to match Blender's default timeline origin and
     # the Build modifier's frame_start=1 in build_scene.py.
@@ -298,7 +298,7 @@ def build_camera_path(
     _xs         = xs.tolist();          del xs
     _ys         = ys.tolist();          del ys
     _look_at_zs = look_at_zs.tolist(); del look_at_zs
-    del nxs, nys, terrain_zs
+    del terrain_zs
 
     keyframes: list[CameraKeyframe] = [
         CameraKeyframe(
