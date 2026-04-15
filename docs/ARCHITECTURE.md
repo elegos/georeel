@@ -75,13 +75,21 @@ Launches Blender headlessly and runs `blender_scripts/build_scene.py` to:
 - Place the animated position marker and photo waypoint pins (billboard meshes with camera-facing constraints)
 - Set up sun lighting using computed azimuth/elevation for the track's location and time
 
-The resulting `.blend` file packs the texture internally and is stored in a temporary directory registered for cleanup on app exit.
+The resulting `.blend` file references the texture tiles as external PNG files and is stored in a temporary directory managed by `temp_manager`. Stale temporary directories from previous runs are detected and pruned on startup via `temp_manager.cleanup_stale()`; a custom base directory can be configured in *Pipeline Settings → Rendering*.
 
 ### 6. Camera Path Generator (`core/camera_path.py`)
 Fits a parametric cubic B-spline through the trackpoints and resamples it at equal arc-length intervals (one sample per frame at the configured speed). Computes per-frame camera position (behind and above the track at a configurable slant distance and tilt), look-at direction (tangent or next-waypoint), and inserts pause keyframes at photo waypoint positions. Outputs a list of `CameraKeyframe` objects.
 
 ### 7. Frame Renderer (`core/frame_renderer.py`)
-Launches Blender headlessly and runs `blender_scripts/render_frames.py`, which positions the camera at each keyframe and renders a PNG. Supports EEVEE (fast, rasterisation) and Cycles (slow, path tracing) engines at configurable quality levels. Output PNGs are stored in a temporary directory that is registered on `Pipeline._temp_dirs` for post-job cleanup.
+Launches Blender headlessly and runs `blender_scripts/render_frames.py`, which positions the camera at each keyframe and renders a PNG. Three render engines are supported:
+
+- **Viewport (draft)** — EEVEE at 4 TAA samples, no shadow maps, no ambient occlusion, satellite textures downscaled to 50% resolution in VRAM before rendering. This is the primary performance lever for terrain scenes, which are texture-bandwidth-bound rather than compute-bound.
+- **EEVEE** — full rasterisation at the configured quality level (32/64/128 samples).
+- **Cycles** — physically-based path tracer at the configured quality level (64/128/256 samples), with automatic GPU detection.
+
+When `render/n_segments > 1`, the render is split into N sequential Blender passes. Each pass loads only the terrain tiles whose world-space bounding boxes intersect the camera's AABB for that frame range, expanded by `render/frustum_margin_km`. This keeps per-pass VRAM proportional to the visible terrain fraction. Each Blender process exits completely between segments, fully releasing GPU memory before the next segment starts.
+
+Output PNGs are stored in a temporary directory that is registered on `Pipeline._temp_dirs` for post-job cleanup.
 
 ### 8. Photo Overlay Compositor (`core/photo_compositor.py`)
 Groups consecutive pause keyframes into blocks and renders them as a photo carousel:

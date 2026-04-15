@@ -16,7 +16,7 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 - **Fly-through camera** that follows the GPX track with a configurable height, speed, tilt, and look-ahead
 - **Photo waypoints** — geotagged photos are placed along the track and shown as full-screen overlays when the camera reaches their position
 - **Flexible photo matching** — by GPS coordinates, by EXIF timestamp, or both
-- **Customisable rendering** — resolution (landscape, portrait, square), frame rate, engine (EEVEE or Cycles), quality
+- **Customisable rendering** — resolution (landscape, portrait, square), frame rate, engine (Viewport draft / EEVEE / Cycles), quality
 - **Hardware encoder support** — NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox, and software fallbacks
 - **Project files** — save and reload work as `.georeel` archives; DEM and satellite data are cached inside
 - **Preview tools** — top-down map preview and short video preview before committing to a full render
@@ -26,7 +26,7 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 ## Screenshots
 ![Main window](docs/assets/main_window.png)
 
-![Render options](docs/assets/render_options.png)
+![Pipeline Settings](docs/assets/render_options.png)
 
 ---
 
@@ -83,7 +83,7 @@ Drag and drop a `.gpx` file onto the track area, or click to browse. The panel s
 
 Drag and drop geotagged photos onto the photo panel. GeoReel reads EXIF GPS coordinates and timestamps to place each photo at the correct position along the track.
 
-**Matching mode** (set via *Options → Render Settings → Photos*):
+**Matching mode** (set via *Options → Pipeline Settings → Photos*):
 
 | Mode | Behaviour |
 |---|---|
@@ -91,19 +91,24 @@ Drag and drop geotagged photos onto the photo panel. GeoReel reads EXIF GPS coor
 | Timestamp | Matches by EXIF date/time against GPX timestamps |
 | Both (default) | Uses GPS as primary; falls back to timestamp when GPS data is missing; warns if the two methods disagree by more than 100 m |
 
-If your camera clock was set to a different timezone, adjust the offset under *Render Settings → Playback*.
+If your camera clock was set to a different timezone, adjust the offset under *Pipeline Settings → Playback*.
 
-### 3. Configure render settings
+### 3. Configure pipeline settings
 
-Open *Options → Render Settings* to adjust:
+Open *Options → Pipeline Settings* to adjust:
 
-- **Playback** — frame rate (24/30/60 fps) and camera speed (m/s)
+- **Playback** — frame rate (24/30/60 fps)
 - **Camera** — path smoothing, height above terrain, orientation (tangent or look-at), downward tilt, look-ahead, photo pause duration
-- **Rendering** — engine (EEVEE/Cycles), aspect ratio (landscape/portrait/square), resolution, quality
+- **Rendering** — engine (Viewport draft / EEVEE / Cycles), aspect ratio (landscape/portrait/square), resolution, quality, PNG compression, render segments
 - **Photos** — transition style (fade or cut), letterbox fill (blurred or black), fade duration
 - **Map** — satellite imagery provider and detail level
 - **Pins** — colour of the track marker and photo waypoint pins
 - **Output** — container (MKV/MP4), codec (H.264/H.265/AV1), encoder, quality (CQ/CRF), preset
+
+See [docs/PIPELINE_SETTINGS.md](docs/PIPELINE_SETTINGS.md) for a full reference of all options.
+
+> [!NOTE]
+> If you run into **insufficient disk space** (the system `/tmp` partition fills up during processing), **GPU or system memory issues**, or **slow render performance**, see the [Troubleshooting: Performance and Memory](docs/PIPELINE_SETTINGS.md#troubleshooting-performance-and-memory) section of the Pipeline Settings reference. It covers how to redirect all temporary files to a different directory, how to reduce VRAM usage, and how to speed up rendering.
 
 ### 4. Preview
 
