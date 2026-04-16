@@ -21,7 +21,7 @@ Built with Python and Blender, it uses only open data sources (SRTM elevation, E
 - **Customisable rendering** — resolution (landscape, portrait, square), frame rate, engine (Viewport draft / EEVEE / Cycles), quality
 - **Hardware encoder support** — NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox, and software fallbacks
 - **Clip effects** — optional fade-to-black intro/outro, customisable opening-title overlay, and background music with crossfade support
-- **Locality names overlay** — Nominatim reverse geocoding composites the current place name onto the video with fade-in/fade-out; uses the official OSM servers, a self-hosted Docker/Podman container, or any custom Nominatim endpoint
+- **Locality names overlay** — Nominatim reverse geocoding composites the current place name onto the video with fade-in/fade-out; uses the official OSM servers, a self-hosted Docker/Podman container, or any custom Nominatim endpoint; includes a *Preview* button that queries Nominatim in the background and shows the full timeline before committing to a render
 - **Project files** — save and reload work as `.georeel` archives; DEM and satellite data are cached inside
 - **Preview tools** — top-down map preview and short video preview before committing to a full render
 - **Open in Blender** — inspect or manually edit the generated scene before rendering
@@ -171,7 +171,7 @@ Progress is shown frame-by-frame. You can cancel at any time.
 
 ### 6. Save/load projects
 
-Use *File → Save Project* to write a `.georeel` file. It bundles the GPX path, photo references, elevation grid, satellite texture, and render settings so you can resume work later without re-downloading data.
+Use *File → Save Project* to write a `.georeel` file. It bundles the GPX track, photos, elevation grid, satellite texture, render settings, and — if a locality names preview has been run — the computed locality timeline.  Saves are atomic: GeoReel writes to a temporary file first and renames it into place, so the existing file is never overwritten mid-write.
 
 ---
 

@@ -12,13 +12,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Locality names overlay** — a new *Locality names* tab in the main window optionally
   composites the current location name (from Nominatim reverse geocoding) onto the video
   as a fade-in/fade-out overlay.
-  - Three Nominatim backend options: OSM public servers, a local Docker/Podman container
-    (`mediagis/nominatim:4.4`), or a custom URL.
+  - Two Nominatim backend options: OSM public servers or a custom URL.
   - Configurable check interval (default: every 60 s of track time), detail level
-    (village → country), display position (9 anchors), duration, text colour, and shadow.
-  - Docker/Podman backend: specify the PBF source URL, port, and choose whether to keep
-    the data volume between runs; includes *Start*, *Stop*, and *Clean volumes* actions.
+    (village → country), display position (9 anchors), duration (or *Forever* mode),
+    text colour, and shadow.
   - Cross-fade when the location name changes faster than the configured duration.
+- **Locality names preview** — a *Preview locality names…* button in the *Locality names*
+  tab queries Nominatim in a background thread and displays the full timeline in a table
+  (location name, track time as either an absolute UTC clock or elapsed HH:MM:SS, and
+  frame range).  Requires the GPX track to be loaded and keyframes to be calculated first.
+- **Locality names timeline caching** — the timeline computed by the preview (or during
+  a full render) is kept in memory and reused at render time, avoiding re-querying
+  Nominatim for the same track and settings.  The timeline is saved inside the `.georeel`
+  archive (`locality/timeline.json`) and restored when the project is re-opened.
+  The cache is automatically invalidated when the Nominatim service, URL, check interval,
+  detail level, or GPX track changes.
+
+### Changed
+
+- *Preview locality names…* triggers camera-path computation automatically when the
+  GPX track is loaded but keyframes have not yet been calculated, so users no longer
+  need to click *Calculate keyframes* manually before previewing.
+
+### Fixed
+
+- Sporadic abrupt orientation jumps in the fly-through camera.  A second-pass
+  MAD-based (median absolute deviation) spike filter now detects frames where the
+  heading change is significantly larger than the median and replaces the affected frames
+  with a linear interpolation from the surrounding smooth orientations.
+- Saving a project with a lazy-loaded satellite texture produced a 0-byte
+  `satellite/texture.png` in the resulting archive.  The save now writes to a sibling
+  `.tmp` file and atomically renames it, so the original archive (the texture's source
+  ZIP) is never opened for writing while still being read.
+- `autosave_tilde` produced ZIP archives with duplicate (shadow) entries when called
+  more than once for the same project.  The function now performs a clean rewrite from
+  the base archive — copying unchanged entries and writing updated ones — rather than
+  appending, which always produces duplicate central-directory entries in append mode.
 
 ## [1.3.0] - 2026-04-15
 

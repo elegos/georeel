@@ -358,7 +358,6 @@ Which Nominatim backend to use.
 | Value | Description |
 |---|---|
 | `osm` | Official OSM Nominatim servers (`nominatim.openstreetmap.org`). Subject to the [usage policy](https://operations.osmfoundation.org/policies/nominatim/) (max 1 req/s, no bulk use). |
-| `docker` | Local container running `mediagis/nominatim:4.4`.  Requires Docker or Podman.  Radio button is disabled if neither is detected. |
 | `custom` | User-supplied base URL (any Nominatim-compatible endpoint). |
 
 #### Custom URL
@@ -367,39 +366,6 @@ Which Nominatim backend to use.
 
 Base URL of the custom Nominatim instance, e.g. `http://my-server:8080`.
 The `/reverse` path is appended automatically.
-
-#### Docker/Podman — PBF URL
-**Key:** `locality_names/docker_pbf_url` | **Default:** `""`  
-*Visible only when Service = `docker`.*
-
-URL of the OpenStreetMap PBF extract to load into the container.
-The extract must cover the entire track.  For tracks crossing multiple
-regions, use a country- or continent-level extract from
-[Geofabrik](https://download.geofabrik.de/).
-
-#### Docker/Podman — Port
-**Key:** `locality_names/docker_port` | **Default:** `8080`  
-*Visible only when Service = `docker`.*
-
-Host port mapped to the container's port 8080.
-
-#### Docker/Podman — Keep data volume
-**Key:** `locality_names/docker_keep` | **Default:** `false`  
-*Visible only when Service = `docker`.*
-
-When enabled, the container's PostgreSQL data is persisted in the
-`georeel-nominatim-data` Docker volume between runs, avoiding a
-time-consuming PBF re-import on subsequent uses.  Use *Clean docker
-volumes* to remove accumulated data when switching to a different region.
-
-#### Docker/Podman — Container actions
-Three buttons manage the container lifecycle:
-
-| Button | Action |
-|---|---|
-| *Start container* | Runs `docker run -d … mediagis/nominatim:4.4`.  PBF data is imported on first start; the container exposes the API on the configured port. |
-| *Stop container* | Runs `docker rm -f georeel-nominatim`. |
-| *Clean docker volumes* | Runs `docker volume rm -f georeel-nominatim-data`.  Frees disk space; the next container start will re-import the PBF. |
 
 ---
 
@@ -418,7 +384,7 @@ the first occurrence of a new name triggers a visible change in the overlay.
 
 > **Rate limiting:** the official OSM servers allow at most 1 request/second.
 > At 60 s intervals this is well within the policy; at very short intervals
-> consider switching to a local Docker instance.
+> consider switching to a self-hosted Nominatim instance via *Custom URL*.
 
 #### Detail level
 **Key:** `locality_names/detail_level` | **Default:** `"city"`
@@ -454,7 +420,8 @@ Where the place-name text is anchored within the video frame.
 | `bottom-right` | Lower-right corner |
 
 #### Duration
-**Key:** `locality_names/duration` | **Default:** `5.0` | **Unit:** seconds
+**Key:** `locality_names/duration` | **Default:** `5.0` | **Unit:** seconds  
+*Disabled when* ***Forever*** *is checked.*
 
 Total time (including the fixed 1 s fade-in and 1 s fade-out) that each
 place name is displayed after entering a new locality.  If the same locality
@@ -464,6 +431,14 @@ next different name is detected.
 When a new locality is detected before the previous overlay's duration
 expires, the two labels cross-fade: the old name fades out while the new
 name fades in simultaneously.
+
+#### Duration — Forever
+**Key:** `locality_names/duration_forever` | **Default:** `false`
+
+When enabled, each locality name stays visible from its first frame until the
+next locality name begins (or until the end of the video), regardless of the
+*Duration* value.  The *Duration* spin box is disabled.  Cross-fades at
+locality transitions still apply.
 
 #### Text color
 **Key:** `locality_names/text_color` | **Default:** `"#ffffff"`
@@ -475,3 +450,31 @@ Hex colour string for the place-name text.
 
 Renders a semi-transparent black drop shadow, improving legibility over
 bright satellite imagery or sky.
+
+---
+
+### Preview
+
+#### Preview locality names…
+
+Queries Nominatim in a background thread using the current service and
+sampling settings, then shows the full locality timeline in a modal table:
+
+| Column | Content |
+|---|---|
+| **Location** | The `display_name` returned by Nominatim |
+| **Track time** | Absolute UTC time (e.g. `09:57:06 UTC`) when the GPX has timestamps, or elapsed offset (`HH:MM:SS`) otherwise |
+| **Frames** | Frame range during which this locality name is active (e.g. `1027–1138`) |
+
+The button is enabled only after the GPX track is loaded and keyframes are
+calculated (via the *Calculate keyframes* button in the *Photos* panel).  A
+progress bar appears while queries are in flight.
+
+The result is cached in memory and reused as-is if the full render is
+started without changing any geocoding-relevant setting (service, URL, check
+interval, or detail level).  Changing the GPX track or any of those settings
+clears the cache.
+
+The timeline is also saved inside the `.georeel` project archive
+(`locality/timeline.json`) and restored when the project is re-opened, so
+you do not need to re-run the preview after loading a saved project.

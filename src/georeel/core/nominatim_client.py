@@ -4,7 +4,6 @@ import bisect
 import json
 import logging
 import math
-import shutil
 from typing import Any, Callable, NamedTuple
 
 from .trackpoint import Trackpoint
@@ -12,9 +11,6 @@ from .trackpoint import Trackpoint
 _log = logging.getLogger(__name__)
 
 _OSM_NOMINATIM_URL = "https://nominatim.openstreetmap.org"
-_NOMINATIM_CONTAINER_NAME = "georeel-nominatim"
-_NOMINATIM_VOLUME_NAME    = "georeel-nominatim-data"
-_NOMINATIM_IMAGE          = "mediagis/nominatim:4.4"
 
 # Nominatim zoom levels: https://nominatim.org/release-docs/latest/api/Reverse/
 _DETAIL_ZOOM: dict[str, int] = {
@@ -30,23 +26,7 @@ class LocalityEntry(NamedTuple):
     """A locality name that becomes active at a given video frame."""
     frame_start: int
     name: str
-
-
-def is_docker_available() -> bool:
-    return shutil.which("docker") is not None
-
-
-def is_podman_available() -> bool:
-    return shutil.which("podman") is not None
-
-
-def get_container_runtime() -> str | None:
-    """Return 'docker', 'podman', or None. Docker preferred."""
-    if is_docker_available():
-        return "docker"
-    if is_podman_available():
-        return "podman"
-    return None
+    track_time_s: float = 0.0  # track-time offset (seconds) of this sample
 
 
 def reverse_geocode(
@@ -57,7 +37,11 @@ def reverse_geocode(
     base_url: str = _OSM_NOMINATIM_URL,
     timeout: float = 10.0,
 ) -> str | None:
-    """Return display_name from Nominatim for (lat, lon), or None on failure."""
+    """Return the primary locality name from Nominatim for (lat, lon), or None on failure.
+
+    Only the first comma-separated component of ``display_name`` is returned
+    (e.g. ``"Nave"`` rather than ``"Nave, Comunità montana …"``).
+    """
     import urllib.request
     import urllib.parse
 
@@ -74,8 +58,12 @@ def reverse_geocode(
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data: dict[str, Any] = json.loads(resp.read().decode())
-        name = data.get("display_name")
-        return str(name) if name else None
+        display = data.get("display_name")
+        if not display:
+            return None
+        # Keep only the first comma-separated component (e.g. "Nave" from
+        # "Nave, Comunità montana della valle Trompia, Brescia, …").
+        return str(display).split(",")[0].strip() or None
     except Exception as exc:
         _log.warning("Nominatim (%s) reverse geocode (%.5f, %.5f) failed: %s",
                      base_url, lat, lon, exc)
@@ -142,15 +130,12 @@ def build_locality_timeline(
     zoom    = _DETAIL_ZOOM.get(detail, _DETAIL_ZOOM["city"])
     service = str(settings.get("locality_names/service", "osm"))
 
-    if service == "osm":
-        base_url = _OSM_NOMINATIM_URL
-    elif service == "custom":
+    if service == "custom":
         base_url = str(settings.get("locality_names/custom_url", _OSM_NOMINATIM_URL)).strip()
         if not base_url:
             base_url = _OSM_NOMINATIM_URL
-    else:  # docker / podman
-        port = int(settings.get("locality_names/docker_port", 8080))
-        base_url = f"http://localhost:{port}"
+    else:  # "osm" or unknown
+        base_url = _OSM_NOMINATIM_URL
 
     track_times = _cumulative_times(trackpoints)
     total_t     = track_times[-1] if track_times else 0.0
@@ -181,129 +166,7 @@ def build_locality_timeline(
 
         if name and name != last_name:
             frame = _frame_at_track_time(st, track_times, total_frames)
-            entries.append(LocalityEntry(frame_start=frame, name=name))
+            entries.append(LocalityEntry(frame_start=frame, name=name, track_time_s=st))
             last_name = name
 
     return entries
-
-
-def get_container_port(
-    runtime: str | None = None,
-    container_name: str = _NOMINATIM_CONTAINER_NAME,
-) -> int | None:
-    """Return the host port bound to container port 8080/tcp, or None on failure."""
-    import subprocess
-
-    rt = runtime or get_container_runtime()
-    if rt is None:
-        return None
-    try:
-        result = subprocess.run(
-            [rt, "port", container_name, "8080/tcp"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-        # Output lines look like "0.0.0.0:54321" or "127.0.0.1:54321"
-        for line in result.stdout.strip().splitlines():
-            if ":" in line:
-                return int(line.rsplit(":", 1)[1])
-    except Exception:
-        pass
-    return None
-
-
-def start_nominatim_container(
-    pbf_url: str,
-    keep_volume: bool = False,
-    runtime: str | None = None,
-    *,
-    _container_name: str = _NOMINATIM_CONTAINER_NAME,
-    _image: str = _NOMINATIM_IMAGE,
-    _extra_cmd: list[str] | None = None,
-) -> tuple[bool, str, int]:
-    """Start georeel-nominatim Docker/Podman container.
-
-    The container's port 8080 is bound to a random local port chosen by the
-    OS (``-p 127.0.0.1::8080``) to avoid conflicts with other services.
-
-    Returns ``(success, message, actual_host_port)``.  ``actual_host_port``
-    is 0 when the container did not start successfully.
-    """
-    import subprocess
-
-    rt = runtime or get_container_runtime()
-    if rt is None:
-        return False, "Docker/Podman not available.", 0
-
-    subprocess.run([rt, "rm", "-f", _container_name], capture_output=True)
-
-    cmd = [
-        rt, "run", "-d",
-        "-e", f"PBF_URL={pbf_url}",
-        "-p", "127.0.0.1::8080",
-        "--name", _container_name,
-    ]
-    if keep_volume:
-        cmd += ["-v", f"{_NOMINATIM_VOLUME_NAME}:/var/lib/postgresql/14/main"]
-    cmd.append(_image)
-    if _extra_cmd:
-        cmd.extend(_extra_cmd)
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return False, result.stderr.strip() or "docker run failed.", 0
-    except Exception as exc:
-        return False, str(exc), 0
-
-    actual_port = get_container_port(rt, container_name=_container_name) or 0
-    return (
-        True,
-        f"Container started (port {actual_port}). Loading PBF — may take minutes.",
-        actual_port,
-    )
-
-
-def stop_nominatim_container(
-    runtime: str | None = None,
-    *,
-    _container_name: str = _NOMINATIM_CONTAINER_NAME,
-) -> tuple[bool, str]:
-    """Stop and remove the Nominatim container."""
-    import subprocess
-
-    rt = runtime or get_container_runtime()
-    if rt is None:
-        return False, "Docker/Podman not available."
-    try:
-        result = subprocess.run(
-            [rt, "rm", "-f", _container_name],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
-            return True, "Container stopped."
-        return False, result.stderr.strip() or "rm -f failed."
-    except Exception as exc:
-        return False, str(exc)
-
-
-def clean_nominatim_volumes(runtime: str | None = None) -> tuple[bool, str]:
-    """Remove the Nominatim Docker volume."""
-    import subprocess
-
-    rt = runtime or get_container_runtime()
-    if rt is None:
-        return False, "Docker/Podman not available."
-    try:
-        result = subprocess.run(
-            [rt, "volume", "rm", "-f", _NOMINATIM_VOLUME_NAME],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
-            return True, "Volume removed."
-        return False, result.stderr.strip() or "volume rm failed."
-    except Exception as exc:
-        return False, str(exc)

@@ -1,9 +1,10 @@
 # pyright: reportUninitializedInstanceVariable=false
 """Locality names settings widget — Nominatim reverse geocoding overlay."""
 
+from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QThread, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -13,32 +14,88 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
-    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 from PySide6.QtGui import QColor
 
-from georeel.core.nominatim_client import get_container_runtime
+from georeel.core.nominatim_client import LocalityEntry
 
 _T = TypeVar("_T")
 
-_KEY_ENABLED        = "locality_names/enabled"
-_KEY_SERVICE        = "locality_names/service"
-_KEY_CUSTOM_URL     = "locality_names/custom_url"
-_KEY_DOCKER_PBF_URL = "locality_names/docker_pbf_url"
-_KEY_DOCKER_PORT    = "locality_names/docker_port"
-_KEY_DOCKER_KEEP    = "locality_names/docker_keep"
-_KEY_CHECK_EVERY_S  = "locality_names/check_every_s"
-_KEY_DETAIL_LEVEL   = "locality_names/detail_level"
-_KEY_POSITION       = "locality_names/position"
-_KEY_DURATION       = "locality_names/duration"
-_KEY_TEXT_COLOR     = "locality_names/text_color"
-_KEY_SHADOW         = "locality_names/shadow"
+_KEY_ENABLED          = "locality_names/enabled"
+_KEY_SERVICE          = "locality_names/service"
+_KEY_CUSTOM_URL       = "locality_names/custom_url"
+_KEY_CHECK_EVERY_S    = "locality_names/check_every_s"
+_KEY_DETAIL_LEVEL     = "locality_names/detail_level"
+_KEY_POSITION         = "locality_names/position"
+_KEY_DURATION         = "locality_names/duration"
+_KEY_DURATION_FOREVER = "locality_names/duration_forever"
+_KEY_TEXT_COLOR       = "locality_names/text_color"
+_KEY_SHADOW           = "locality_names/shadow"
+
+def _format_track_time(
+    track_time_s: float,
+    first_ts: datetime | None,
+) -> str:
+    """Format a track-time offset as a human-readable string.
+
+    If the first trackpoint has a UTC timestamp, return the absolute UTC
+    clock time (``HH:MM:SS UTC``).  Otherwise return an elapsed offset
+    (``HH:MM:SS``).
+    """
+    from datetime import timedelta
+    if first_ts is not None:
+        abs_ts = first_ts.astimezone(timezone.utc) + timedelta(seconds=track_time_s)
+        return abs_ts.strftime("%H:%M:%S UTC")
+    total = int(track_time_s)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+class _LocalityPreviewWorker(QThread):
+    """Background worker that calls build_locality_timeline and emits results."""
+
+    finished = Signal(object)   # list[LocalityEntry]
+    error    = Signal(str)
+    progress = Signal(int, int) # (current, total)
+
+    def __init__(
+        self,
+        trackpoints: list[Any],
+        total_frames: int,
+        settings: dict[str, Any],
+    ) -> None:
+        super().__init__()
+        self._trackpoints  = trackpoints
+        self._total_frames = total_frames
+        self._settings     = settings
+
+    def run(self) -> None:
+        try:
+            from georeel.core.nominatim_client import build_locality_timeline
+            result = build_locality_timeline(
+                self._trackpoints,
+                self._total_frames,
+                self._settings,
+                progress_cb=lambda cur, tot: self.progress.emit(cur, tot),
+            )
+            self.finished.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+
 
 _DETAIL_LEVELS = [
     ("Village", "village"),
@@ -64,6 +121,10 @@ _POSITIONS = [
 class LocalityNamesWidget(QWidget):
     """Provides locality names overlay settings backed by QSettings."""
 
+    # Emitted when the user triggers a preview but keyframes haven't been
+    # computed yet.  main_window connects this to _calculate_keyframes().
+    calculate_keyframes_requested = Signal()
+
     def _qsv(self, key: str, default: _T) -> _T:
         """Type-safe QSettings.value() wrapper — infers return type from default."""
         return cast(_T, self._settings.value(key, default, type=type(default)))
@@ -72,7 +133,52 @@ class LocalityNamesWidget(QWidget):
         super().__init__(parent)
         self._settings = settings
         self._text_color: str = self._qsv(_KEY_TEXT_COLOR, "#ffffff")
+        # Pipeline context — set by main_window after keyframes are computed.
+        self._trackpoints: list[Any] = []
+        self._total_frames: int = 0
+        self._fps: int = 30
+        self._preview_worker: _LocalityPreviewWorker | None = None
+        # Set when preview was clicked but keyframes haven't been computed yet.
+        self._preview_pending_after_keyframes: bool = False
+        # Cached locality timeline — reused for final render to avoid re-querying Nominatim.
+        # Invalidated when geocoding-relevant settings change or when the GPX track changes.
+        self._cached_timeline: list[LocalityEntry] | None = None
         self._build_group()
+
+    def set_pipeline_context(
+        self,
+        trackpoints: list[Any],
+        total_frames: int,
+        fps: int = 30,
+    ) -> None:
+        """Called by main_window once trackpoints and frame count are known."""
+        self._trackpoints  = trackpoints
+        self._total_frames = total_frames
+        self._fps          = fps
+        pending = self._preview_pending_after_keyframes
+        if pending:
+            self._preview_pending_after_keyframes = False
+        self._update_preview_btn_state()
+        if pending and trackpoints and total_frames > 0:
+            self._run_preview_query()
+
+    def notify_keyframe_calc_failed(self) -> None:
+        """Called by main_window if keyframe calculation (triggered by preview) fails."""
+        if self._preview_pending_after_keyframes:
+            self._preview_pending_after_keyframes = False
+            self._update_preview_btn_state()
+
+    def _update_preview_btn_state(self) -> None:
+        """Enable the preview button unless a query is in progress or custom URL is blank."""
+        in_progress = (
+            (self._preview_worker is not None and self._preview_worker.isRunning())
+            or self._preview_pending_after_keyframes
+        )
+        custom_url_empty = (
+            self._custom_radio.isChecked()
+            and not self._custom_url_edit.text().strip()
+        )
+        self._preview_btn.setEnabled(not in_progress and not custom_url_empty)
 
     # ------------------------------------------------------------------
     # Tab widget factory
@@ -115,102 +221,24 @@ class LocalityNamesWidget(QWidget):
             "Subject to the OSM usage policy (max 1 request/second)."
         )
 
-        docker_available = get_container_runtime() is not None
-        self._docker_radio = QRadioButton("Docker / Podman (local)")
-        self._docker_radio.setEnabled(docker_available)
-        if not docker_available:
-            self._docker_radio.setToolTip(
-                "Docker and Podman are not available on this system.\n"
-                "Install Docker or Podman to use a local Nominatim container."
-            )
-        else:
-            self._docker_radio.setToolTip(
-                "Run a local Nominatim container using Docker or Podman.\n"
-                "Requires downloading a PBF extract for your region."
-            )
-
         self._custom_radio = QRadioButton("Custom URL")
         self._custom_radio.setToolTip(
-            "Use a custom Nominatim-compatible endpoint (e.g. a private server)."
+            "Use a custom Nominatim-compatible endpoint (e.g. a self-hosted server)."
         )
 
         self._service_group = QButtonGroup(self)
         self._service_group.addButton(self._osm_radio)
-        self._service_group.addButton(self._docker_radio)
         self._service_group.addButton(self._custom_radio)
 
         saved_service = self._qsv(_KEY_SERVICE, "osm")
-        if saved_service == "docker" and docker_available:
-            self._docker_radio.setChecked(True)
-        elif saved_service == "custom":
+        if saved_service == "custom":
             self._custom_radio.setChecked(True)
         else:
             self._osm_radio.setChecked(True)
 
         service_row.addWidget(self._osm_radio)
-        service_row.addWidget(self._docker_radio)
         service_row.addWidget(self._custom_radio)
         form.addRow("Service:", service_row)
-
-        # ── Docker section ────────────────────────────────────────────
-        self._docker_widget = QWidget()
-        docker_form = QFormLayout(self._docker_widget)
-        docker_form.setContentsMargins(20, 0, 0, 0)
-        docker_form.setSpacing(6)
-
-        self._docker_pbf_edit = QLineEdit()
-        self._docker_pbf_edit.setPlaceholderText(
-            "https://download.geofabrik.de/europe/…-latest.osm.pbf"
-        )
-        self._docker_pbf_edit.setText(self._qsv(_KEY_DOCKER_PBF_URL, ""))
-        self._docker_pbf_edit.textChanged.connect(
-            lambda v: self._settings.setValue(_KEY_DOCKER_PBF_URL, v)
-        )
-        docker_form.addRow("PBF URL:", self._docker_pbf_edit)
-
-        self._docker_port_spin = QSpinBox()
-        self._docker_port_spin.setRange(1024, 65535)
-        self._docker_port_spin.setValue(self._qsv(_KEY_DOCKER_PORT, 8080))
-        self._docker_port_spin.setReadOnly(True)
-        self._docker_port_spin.setToolTip(
-            "Actual host port assigned to the container after Start.\n"
-            "The OS picks a free port automatically."
-        )
-        self._docker_port_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(_KEY_DOCKER_PORT, v)
-        )
-        docker_form.addRow("Port (auto):", self._docker_port_spin)
-
-        self._docker_keep_chk = QCheckBox("Keep volume between runs")
-        self._docker_keep_chk.setChecked(self._qsv(_KEY_DOCKER_KEEP, False))
-        self._docker_keep_chk.setToolTip(
-            "Preserve the PostgreSQL data volume so the PBF import survives\n"
-            "container restarts. Requires more disk space."
-        )
-        self._docker_keep_chk.toggled.connect(
-            lambda v: self._settings.setValue(_KEY_DOCKER_KEEP, v)
-        )
-        docker_form.addRow("", self._docker_keep_chk)
-
-        docker_btn_row = QHBoxLayout()
-        self._docker_start_btn = QPushButton("Start container")
-        self._docker_stop_btn  = QPushButton("Stop container")
-        self._docker_clean_btn = QPushButton("Clean volumes")
-        docker_btn_row.addWidget(self._docker_start_btn)
-        docker_btn_row.addWidget(self._docker_stop_btn)
-        docker_btn_row.addWidget(self._docker_clean_btn)
-        docker_btn_row.addStretch()
-        docker_form.addRow("", docker_btn_row)
-
-        self._docker_status_lbl = QLabel()
-        self._docker_status_lbl.setWordWrap(True)
-        docker_form.addRow("Status:", self._docker_status_lbl)
-
-        self._docker_start_btn.clicked.connect(self._on_docker_start)
-        self._docker_stop_btn.clicked.connect(self._on_docker_stop)
-        self._docker_clean_btn.clicked.connect(self._on_docker_clean)
-
-        outer.addWidget(self._docker_widget)
 
         # ── Custom URL section ────────────────────────────────────────
         self._custom_widget = QWidget()
@@ -280,6 +308,10 @@ class LocalityNamesWidget(QWidget):
         form2.addRow("Position:", self._position_combo)
 
         # ── Duration ──────────────────────────────────────────────────
+        duration_row = QHBoxLayout()
+        duration_row.setContentsMargins(0, 0, 0, 0)
+        duration_row.setSpacing(8)
+
         self._duration_spin = QDoubleSpinBox()
         self._duration_spin.setRange(0.5, 60.0)
         self._duration_spin.setSingleStep(0.5)
@@ -292,7 +324,27 @@ class LocalityNamesWidget(QWidget):
         self._duration_spin.valueChanged.connect(
             lambda v: self._settings.setValue(_KEY_DURATION, v)
         )
-        form2.addRow("Duration:", self._duration_spin)
+
+        self._duration_forever_chk = QCheckBox("Forever")
+        self._duration_forever_chk.setToolTip(
+            "Keep each locality name visible until the next name appears\n"
+            "(or until the end of the video), instead of hiding after the\n"
+            "configured duration.  A cross-fade still occurs at transitions."
+        )
+        _forever_init = self._qsv(_KEY_DURATION_FOREVER, False)
+        self._duration_forever_chk.setChecked(_forever_init)
+        self._duration_spin.setEnabled(not _forever_init)
+
+        def _on_forever_toggled(checked: bool) -> None:
+            self._settings.setValue(_KEY_DURATION_FOREVER, checked)
+            self._duration_spin.setEnabled(not checked)
+
+        self._duration_forever_chk.toggled.connect(_on_forever_toggled)
+
+        duration_row.addWidget(self._duration_spin)
+        duration_row.addWidget(self._duration_forever_chk)
+        duration_row.addStretch()
+        form2.addRow("Duration:", duration_row)
 
         # ── Text color + shadow ───────────────────────────────────────
         color_row = QHBoxLayout()
@@ -311,45 +363,183 @@ class LocalityNamesWidget(QWidget):
 
         self._color_btn.clicked.connect(self._pick_color)
 
+        # ── Preview ───────────────────────────────────────────────────
+        preview_row = QHBoxLayout()
+        self._preview_btn = QPushButton("Compute locality names")
+        self._preview_btn.setEnabled(False)
+        self._preview_btn.setToolTip(
+            "Query Nominatim with the current settings and populate the\n"
+            "locality name timeline below (location, track time, frame range)."
+        )
+        self._preview_btn.clicked.connect(self._on_preview_clicked)
+        self._preview_progress = QProgressBar()
+        self._preview_progress.setRange(0, 0)
+        self._preview_progress.setVisible(False)
+        self._preview_progress.setMaximumWidth(120)
+        preview_row.addWidget(self._preview_btn)
+        preview_row.addWidget(self._preview_progress)
+        preview_row.addStretch()
+        outer.addLayout(preview_row)
+
+        # ── Locality names timeline table ─────────────────────────────
+        self._timeline_table = QTableWidget(0, 3)
+        self._timeline_table.setHorizontalHeaderLabels(["Location", "Track time", "Frames"])
+        _hdr = self._timeline_table.horizontalHeader()
+        _hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        _hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        _hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._timeline_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._timeline_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._timeline_table.setAlternatingRowColors(True)
+        self._timeline_table.setVisible(False)
+        outer.addWidget(self._timeline_table)
+
         # ── Service visibility logic ──────────────────────────────────
         def _update_service_widgets() -> None:
-            if self._docker_radio.isChecked():
-                svc = "docker"
-            elif self._custom_radio.isChecked():
-                svc = "custom"
-            else:
-                svc = "osm"
+            svc = "custom" if self._custom_radio.isChecked() else "osm"
             self._settings.setValue(_KEY_SERVICE, svc)
-            self._docker_widget.setVisible(svc == "docker")
             self._custom_widget.setVisible(svc == "custom")
 
         _update_service_widgets()
         self._osm_radio.toggled.connect(lambda _: _update_service_widgets())
-        self._docker_radio.toggled.connect(lambda _: _update_service_widgets())
         self._custom_radio.toggled.connect(lambda _: _update_service_widgets())
+        # Invalidate cached timeline when any Nominatim-query-affecting setting changes.
+        # _invalidate_timeline always calls _update_preview_btn_state, so service/URL
+        # changes (which affect the custom_url_empty check) are also covered here.
+        self._osm_radio.toggled.connect(lambda _: self._invalidate_timeline())
+        self._custom_radio.toggled.connect(lambda _: self._invalidate_timeline())
+        self._custom_url_edit.textChanged.connect(lambda _: self._invalidate_timeline())
+        self._check_every_spin.valueChanged.connect(lambda _: self._invalidate_timeline())
+        self._detail_combo.currentIndexChanged.connect(lambda _: self._invalidate_timeline())
+
+        # Set initial button state (e.g. disabled when custom URL is blank on load).
+        self._update_preview_btn_state()
 
     # ------------------------------------------------------------------
-    # Docker button handlers
+    # Timeline cache
     # ------------------------------------------------------------------
 
-    def _on_docker_start(self) -> None:
-        from georeel.core.nominatim_client import start_nominatim_container
-        pbf = self._docker_pbf_edit.text().strip()
-        keep = self._docker_keep_chk.isChecked()
-        ok, msg, actual_port = start_nominatim_container(pbf, keep_volume=keep)
-        if ok and actual_port:
-            self._docker_port_spin.setValue(actual_port)
-        self._docker_status_lbl.setText(msg)
+    def _invalidate_timeline(self) -> None:
+        """Clear the cached locality timeline (e.g. when settings change)."""
+        self._cached_timeline = None
+        self._update_preview_btn_state()
 
-    def _on_docker_stop(self) -> None:
-        from georeel.core.nominatim_client import stop_nominatim_container
-        ok, msg = stop_nominatim_container()
-        self._docker_status_lbl.setText(msg)
+    def get_cached_timeline(self) -> list[LocalityEntry] | None:
+        """Return the cached locality timeline, or None if not yet computed / invalidated."""
+        return self._cached_timeline
 
-    def _on_docker_clean(self) -> None:
-        from georeel.core.nominatim_client import clean_nominatim_volumes
-        ok, msg = clean_nominatim_volumes()
-        self._docker_status_lbl.setText(msg)
+    def set_cached_timeline(self, entries: list[LocalityEntry] | None) -> None:
+        """Set (or clear) the cached locality timeline.
+
+        Called by main_window when restoring a project that has a saved timeline.
+        Populates the inline table immediately so the user sees the data without
+        clicking anything.
+        """
+        self._cached_timeline = entries
+        self._populate_timeline_table(entries or [])
+        self._update_preview_btn_state()
+
+    # ------------------------------------------------------------------
+    # Inline timeline table
+    # ------------------------------------------------------------------
+
+    def _populate_timeline_table(self, entries: list[LocalityEntry]) -> None:
+        """Fill the inline timeline table with *entries* (may be empty)."""
+        fps = self._fps or 30
+        forever = self._duration_forever_chk.isChecked()
+        duration_frames = max(1, round(self._duration_spin.value() * fps))
+        frames_known = self._total_frames > 0
+        first_ts: datetime | None = None
+        if self._trackpoints:
+            first_ts = getattr(self._trackpoints[0], "timestamp", None)
+
+        self._timeline_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            if frames_known:
+                if forever:
+                    # Name lasts until the next entry starts (or end of video)
+                    if row + 1 < len(entries):
+                        frame_end = entries[row + 1].frame_start - 1
+                    else:
+                        frame_end = self._total_frames - 1
+                else:
+                    frame_end = min(
+                        entry.frame_start + duration_frames - 1, self._total_frames - 1
+                    )
+                frame_cell = f"{entry.frame_start}–{frame_end}"
+            else:
+                frame_cell = "—"
+            self._timeline_table.setItem(row, 0, QTableWidgetItem(entry.name))
+            self._timeline_table.setItem(
+                row, 1,
+                QTableWidgetItem(_format_track_time(entry.track_time_s, first_ts)),
+            )
+            self._timeline_table.setItem(row, 2, QTableWidgetItem(frame_cell))
+
+        self._timeline_table.setVisible(len(entries) > 0)
+
+    # ------------------------------------------------------------------
+    # Preview
+    # ------------------------------------------------------------------
+
+    def _on_preview_clicked(self) -> None:
+        if self._preview_worker and self._preview_worker.isRunning():
+            return
+        if self._preview_pending_after_keyframes:
+            return  # already waiting for keyframe calculation
+
+        # No keyframe context yet — trigger calculation automatically; preview will
+        # resume once set_pipeline_context() is called with the results.
+        if not self._trackpoints or self._total_frames <= 0:
+            self._preview_pending_after_keyframes = True
+            self._update_preview_btn_state()
+            self.calculate_keyframes_requested.emit()
+            return
+
+        self._run_preview_query()
+
+    def _run_preview_query(self) -> None:
+        """Start the background locality preview worker."""
+        settings = self.get_settings()
+        settings[_KEY_ENABLED] = True  # force enabled for preview regardless of checkbox
+
+        self._preview_btn.setEnabled(False)
+        self._preview_progress.setVisible(True)
+        self._preview_progress.setRange(0, 0)
+
+        worker = _LocalityPreviewWorker(
+            self._trackpoints, self._total_frames, settings
+        )
+        worker.progress.connect(self._on_preview_progress)
+        worker.finished.connect(self._on_preview_finished)
+        worker.error.connect(self._on_preview_error)
+        self._preview_worker = worker
+        worker.start()
+
+    def _on_preview_progress(self, current: int, total: int) -> None:
+        self._preview_progress.setRange(0, total)
+        self._preview_progress.setValue(current)
+
+    def _on_preview_finished(self, entries: list[LocalityEntry]) -> None:
+        self._preview_progress.setVisible(False)
+        self._update_preview_btn_state()
+
+        # Cache for reuse during final render and populate inline table.
+        self._cached_timeline = entries if entries else None
+        self._populate_timeline_table(entries)
+
+        if not entries:
+            QMessageBox.information(
+                self,
+                "Locality Names",
+                "No locality names were returned.\n"
+                "Check your Nominatim service settings and GPX coordinates.",
+            )
+
+    def _on_preview_error(self, msg: str) -> None:
+        self._preview_progress.setVisible(False)
+        self._update_preview_btn_state()
+        QMessageBox.critical(self, "Preview failed", msg)
 
     # ------------------------------------------------------------------
     # Color helpers
@@ -385,17 +575,11 @@ class LocalityNamesWidget(QWidget):
 
         self._group.setChecked(_sv(_KEY_ENABLED, False, bool))
 
-        saved_service = _sv(_KEY_SERVICE, "osm")
-        if saved_service == "docker" and self._docker_radio.isEnabled():
-            self._docker_radio.setChecked(True)
-        elif saved_service == "custom":
+        if _sv(_KEY_SERVICE, "osm") == "custom":
             self._custom_radio.setChecked(True)
         else:
             self._osm_radio.setChecked(True)
 
-        self._docker_pbf_edit.setText(_sv(_KEY_DOCKER_PBF_URL, ""))
-        self._docker_port_spin.setValue(int(_sv(_KEY_DOCKER_PORT, 8080)))
-        self._docker_keep_chk.setChecked(_sv(_KEY_DOCKER_KEEP, False, bool))
         self._custom_url_edit.setText(_sv(_KEY_CUSTOM_URL, ""))
         self._check_every_spin.setValue(float(_sv(_KEY_CHECK_EVERY_S, 60.0)))
 
@@ -412,6 +596,9 @@ class LocalityNamesWidget(QWidget):
                 break
 
         self._duration_spin.setValue(float(_sv(_KEY_DURATION, 5.0)))
+        forever = _sv(_KEY_DURATION_FOREVER, False, bool)
+        self._duration_forever_chk.setChecked(forever)
+        self._duration_spin.setEnabled(not forever)
 
         self._text_color = _sv(_KEY_TEXT_COLOR, "#ffffff")
         self._update_color_btn(self._color_btn, self._text_color)
@@ -419,24 +606,15 @@ class LocalityNamesWidget(QWidget):
 
     def get_settings(self) -> dict[str, Any]:
         """Return current locality names settings as a flat dict."""
-        if self._docker_radio.isChecked():
-            svc = "docker"
-        elif self._custom_radio.isChecked():
-            svc = "custom"
-        else:
-            svc = "osm"
-
         return {
-            _KEY_ENABLED:        self._group.isChecked(),
-            _KEY_SERVICE:        svc,
-            _KEY_CUSTOM_URL:     self._custom_url_edit.text(),
-            _KEY_DOCKER_PBF_URL: self._docker_pbf_edit.text(),
-            _KEY_DOCKER_PORT:    self._docker_port_spin.value(),
-            _KEY_DOCKER_KEEP:    self._docker_keep_chk.isChecked(),
-            _KEY_CHECK_EVERY_S:  self._check_every_spin.value(),
-            _KEY_DETAIL_LEVEL:   self._detail_combo.currentData(),
-            _KEY_POSITION:       self._position_combo.currentData(),
-            _KEY_DURATION:       self._duration_spin.value(),
-            _KEY_TEXT_COLOR:     self._text_color,
-            _KEY_SHADOW:         self._shadow_chk.isChecked(),
+            _KEY_ENABLED:       self._group.isChecked(),
+            _KEY_SERVICE:       "custom" if self._custom_radio.isChecked() else "osm",
+            _KEY_CUSTOM_URL:    self._custom_url_edit.text(),
+            _KEY_CHECK_EVERY_S: self._check_every_spin.value(),
+            _KEY_DETAIL_LEVEL:  self._detail_combo.currentData(),
+            _KEY_POSITION:          self._position_combo.currentData(),
+            _KEY_DURATION:          self._duration_spin.value(),
+            _KEY_DURATION_FOREVER:  self._duration_forever_chk.isChecked(),
+            _KEY_TEXT_COLOR:        self._text_color,
+            _KEY_SHADOW:        self._shadow_chk.isChecked(),
         }

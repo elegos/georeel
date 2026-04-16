@@ -352,6 +352,9 @@ class MainWindow(QMainWindow):
         self._photo_area.calculate_keyframes_requested.connect(
             self._calculate_keyframes
         )
+        self._locality_names_widget.calculate_keyframes_requested.connect(
+            self._calculate_keyframes
+        )
         self._match_group.buttonClicked.connect(self._mark_dirty)
         self._match_group.buttonClicked.connect(self._invalidate_scene)
         self._output_selector.path_changed.connect(self._mark_dirty)
@@ -476,6 +479,11 @@ class MainWindow(QMainWindow):
         # re-parsing and re-cleaning the GPX file.
         if trackpoints:
             self._pipeline.trackpoints = list(trackpoints)
+        # Enable locality names preview now that we have trackpoints + frame count.
+        fps = int(str(self._settings.value("render/fps", 30)))
+        self._locality_names_widget.set_pipeline_context(
+            list(trackpoints), len(keyframes), fps
+        )
 
     def _on_keyframe_calc_error(self, message: str):
         self._fetch_progress_bar.hide()
@@ -483,6 +491,7 @@ class MainWindow(QMainWindow):
         self._status_show(
             f"Keyframe calculation failed: {message}", level=logging.ERROR
         )
+        self._locality_names_widget.notify_keyframe_calc_failed()
 
     def _build_gpx_group(self) -> QGroupBox:
         group = QGroupBox("GPX Track")
@@ -1131,6 +1140,13 @@ class MainWindow(QMainWindow):
         self._status_show(f"Auto-build failed: {message}", level=logging.ERROR)
 
     def _current_state(self) -> ProjectState:
+        cached_tl = self._locality_names_widget.get_cached_timeline()
+        timeline_raw: list[dict[str, Any]] | None = None
+        if cached_tl is not None:
+            timeline_raw = [
+                {"frame_start": e.frame_start, "name": e.name, "track_time_s": e.track_time_s}
+                for e in cached_tl
+            ]
         return ProjectState(
             gpx_path=self._gpx_path,
             match_mode=self._match_mode(),
@@ -1141,6 +1157,7 @@ class MainWindow(QMainWindow):
             render_settings=get_render_settings(self._settings),
             clip_effects=self._clip_effects_widget.get_settings(),
             locality_names=self._locality_names_widget.get_settings(),
+            locality_timeline=timeline_raw,
         )
 
     # ------------------------------------------------------------------
@@ -1152,6 +1169,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._status_show(f"GPX: {path}")
         self._invalidate_scene()
+        self._locality_names_widget.set_cached_timeline(None)
         self._preview_map_btn.setEnabled(True)
         self._preview_video_btn.setEnabled(True)
         self._open_blender_btn.setEnabled(True)
@@ -1699,6 +1717,10 @@ class MainWindow(QMainWindow):
         self._status_show(
             f"Camera path: {len(keyframes)} frames ({duration_s:.1f} s at {fps} fps)"
         )
+        # Update locality names preview context with the definitive frame count.
+        self._locality_names_widget.set_pipeline_context(
+            self._pipeline.trackpoints or [], len(keyframes), int(fps)
+        )
 
         # Stage 7 — Frame Renderer
         blender_exe = self._settings.value("blender/executable_path") or None
@@ -1724,25 +1746,38 @@ class MainWindow(QMainWindow):
         self._pipeline.composited_frames_dir = dlg.composited_frames_dir()
         self._status_show(f"Compositing done: {self._pipeline.composited_frames_dir}")
 
-        # Pre-compute locality names timeline (network calls to Nominatim)
+        # Pre-compute locality names timeline (network calls to Nominatim).
+        # Use cached preview result when available to avoid re-querying.
         locality_settings = self._locality_names_widget.get_settings()
         if locality_settings.get("locality_names/enabled", False):
-            self._status_show("Building locality names timeline…")
-            QApplication.processEvents()
-            try:
-                from georeel.core.nominatim_client import build_locality_timeline
-                import json as _json
-                timeline = build_locality_timeline(
-                    self._pipeline.trackpoints,
-                    len(self._pipeline.camera_keyframes or []),
-                    locality_settings,
-                )
-                locality_settings["locality_names/timeline_json"] = _json.dumps([
-                    {"frame_start": e.frame_start, "name": e.name}
-                    for e in timeline
-                ])
-            except Exception as e:
-                _log.warning("Locality names timeline failed: %s", e)
+            import json as _json
+            cached_tl = self._locality_names_widget.get_cached_timeline()
+            if cached_tl is not None:
+                _log.info("Locality names: reusing cached preview timeline (%d entries)", len(cached_tl))
+                timeline = cached_tl
+            else:
+                self._status_show("Building locality names timeline…")
+                QApplication.processEvents()
+                try:
+                    from georeel.core.nominatim_client import build_locality_timeline
+                    timeline = build_locality_timeline(
+                        self._pipeline.trackpoints,
+                        len(self._pipeline.camera_keyframes or []),
+                        locality_settings,
+                    )
+                    # Cache for subsequent saves.
+                    self._locality_names_widget.set_cached_timeline(timeline or None)
+                except Exception as e:
+                    _log.warning("Locality names timeline failed: %s", e)
+                    timeline = []
+            locality_settings["locality_names/timeline_json"] = _json.dumps([
+                {"frame_start": e.frame_start, "name": e.name}
+                for e in timeline
+            ])
+            # Pause frame set — used to suppress locality overlay during photos
+            kf_list = self._pipeline.camera_keyframes or []
+            pause_frames = [kf.frame for kf in kf_list if kf.is_pause]
+            locality_settings["locality_names/pause_frames_json"] = _json.dumps(pause_frames)
 
         # Stage 9 — Video Assembler
         output_path = self._output_selector.output_path()
@@ -2064,6 +2099,20 @@ class MainWindow(QMainWindow):
             for key, value in state.locality_names.items():
                 self._settings.setValue(key, value)
         self._locality_names_widget.reload()
+        # Restore pre-computed locality timeline (reload() may have invalidated it).
+        if state.locality_timeline:
+            from georeel.core.nominatim_client import LocalityEntry
+            restored_tl = [
+                LocalityEntry(
+                    frame_start=e["frame_start"],
+                    name=e["name"],
+                    track_time_s=e.get("track_time_s", 0.0),
+                )
+                for e in state.locality_timeline
+            ]
+            self._locality_names_widget.set_cached_timeline(restored_tl)
+        else:
+            self._locality_names_widget.set_cached_timeline(None)
         self._save_last_project_dir(path)
         self._add_recent_file(path)
         self._project_path = path
@@ -2100,6 +2149,7 @@ class MainWindow(QMainWindow):
         self._cached_satellite_texture = None
         self._track_length_m = None
         self._project_path = None
+        self._locality_names_widget.set_cached_timeline(None)
         self._cleanup_temp_dir()
         self._pipeline = Pipeline()
         self._update_duration_label()

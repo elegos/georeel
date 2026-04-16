@@ -227,6 +227,31 @@ class TestComputeForwardDirsTangent:
             dirs_x, dirs_y = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=3, weight_mode=mode)
             assert len(dirs_x) == 10
 
+    def test_hairpin_does_not_point_inward(self):
+        # U-turn: approach east, apex at (5,0), return west.
+        # The OLD centroid approach pointed the camera toward the hairpin interior
+        # (roughly north/south) at the apex.  The unit-step approach must keep the
+        # forward direction aligned with the road (east component positive on
+        # approach, west component positive on return).
+        approach = np.linspace(0, 5, 20)
+        # Semicircle apex (radius=1) curving from east to west via north
+        theta = np.linspace(0, np.pi, 20)
+        apex_x = 5 + np.cos(theta)
+        apex_y = np.sin(theta)
+        retreat = np.linspace(4, 0, 20)
+        xs = np.concatenate([approach, apex_x[1:], retreat[1:]])
+        ys = np.concatenate([np.zeros(20), apex_y[1:], np.zeros(20 - 1)])
+
+        dirs_x, dirs_y = _compute_forward_dirs_tangent(xs, ys, lookahead_frames=10, weight_mode="linear")
+
+        # Approach region: forward direction must have positive x (eastward)
+        for i in range(5):
+            assert dirs_x[i] > 0.0, f"approach frame {i}: dirs_x={dirs_x[i]:.3f} should be east"
+
+        # Return region: forward direction must have negative x (westward)
+        for i in range(len(xs) - 5, len(xs)):
+            assert dirs_x[i] < 0.0, f"return frame {i}: dirs_x={dirs_x[i]:.3f} should be west"
+
 
 # ── _compute_forward_dirs_spline ─────────────────────────────────
 

@@ -15,14 +15,15 @@ from . import temp_manager
 # ------------------------------------------------------------------
 # ZIP entry paths (v2 format)
 # ------------------------------------------------------------------
-_MANIFEST     = "manifest.json"
-_PROJECT      = "project.json"
-_DEM_BIN      = "dem/data.bin"           # raw float32; metadata in project.json
-_SAT_TEXTURE  = "satellite/texture.png"  # RGB PNG; metadata in project.json
-_GPX_ENTRY    = "gpx/track.gpx"          # embedded GPX track
-_PHOTOS_DIR   = "photos/"                # embedded photos: photos/0000.jpg, etc.
-_FONT_ENTRY   = "font/title"             # embedded font; extension appended at save time
-_MUSIC_DIR    = "music/"                 # embedded music files (original filenames preserved)
+_MANIFEST          = "manifest.json"
+_PROJECT           = "project.json"
+_DEM_BIN           = "dem/data.bin"              # raw float32; metadata in project.json
+_SAT_TEXTURE       = "satellite/texture.png"     # RGB PNG; metadata in project.json
+_LOCALITY_TIMELINE = "locality/timeline.json"    # pre-computed Nominatim entries
+_GPX_ENTRY         = "gpx/track.gpx"             # embedded GPX track
+_PHOTOS_DIR        = "photos/"                   # embedded photos: photos/0000.jpg, etc.
+_FONT_ENTRY        = "font/title"                # embedded font; extension appended at save time
+_MUSIC_DIR         = "music/"                    # embedded music files (original filenames preserved)
 
 _FORMAT_VERSION = 2
 
@@ -42,6 +43,7 @@ class ProjectState:
     render_settings: dict[str, Any] | None = None   # camera + imagery settings at fetch time
     clip_effects: dict[str, Any] | None = None      # fade-in/out, title, music settings
     locality_names: dict[str, Any] | None = None    # locality names overlay settings
+    locality_timeline: list[dict[str, Any]] | None = None  # cached Nominatim timeline
     # Temporary directory created when embedded files are extracted on load.
     # The caller is responsible for deleting it (shutil.rmtree) when done.
     temp_dir: Path | None = field(default=None, compare=False, repr=False)
@@ -301,6 +303,8 @@ def save_project(state: ProjectState, path: str) -> None:
                 zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
             if state.satellite_texture is not None:
                 _write_sat_png(zf, state.satellite_texture)
+            if state.locality_timeline is not None:
+                zf.writestr(_LOCALITY_TIMELINE, json.dumps(state.locality_timeline))
 
     except Exception:
         Path(tmp_path).unlink(missing_ok=True)
@@ -451,6 +455,13 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
             # Discard it so the pipeline safely falls back to re-downloading it.
             satellite_texture = None
 
+    locality_timeline: list[dict[str, Any]] | None = None
+    if _LOCALITY_TIMELINE in namelist:
+        try:
+            locality_timeline = json.loads(zf.read(_LOCALITY_TIMELINE))
+        except Exception:
+            locality_timeline = None
+
     return ProjectState(
         gpx_path=gpx_path,
         match_mode=payload.get("match_mode", "timestamp"),
@@ -461,6 +472,7 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
         render_settings=payload.get("render_settings"),
         clip_effects=clip_effects or None,
         locality_names=payload.get("locality_names"),
+        locality_timeline=locality_timeline,
         temp_dir=temp_dir,
     )
 

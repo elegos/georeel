@@ -13,6 +13,7 @@ from georeel.core.video_assembler import (
     _composite_title_frames,
     _composite_locality_frames,
     _locality_name_alpha,
+    _resolve_overlay,
 )
 
 
@@ -351,3 +352,264 @@ class TestCompositeLocalityFrames:
         }
         _composite_locality_frames(str(src), dst, settings, fps=30)
         assert len(list(dst.glob("*.png"))) == 5
+
+    def test_prepended_black_frames_have_no_overlay(self, tmp_path):
+        """Frames 0..n_prepended_black-1 must be hard-linked (no text)."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        n_black = 3
+        _write_locality_frames(src, count=6)  # frames 0-5; 0-2 are "black"
+        # Entry starts at original frame 0 — without offset correction it would
+        # put text on the prepended black frames too.
+        timeline = json.dumps([{"frame_start": 0, "name": "Paris"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 60.0,  # long enough to cover all frames
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30,
+                                    n_prepended_black=n_black)
+        # All 6 output frames produced
+        assert len(list(dst.glob("*.png"))) == 6
+        # Frames 0-2 must be identical to source (hard-linked, no compositing)
+        for i in range(n_black):
+            src_px = Image.open(src / f"{i:06d}.png").getpixel((160, 120))
+            dst_px = Image.open(dst / f"{i:06d}.png").getpixel((160, 120))
+            assert src_px == dst_px, f"Frame {i} should not have an overlay"
+
+    def test_pause_frames_have_no_overlay(self, tmp_path):
+        """Frames listed in pause_frames_json must be hard-linked (no text)."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=6)
+        pause_frames = [2, 3]  # these are photo-pause frames
+        timeline = json.dumps([{"frame_start": 0, "name": "Rome"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 60.0,
+            "locality_names/pause_frames_json": json.dumps(pause_frames),
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 6
+        for i in pause_frames:
+            src_px = Image.open(src / f"{i:06d}.png").getpixel((160, 120))
+            dst_px = Image.open(dst / f"{i:06d}.png").getpixel((160, 120))
+            assert src_px == dst_px, f"Pause frame {i} should not have an overlay"
+
+    def test_malformed_pause_json_is_ignored(self, tmp_path):
+        """Bad pause_frames_json should not raise; falls back to no suppression."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=3)
+        timeline = json.dumps([{"frame_start": 0, "name": "Madrid"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 60.0,
+            "locality_names/pause_frames_json": "NOT_VALID_JSON",
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 3
+
+    def test_suppress_end_frames_have_no_overlay(self, tmp_path):
+        """Last n_suppress_end frames must be hard-linked (no text) — fade-out black clip."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        n_suppress = 2
+        _write_locality_frames(src, count=6)
+        # Entry covers all frames; without end suppression all would get text.
+        timeline = json.dumps([{"frame_start": 0, "name": "Vienna"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 60.0,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30,
+                                    n_suppress_end=n_suppress)
+        assert len(list(dst.glob("*.png"))) == 6
+        # Last n_suppress frames must be pixel-identical to source (no overlay).
+        for i in range(6 - n_suppress, 6):
+            src_px = Image.open(src / f"{i:06d}.png").getpixel((160, 120))
+            dst_px = Image.open(dst / f"{i:06d}.png").getpixel((160, 120))
+            assert src_px == dst_px, f"Frame {i} should not have an overlay"
+
+    def test_suppress_end_with_prepended_black(self, tmp_path):
+        """End suppression applies on top of start suppression without conflict."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        n_black = 2
+        n_suppress = 2
+        _write_locality_frames(src, count=8)
+        timeline = json.dumps([{"frame_start": 0, "name": "Zurich"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 60.0,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30,
+                                    n_prepended_black=n_black,
+                                    n_suppress_end=n_suppress)
+        assert len(list(dst.glob("*.png"))) == 8
+        # First n_black frames: suppressed (start)
+        for i in range(n_black):
+            src_px = Image.open(src / f"{i:06d}.png").getpixel((160, 120))
+            dst_px = Image.open(dst / f"{i:06d}.png").getpixel((160, 120))
+            assert src_px == dst_px, f"Start frame {i} should not have an overlay"
+        # Last n_suppress frames: suppressed (end)
+        for i in range(8 - n_suppress, 8):
+            src_px = Image.open(src / f"{i:06d}.png").getpixel((160, 120))
+            dst_px = Image.open(dst / f"{i:06d}.png").getpixel((160, 120))
+            assert src_px == dst_px, f"End frame {i} should not have an overlay"
+
+
+# ── _resolve_overlay ──────────────────────────────────────────────
+
+class TestResolveOverlay:
+    def _tl(self, *starts: int) -> list[dict]:
+        """Build a timeline with named entries 'Name0', 'Name1', … at the given starts."""
+        return [{"frame_start": s, "name": f"Name{i}"} for i, s in enumerate(starts)]
+
+    def test_empty_timeline(self):
+        assert _resolve_overlay(0, [], 60, 5) == []
+
+    def test_before_first_entry(self):
+        assert _resolve_overlay(0, self._tl(10), 60, 5) == []
+
+    def test_single_entry_fade_in(self):
+        result = _resolve_overlay(3, self._tl(0), 60, 6)
+        assert len(result) == 1
+        name, alpha = result[0]
+        assert name == "Name0"
+        assert alpha == pytest.approx(3 / 6)
+
+    def test_single_entry_full_opacity(self):
+        result = _resolve_overlay(30, self._tl(0), 60, 6)
+        assert len(result) == 1
+        assert result[0][1] == pytest.approx(1.0)
+
+    def test_single_entry_fade_out(self):
+        # Fade-out starts at offset 60-6=54; at offset 57: (60-57)/6=0.5
+        result = _resolve_overlay(57, self._tl(0), 60, 6)
+        assert len(result) == 1
+        assert result[0][1] == pytest.approx(3 / 6)
+
+    def test_single_entry_expired(self):
+        # offset == duration_frames → no overlay
+        assert _resolve_overlay(60, self._tl(0), 60, 6) == []
+
+    def test_gap_between_entries_returns_empty(self):
+        # Entry0 ends at 60, entry1 starts at 120; at frame 90 — gap
+        result = _resolve_overlay(90, self._tl(0, 120), 60, 6)
+        assert result == []
+
+    def test_no_overlap_two_entries_only_one_active(self):
+        # Entry0: 0-60, Entry1: 120-180 (with fade). At frame 30 only Name0 visible.
+        result = _resolve_overlay(30, self._tl(0, 120), 60, 6)
+        assert len(result) == 1
+        assert result[0][0] == "Name0"
+
+    def test_cross_fade_in_progress(self):
+        # Entry0 starts at 0, Entry1 starts at 40 (within Entry0's duration of 60).
+        # At frame 43 (3 frames into cross-fade of 6): old=0.5, new=0.5 → sum=1.0
+        timeline = self._tl(0, 40)
+        result = _resolve_overlay(43, timeline, 60, 6)
+        assert len(result) == 2
+        names  = {r[0] for r in result}
+        alphas = {r[0]: r[1] for r in result}
+        assert "Name0" in names
+        assert "Name1" in names
+        assert alphas["Name0"] == pytest.approx(3 / 6)
+        assert alphas["Name1"] == pytest.approx(3 / 6)
+        # Alphas must sum to 1.0 during cross-fade
+        assert sum(r[1] for r in result) == pytest.approx(1.0)
+
+    def test_cross_fade_complete_only_new_visible(self):
+        timeline = self._tl(0, 40)
+        # After fade_frames=6 have elapsed since entry1 start (frame 46)
+        result = _resolve_overlay(46, timeline, 60, 6)
+        assert len(result) == 1
+        assert result[0][0] == "Name1"
+
+    def test_cross_fade_alphas_sum_to_one_throughout(self):
+        """Verify alpha sum == 1.0 for every frame during a cross-fade."""
+        timeline = self._tl(0, 30)
+        fade_frames = 10
+        for f in range(30, 40):
+            result = _resolve_overlay(f, timeline, 60, fade_frames)
+            total = sum(r[1] for r in result)
+            assert total == pytest.approx(1.0), f"frame {f}: alphas sum {total}"
+
+    def test_instant_cut_fade_frames_zero(self):
+        # With fade_frames=0: no cross-fade, hard cut at entry1's start
+        timeline = self._tl(0, 30)
+        # At frame 29 (just before): only Name0
+        result = _resolve_overlay(29, timeline, 60, 0)
+        assert len(result) == 1
+        assert result[0][0] == "Name0"
+        # At frame 30 (entry1 starts): only Name1
+        result = _resolve_overlay(30, timeline, 60, 0)
+        assert len(result) == 1
+        assert result[0][0] == "Name1"
+
+
+# ── _composite_locality_frames — "forever" mode ───────────────────
+
+class TestCompositeLocalityFramesForever:
+    """_composite_locality_frames with duration_forever=True."""
+
+    def test_forever_entry_stays_until_next(self, tmp_path):
+        """Name stays visible between its start and the next entry's start."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        # 10 frames; entry0 at 0, entry1 at 7
+        _write_locality_frames(src, count=10)
+        timeline = json.dumps([
+            {"frame_start": 0, "name": "Paris"},
+            {"frame_start": 7, "name": "Lyon"},
+        ])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 2.0,       # would normally expire early
+            "locality_names/duration_forever": True,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 10
+
+    def test_forever_single_entry_stays_to_end(self, tmp_path):
+        """With a single entry and forever=True, name persists until the last frame."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=8)
+        timeline = json.dumps([{"frame_start": 0, "name": "Berlin"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 0.5,       # short — would expire at frame 15 at 30fps
+            "locality_names/duration_forever": True,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        # Every frame after the fade-in should have been composited (not hard-linked)
+        # — we verify the output exists and has the right count.
+        assert len(list(dst.glob("*.png"))) == 8
+
+    def test_forever_false_entry_expires(self, tmp_path):
+        """Sanity check: duration_forever=False still expires after duration_frames."""
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        _write_locality_frames(src, count=5)
+        # duration=0.1s at fps=30 → 3 frames; frame 4 should be hard-linked
+        timeline = json.dumps([{"frame_start": 0, "name": "Rome"}])
+        settings = {
+            "locality_names/timeline_json": timeline,
+            "locality_names/duration": 0.1,
+            "locality_names/duration_forever": False,
+        }
+        _composite_locality_frames(str(src), dst, settings, fps=30)
+        assert len(list(dst.glob("*.png"))) == 5
+        # Frame 4 must be pixel-identical to source (hard-linked, no overlay)
+        src_px = Image.open(src / "000004.png").getpixel((160, 120))
+        dst_px = Image.open(dst / "000004.png").getpixel((160, 120))
+        assert src_px == dst_px

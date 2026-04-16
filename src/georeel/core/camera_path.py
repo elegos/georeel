@@ -527,12 +527,21 @@ def _compute_forward_dirs_tangent(
     progress_base: int = 0,
     progress_total: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Weighted-average forward direction using upcoming track positions.
+    """Weighted-average forward direction using upcoming unit step vectors.
 
-    Bulk frames (where the full lookahead window fits) are handled with a
-    single vectorised matrix multiply via ``sliding_window_view``.  Only the
-    tail region — where the window shrinks because we are near the end of the
-    track — is computed in a small Python loop.
+    For each frame *i*, the forward direction is the weighted average of the
+    unit tangent vectors of the next *L* road segments:
+
+        fwd[i] = normalise( sum_j  w[j] * unit(xs[i+j+1]-xs[i+j],
+                                                ys[i+j+1]-ys[i+j]) )
+
+    This is robust to U-turns and hairpin bends.  The old approach — pointing
+    toward the *weighted centroid* of future positions — places that centroid
+    inside the hairpin at the apex, producing a direction perpendicular to the
+    road and the visible one-frame orientation spike.
+
+    Bulk frames (where the full lookahead window fits) are handled with an
+    O(n log n) FFT-based correlation.  Only the shrinking tail is a Python loop.
     """
     n = len(xs)
     L = min(lookahead_frames, n - 1)  # can't look past end of track
@@ -548,8 +557,36 @@ def _compute_forward_dirs_tangent(
         w_full = 1.0 - t_full
         w_full /= w_full.sum()
 
-    # Number of frames whose lookahead window is fully populated.
-    # Frame i uses xs[i+1 : i+L+1]; that slice fits iff i+L+1 <= n, i.e. i < n-L.
+    # Unit step vectors: ux[j] = normalise(xs[j+1]-xs[j], ys[j+1]-ys[j])
+    # Shape: (n-1,).
+    step_x = np.diff(xs)
+    step_y = np.diff(ys)
+    step_norms = np.hypot(step_x, step_y)
+    valid_steps = step_norms > 1e-6
+    safe_norms_s = np.where(valid_steps, step_norms, 1.0)
+    ux = np.where(valid_steps, step_x / safe_norms_s, np.nan)
+    uy = np.where(valid_steps, step_y / safe_norms_s, np.nan)
+
+    # Fill NaN step vectors (zero-length segments) by forward-fill, then
+    # back-fill the leading NaNs with the first valid value.
+    nan_ux = np.isnan(ux)
+    if nan_ux.any():
+        valid_idx = np.where(~nan_ux)[0]
+        if len(valid_idx) == 0:
+            ux[:] = 0.0
+            uy[:] = 1.0
+        else:
+            first = valid_idx[0]
+            if first > 0:
+                ux[:first] = ux[first]
+                uy[:first] = uy[first]
+            ff_idx = np.where(~np.isnan(ux), np.arange(n - 1), 0)
+            np.maximum.accumulate(ff_idx, out=ff_idx)
+            ux = ux[ff_idx]
+            uy = uy[ff_idx]
+
+    # Number of frames whose full L-step lookahead fits inside ux (length n-1).
+    # Frame i uses ux[i : i+L]; fits iff i+L <= n-1, i.e. i < n-L.
     n_bulk = max(0, n - L)
 
     dirs_x = np.empty(n)
@@ -557,42 +594,36 @@ def _compute_forward_dirs_tangent(
 
     # ── Bulk region ──────────────────────────────────────────────────────────
     if n_bulk > 0 and L > 0:
-        # The weighted window sum is a correlation: tx[i] = dot(xs[i+1:i+L+1], w_full).
-        # Replacing the O(n×L) sliding-window matrix multiply with an O(n log n)
-        # FFT-based convolution. x and y are independent so we run them in parallel.
-        seg_x = xs[1 : n_bulk + L]
-        seg_y = ys[1 : n_bulk + L]
-        kernel = w_full[
-            ::-1
-        ]  # fftconvolve computes convolution; kernel flip = correlation
+        # fwd_x[i] = sum_j( w_full[j] * ux[i+j] )  — a weighted sliding dot.
+        # Implemented as an FFT correlation (O(n log n)) with kernel = w_full[::-1].
+        seg_ux = ux[: n_bulk + L - 1]
+        seg_uy = uy[: n_bulk + L - 1]
+        kernel = w_full[::-1]
 
         with ThreadPoolExecutor(max_workers=2) as _pool:
-            fut_x = _pool.submit(fftconvolve, seg_x, kernel, "valid")
-            fut_y = _pool.submit(fftconvolve, seg_y, kernel, "valid")
-            tx = fut_x.result()
-            ty = fut_y.result()
+            fut_x = _pool.submit(fftconvolve, seg_ux, kernel, "valid")
+            fut_y = _pool.submit(fftconvolve, seg_uy, kernel, "valid")
+            fwd_x = fut_x.result()
+            fwd_y = fut_y.result()
 
-        dx = tx - xs[:n_bulk]
-        dy = ty - ys[:n_bulk]
-        norms = np.hypot(dx, dy)
+        norms = np.hypot(fwd_x, fwd_y)
         valid = norms > 1e-6
         safe_norms = np.where(valid, norms, 1.0)
-        dirs_x[:n_bulk] = np.where(valid, dx / safe_norms, np.nan)
-        dirs_y[:n_bulk] = np.where(valid, dy / safe_norms, np.nan)
+        dirs_x[:n_bulk] = np.where(valid, fwd_x / safe_norms, np.nan)
+        dirs_y[:n_bulk] = np.where(valid, fwd_y / safe_norms, np.nan)
 
     if progress_callback is not None:
         progress_callback(progress_base + 1, progress_total)  # bulk done
 
     # ── Tail region (shrinking window) ───────────────────────────────────────
     last_x, last_y = 0.0, 1.0  # fallback direction
-    # Carry forward the last valid bulk direction if available.
     for i in range(n_bulk - 1, -1, -1):
         if not math.isnan(dirs_x[i]):
             last_x, last_y = dirs_x[i], dirs_y[i]
             break
 
     for i in range(n_bulk, n):
-        k = n - i - 1
+        k = n - 1 - i  # steps available: ux[i : i+k]
         if k <= 0:
             dirs_x[i], dirs_y[i] = last_x, last_y
             continue
@@ -605,17 +636,15 @@ def _compute_forward_dirs_tangent(
         else:
             w = 1.0 - t
             w /= w.sum()
-        tx = float(np.dot(w, xs[i + 1 :]))
-        ty = float(np.dot(w, ys[i + 1 :]))
-        dx, dy = tx - float(xs[i]), ty - float(ys[i])
-        norm = math.sqrt(dx * dx + dy * dy)
+        fwd_xi = float(np.dot(w, ux[i : i + k]))
+        fwd_yi = float(np.dot(w, uy[i : i + k]))
+        norm = math.sqrt(fwd_xi * fwd_xi + fwd_yi * fwd_yi)
         if norm > 1e-6:
-            last_x, last_y = dx / norm, dy / norm
+            last_x, last_y = fwd_xi / norm, fwd_yi / norm
         dirs_x[i], dirs_y[i] = last_x, last_y
 
-    # Fix any NaN bulk entries (zero-length segment) by forward-filling.
-    # Vectorised: build an index array where each NaN position gets the index
-    # of the last preceding non-NaN value, then index-select in one shot.
+    # Fix any NaN bulk entries (opposing unit vectors cancel exactly) by
+    # forward-filling from the last good direction.
     nan_mask = np.isnan(dirs_x)
     if nan_mask.any():
         valid_mask = ~nan_mask
@@ -623,7 +652,6 @@ def _compute_forward_dirs_tangent(
             dirs_x[:] = 0.0
             dirs_y[:] = 1.0
         else:
-            # Replace NaN indices with 0 so accumulate works, then propagate.
             idx = np.where(valid_mask, np.arange(n), 0)
             np.maximum.accumulate(idx, out=idx)
             dirs_x = dirs_x[idx]

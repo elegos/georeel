@@ -76,8 +76,10 @@ def assemble_video(
     title_dir: Optional[Path] = None
     title_enabled = bool(settings.get("clip_effects/title_enabled", False))
     fi_enabled    = bool(settings.get("clip_effects/fade_in_enabled", False))
+    fo_enabled    = bool(settings.get("clip_effects/fade_out_enabled", False))
     fi_black = float(settings.get("clip_effects/fade_in_black_dur", 5.0)) if fi_enabled else 0.0
     fi_fade  = float(settings.get("clip_effects/fade_in_fade_dur",  1.0)) if fi_enabled else 0.0
+    fo_black = float(settings.get("clip_effects/fade_out_black_dur", 5.0)) if fo_enabled else 0.0
 
     # Determine how many black frames to prepend as real PNGs.
     n_black_frames = 0
@@ -120,9 +122,15 @@ def assemble_video(
 
     # Locality names compositing
     if bool(settings.get("locality_names/enabled", False)) and settings.get("locality_names/timeline_json"):
+        # Suppress locality names during the fade-out black clip: the last
+        # fo_black seconds of the PIL content sequence must carry no overlay so
+        # that the black cover (added by tpad stop_duration) is clean.
+        n_fo_suppress = round(fo_black * fps) if fo_enabled and fo_black > 0 else 0
         locality_dir = temp_manager.make_temp_dir("georeel_locality_")
         _composite_locality_frames(
             frames_dir, locality_dir, settings, fps,
+            n_prepended_black=n_black_frames,
+            n_suppress_end=n_fo_suppress,
             progress_cb=None,
         )
         frames_dir = str(locality_dir)
@@ -378,17 +386,72 @@ def _locality_name_alpha(frame_offset: int, duration_frames: int, fade_frames: i
     return 1.0
 
 
+def _resolve_overlay(
+    orig_idx: int,
+    timeline: list[dict[str, Any]],
+    duration_frames: int,
+    fade_frames: int,
+) -> list[tuple[str, float]]:
+    """Return (name, alpha) pairs for a single frame — cross-fade, no overlap.
+
+    *orig_idx* is the frame index in the original rendered frame space (0-based,
+    without any prepended black frames).  *timeline* must be sorted ascending by
+    ``frame_start``.
+
+    At most two consecutive entries are returned (during the cross-fade window).
+    When the next entry's ``frame_start`` is reached the current entry begins an
+    immediate linear fade-out over *fade_frames* while the next entry fades in
+    normally via :func:`_locality_name_alpha`.  The two alphas sum to 1.0
+    throughout the transition so names never visually stack.
+    """
+    result: list[tuple[str, float]] = []
+    for i, entry in enumerate(timeline):
+        fs = int(entry["frame_start"])
+        if orig_idx < fs:
+            break  # timeline is sorted; nothing further can match
+        offset = orig_idx - fs
+        next_entry = timeline[i + 1] if i + 1 < len(timeline) else None
+        next_fs = int(next_entry["frame_start"]) if next_entry is not None else None
+
+        if next_fs is not None and orig_idx >= next_fs:
+            # Next entry has already started → cross-fade current out
+            xfade_offset = orig_idx - next_fs
+            if xfade_offset >= fade_frames:
+                continue  # cross-fade complete; this entry is fully gone
+            alpha = 1.0 - (xfade_offset / fade_frames if fade_frames > 0 else 1.0)
+            if alpha > 0:
+                result.append((str(entry["name"]), alpha))
+        else:
+            # Normal fade-in / full / fade-out for this entry
+            alpha = _locality_name_alpha(offset, duration_frames, fade_frames)
+            if alpha > 0:
+                result.append((str(entry["name"]), alpha))
+    return result
+
+
 def _composite_locality_frames(
     src_dir: str,
     dst_dir: Path,
     settings: dict[str, Any],
     fps: int,
+    n_prepended_black: int = 0,
+    n_suppress_end: int = 0,
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> None:
     """Composite locality name overlays onto frames.
 
     Reads ``locality_names/timeline_json`` from settings — a JSON list of
-    ``{"frame_start": int, "name": str}`` objects, sorted by frame_start.
+    ``{"frame_start": int, "name": str}`` objects sorted by frame_start.
+
+    Frame suppression:
+    * Frames whose index is less than *n_prepended_black* are initial black
+      frames (prepended for title or fade-in); no overlay is applied.
+    * Frames whose *original* index (``frame_index - n_prepended_black``) is
+      listed in ``locality_names/pause_frames_json`` are photo-pause frames;
+      no overlay is applied.
+    * The last *n_suppress_end* frames of the sequence are suppressed to
+      prevent locality names from appearing during the fade-out black clip.
+
     Hard-links frames that need no overlay.
     """
     import concurrent.futures
@@ -400,6 +463,12 @@ def _composite_locality_frames(
         timeline: list[dict[str, Any]] = json.loads(timeline_json) if isinstance(timeline_json, str) else list(timeline_json)
     except (ValueError, TypeError):
         timeline = []
+
+    try:
+        pause_list: list[int] = json.loads(settings.get("locality_names/pause_frames_json", "[]") or "[]")
+        pause_set: set[int] = set(pause_list)
+    except (ValueError, TypeError):
+        pause_set = set()
 
     frames = sorted(Path(src_dir).glob("*.png"))
     total = len(frames)
@@ -418,15 +487,21 @@ def _composite_locality_frames(
         return
 
     # Settings
-    position   = str(settings.get("locality_names/position",   "bottom-right"))
-    duration_s = float(settings.get("locality_names/duration",  5.0))
-    color_hex  = str(settings.get("locality_names/text_color",  "#ffffff"))
-    shadow     = bool(settings.get("locality_names/shadow",     True))
-    font_name  = "Noto Serif"
-    fade_s     = 1.0  # fixed 1s fade as per spec
+    position         = str(settings.get("locality_names/position",         "bottom-right"))
+    duration_s       = float(settings.get("locality_names/duration",        5.0))
+    duration_forever = bool(settings.get("locality_names/duration_forever", False))
+    color_hex        = str(settings.get("locality_names/text_color",        "#ffffff"))
+    shadow           = bool(settings.get("locality_names/shadow",           True))
+    font_name        = "Noto Serif"
+    fade_s           = 1.0  # fixed 1s fade
 
-    duration_frames = max(2, round(duration_s * fps))
-    fade_frames     = min(round(fade_s * fps), duration_frames // 2)
+    if duration_forever:
+        # Entry stays visible until the next entry's cross-fade begins;
+        # use a sentinel value large enough to never expire naturally.
+        duration_frames = 10 ** 9
+    else:
+        duration_frames = max(2, round(duration_s * fps))
+    fade_frames = min(round(fade_s * fps), duration_frames // 2)
 
     # Anchor → text position
     parts  = position.split("-") if position != "center" else ["center", "center"]
@@ -465,17 +540,6 @@ def _composite_locality_frames(
 
     shadow_off = max(1, round(font_size * 0.03))
 
-    def _active_entries(frame_idx: int) -> list[tuple[str, float]]:
-        """Return (name, alpha) for all active entries at this frame."""
-        result: list[tuple[str, float]] = []
-        for entry in timeline:
-            fs = int(entry["frame_start"])
-            offset = frame_idx - fs
-            alpha = _locality_name_alpha(offset, duration_frames, fade_frames)
-            if alpha > 0:
-                result.append((str(entry["name"]), alpha))
-        return result
-
     def _text_xy(text: str, font: Any) -> tuple[int, int]:
         """Compute top-left pixel position for text."""
         _dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -504,7 +568,24 @@ def _composite_locality_frames(
         except ValueError:
             idx = 0
         dst = dst_dir / fp.name
-        active = _active_entries(idx)
+
+        # Map to original rendered-frame space (strip prepended black)
+        orig_idx = idx - n_prepended_black
+
+        # Suppress overlay on:
+        # • prepended black frames (fade-in black clip) — orig_idx < 0
+        # • photo-pause frames
+        # • trailing frames that correspond to the fade-out black clip duration
+        if orig_idx < 0 or orig_idx in pause_set or (
+            n_suppress_end > 0 and idx >= total - n_suppress_end
+        ):
+            try:
+                os.link(fp, dst)
+            except OSError:
+                shutil.copy2(fp, dst)
+            return
+
+        active = _resolve_overlay(orig_idx, timeline, duration_frames, fade_frames)
         if not active:
             try:
                 os.link(fp, dst)

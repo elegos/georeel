@@ -80,6 +80,11 @@ The resulting `.blend` file references the texture tiles as external PNG files a
 ### 6. Camera Path Generator (`core/camera_path.py`)
 Fits a parametric cubic B-spline through the trackpoints and resamples it at equal arc-length intervals (one sample per frame at the configured speed). Computes per-frame camera position (behind and above the track at a configurable slant distance and tilt), look-at direction (tangent or next-waypoint), and inserts pause keyframes at photo waypoint positions. Outputs a list of `CameraKeyframe` objects.
 
+Orientation smoothing is applied in two passes:
+
+1. **Gaussian smoothing** in unwrapped angle space (`arctan2` → `np.unwrap` → Gaussian filter) to remove high-frequency heading noise from GPS jitter.
+2. **Spike filter** using a MAD (median absolute deviation) outlier detector: frame-to-frame heading deltas whose magnitude exceeds 6× the median delta are flagged, and the affected frames are replaced with `np.interp` linear interpolation over the surrounding good frames. This eliminates the abrupt single-frame heading reversals that survive Gaussian smoothing because they span only one or two frames.
+
 ### 7. Frame Renderer (`core/frame_renderer.py`)
 Launches Blender headlessly and runs `blender_scripts/render_frames.py`, which positions the camera at each keyframe and renders a PNG. Three render engines are supported:
 
@@ -102,6 +107,28 @@ Supports all resolution presets (landscape 16:9, portrait 9:16, square 1:1). Out
 
 ### 9. Video Assembler (`core/video_assembler.py`)
 Encodes the final frame sequence into a video file using FFmpeg. Configurable container (MKV/MP4), codec (H.264/H.265/AV1), and encoder with automatic detection of available hardware accelerators (NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox) and software fallbacks. For MKV output, the source GPX and render settings JSON are attached as named attachments.
+
+---
+
+## Project File Format (`.georeel`)
+
+A `.georeel` file is a standard ZIP archive. All saves are atomic: GeoReel writes to a `.tmp` sibling first, then renames it over the target so the original is never truncated mid-write.
+
+| ZIP entry | Format | Description |
+|---|---|---|
+| `manifest.json` | JSON | Format version and save timestamp |
+| `project.json` | JSON | All project settings (match mode, output path, photo list, render settings, clip effects, locality names settings) |
+| `gpx/track.gpx` | GPX XML | Embedded copy of the source GPX track |
+| `photos/*.jpg` | JPEG | Embedded photos, stored under their original filenames |
+| `font/title.*` | TTF/OTF | Embedded title font (only when a title overlay is configured) |
+| `music/*.mp3` | audio | Embedded audio files, stored under their original filenames |
+| `dem/data.bin` | raw float32, row-major | Elevation grid binary (rows × cols × 4 bytes) |
+| `satellite/texture.png` | PNG, ZIP_STORED | Satellite texture (not re-deflated — already compressed) |
+| `locality/timeline.json` | JSON | Pre-computed Nominatim locality timeline; present only when a preview has been run and the result not invalidated |
+
+`locality/timeline.json` is an array of objects: `[{"frame_start": N, "name": "…", "track_time_s": F}, …]`.  It is omitted from the archive when the cached timeline has been invalidated (e.g. after changing the GPX track or Nominatim settings).
+
+`autosave_tilde` (`path~`) uses the same format and is built by clean rewrite from the base archive — never by ZIP append mode — to prevent duplicate central-directory entries.
 
 ---
 

@@ -34,6 +34,7 @@ def _state(
     satellite_texture=None,
     clip_effects=None,
     render_settings=None,
+    locality_timeline=None,
 ):
     return ProjectState(
         gpx_path=gpx,
@@ -44,6 +45,7 @@ def _state(
         satellite_texture=satellite_texture,
         clip_effects=clip_effects,
         render_settings=render_settings,
+        locality_timeline=locality_timeline,
     )
 
 
@@ -605,3 +607,57 @@ class TestAutosaveTilde:
         # path does not exist yet
         autosave_tilde(_state(tmp_path, output_path="fresh"), path)
         assert zipfile.is_zipfile(path + "~")
+
+
+# ------------------------------------------------------------------
+# Locality timeline — save / load round-trip
+# ------------------------------------------------------------------
+
+class TestLocalityTimeline:
+    _SAMPLE_TIMELINE = [
+        {"frame_start": 0,    "name": "Milano, Lombardia, Italy", "track_time_s": 0.0},
+        {"frame_start": 1200, "name": "Bergamo, Lombardia, Italy", "track_time_s": 120.0},
+    ]
+
+    def _state_with_timeline(self, tmp_path):
+        s = _state(tmp_path)
+        s.locality_timeline = list(self._SAMPLE_TIMELINE)
+        return s
+
+    def test_timeline_round_trip(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(self._state_with_timeline(tmp_path), path)
+        loaded = load_project(path)
+        assert loaded.locality_timeline is not None
+        assert len(loaded.locality_timeline) == 2
+        assert loaded.locality_timeline[0]["name"] == "Milano, Lombardia, Italy"
+        assert loaded.locality_timeline[1]["frame_start"] == 1200
+        assert loaded.locality_timeline[1]["track_time_s"] == pytest.approx(120.0)
+
+    def test_timeline_stored_as_separate_entry(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(self._state_with_timeline(tmp_path), path)
+        with zipfile.ZipFile(path) as zf:
+            assert "locality/timeline.json" in zf.namelist()
+
+    def test_no_timeline_loads_as_none(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path), path)
+        loaded = load_project(path)
+        assert loaded.locality_timeline is None
+
+    def test_no_timeline_no_zip_entry(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path), path)
+        with zipfile.ZipFile(path) as zf:
+            assert "locality/timeline.json" not in zf.namelist()
+
+    def test_tilde_preserves_timeline_from_base(self, tmp_path):
+        """autosave_tilde copies locality/timeline.json unchanged from the base."""
+        path = str(tmp_path / "project.georeel")
+        save_project(self._state_with_timeline(tmp_path), path)
+        autosave_tilde(_state(tmp_path), path)  # state has no timeline
+        with zipfile.ZipFile(path + "~") as zf:
+            assert "locality/timeline.json" in zf.namelist()
+            tl = json.loads(zf.read("locality/timeline.json"))
+        assert len(tl) == 2
