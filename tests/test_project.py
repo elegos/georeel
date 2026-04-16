@@ -1,5 +1,6 @@
 """Tests for project.save_project / load_project round-trips."""
 
+import json
 import shutil
 import zipfile
 import pytest
@@ -11,6 +12,7 @@ from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.photo_metadata import PhotoMetadata
 from georeel.core.project import (
     ProjectState,
+    autosave_tilde,
     save_project,
     load_project,
     _should_embed_font,
@@ -422,3 +424,184 @@ class TestMusicEmbedding:
         restored = json.loads(loaded.clip_effects["clip_effects/music_paths"])
         assert len(restored) == 1
         assert Path(restored[0]).is_file()
+
+
+# ------------------------------------------------------------------
+# Atomic save — no self-truncation, no leftover .tmp
+# ------------------------------------------------------------------
+
+class TestAtomicSave:
+    def test_no_tilde_created_by_save_project(self, tmp_path):
+        """save_project must NOT create a path~ backup (tilde is autosave_tilde's job)."""
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, output_path="v1"), path)
+        save_project(_state(tmp_path, output_path="v2"), path)
+        assert not Path(path + "~").exists()
+
+    def test_new_content_in_path_after_overwrite(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, output_path="v1"), path)
+        save_project(_state(tmp_path, output_path="v2"), path)
+        loaded = load_project(path)
+        assert loaded.output_path == "v2"
+
+    def test_no_tmp_left_after_success(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path), path)
+        save_project(_state(tmp_path), path)
+        assert not Path(path + ".tmp").exists()
+
+    def test_lazy_texture_saved_correctly_when_source_is_target(self, tmp_path):
+        """Regression: satellite texture must not become 0 bytes when the lazy
+        source ZIP is the same file being overwritten."""
+        path = str(tmp_path / "project.georeel")
+
+        tex = _make_texture()
+        save_project(_state(tmp_path, satellite_texture=tex), path)
+
+        loaded = load_project(path)
+        assert loaded.satellite_texture is not None
+        assert loaded.satellite_texture._source_zip == Path(path)
+
+        # Simulate "output file name changed, then Save":
+        save_project(
+            _state(tmp_path, output_path="new_output.mkv",
+                   satellite_texture=loaded.satellite_texture),
+            path,
+        )
+
+        with zipfile.ZipFile(path) as zf:
+            sat_size = zf.getinfo("satellite/texture.png").file_size
+        assert sat_size > 0, (
+            "satellite/texture.png is 0 bytes — lazy source ZIP was read "
+            "after the target file was truncated"
+        )
+
+    def test_lazy_texture_pixel_data_survives_resave(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+
+        original = _make_texture()
+        save_project(_state(tmp_path, satellite_texture=original), path)
+
+        loaded = load_project(path)
+        save_project(
+            _state(tmp_path, satellite_texture=loaded.satellite_texture), path
+        )
+
+        reloaded = load_project(path)
+        assert reloaded.satellite_texture is not None
+        img = reloaded.satellite_texture.load_image()
+        assert img.size == original.image.size
+
+
+# ------------------------------------------------------------------
+# autosave_tilde — clean ZIP, no shadow entries
+# ------------------------------------------------------------------
+
+class TestAutosaveTilde:
+    def test_tilde_created_from_path_when_missing(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, output_path="v1"), path)
+        autosave_tilde(_state(tmp_path, output_path="v1"), path)
+        assert Path(path + "~").exists()
+
+    def test_tilde_is_valid_zip(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path), path)
+        autosave_tilde(_state(tmp_path), path)
+        assert zipfile.is_zipfile(path + "~")
+
+    def test_no_shadow_entries_on_repeated_calls(self, tmp_path):
+        """Each autosave_tilde call must produce a tilde with unique entry names."""
+        path = str(tmp_path / "project.georeel")
+        g = _make_grid()
+        save_project(_state(tmp_path, elevation_grid=g), path)
+
+        # Call twice with update_dem to exercise the rewrite path.
+        autosave_tilde(_state(tmp_path, elevation_grid=g), path, update_dem=True)
+        autosave_tilde(_state(tmp_path, elevation_grid=g), path, update_dem=True)
+
+        tilde = path + "~"
+        with zipfile.ZipFile(tilde) as zf:
+            names = zf.namelist()
+        assert len(names) == len(set(names)), "duplicate entries in tilde"
+
+    def test_no_shadow_entries_for_satellite(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        tex = _make_texture()
+        save_project(_state(tmp_path, satellite_texture=tex), path)
+
+        autosave_tilde(_state(tmp_path, satellite_texture=tex), path, update_sat=True)
+        autosave_tilde(_state(tmp_path, satellite_texture=tex), path, update_sat=True)
+
+        with zipfile.ZipFile(path + "~") as zf:
+            sat_entries = [n for n in zf.namelist() if n == "satellite/texture.png"]
+        assert len(sat_entries) == 1, f"expected 1 satellite entry, got {len(sat_entries)}"
+
+    def test_dem_update_preserves_satellite(self, tmp_path):
+        """Updating DEM in tilde must not drop the satellite entry."""
+        path = str(tmp_path / "project.georeel")
+        g = _make_grid()
+        tex = _make_texture()
+        save_project(_state(tmp_path, elevation_grid=g, satellite_texture=tex), path)
+
+        # First autosave updates satellite.
+        autosave_tilde(
+            _state(tmp_path, elevation_grid=g, satellite_texture=tex),
+            path, update_sat=True,
+        )
+        # Second autosave updates DEM only.
+        autosave_tilde(
+            _state(tmp_path, elevation_grid=g, satellite_texture=tex),
+            path, update_dem=True,
+        )
+
+        with zipfile.ZipFile(path + "~") as zf:
+            names = set(zf.namelist())
+        assert "satellite/texture.png" in names
+        assert "dem/data.bin" in names
+
+    def test_satellite_update_preserves_dem(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        g = _make_grid()
+        tex = _make_texture()
+        save_project(_state(tmp_path, elevation_grid=g, satellite_texture=tex), path)
+
+        autosave_tilde(
+            _state(tmp_path, elevation_grid=g, satellite_texture=tex),
+            path, update_dem=True,
+        )
+        autosave_tilde(
+            _state(tmp_path, elevation_grid=g, satellite_texture=tex),
+            path, update_sat=True,
+        )
+
+        with zipfile.ZipFile(path + "~") as zf:
+            names = set(zf.namelist())
+        assert "satellite/texture.png" in names
+        assert "dem/data.bin" in names
+
+    def test_tilde_json_reflects_new_settings(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path, output_path="old"), path)
+
+        state_new = _state(tmp_path, output_path="new",
+                           render_settings={"render/fps": 60})
+        autosave_tilde(state_new, path)
+
+        with zipfile.ZipFile(path + "~") as zf:
+            payload = json.loads(zf.read("project.json"))
+        assert payload.get("render_settings", {}).get("render/fps") == 60
+
+    def test_no_tmp_left_after_success(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        save_project(_state(tmp_path), path)
+        autosave_tilde(_state(tmp_path), path)
+        assert not Path(path + "~.tmp").exists()
+
+    def test_fallback_to_save_project_when_no_base(self, tmp_path):
+        """If neither path nor path~ exist, autosave_tilde does a full save."""
+        path = str(tmp_path / "project.georeel")
+        # path does not exist yet
+        autosave_tilde(_state(tmp_path, output_path="fresh"), path)
+        assert zipfile.is_zipfile(path + "~")

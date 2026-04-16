@@ -58,34 +58,50 @@ def autosave_tilde(
     update_dem: bool = False,
     update_sat: bool = False,
 ) -> None:
-    """Incrementally save DEM/satellite data to *path~* using zip-append.
+    """Atomically build / update *path~* with the latest DEM and/or satellite data.
 
-    On the first call after a project has been saved/loaded, *path* is copied
-    to *path~* and then the updated entries are appended.  On subsequent calls
-    only the append step runs — much faster than a full rebuild.
+    Unlike the old append-mode approach, this always produces a clean ZIP with
+    no shadow / duplicate entries:
 
-    Python's ``zipfile`` reader builds its ``NameToInfo`` dict by iterating the
-    central directory in order, so later (appended) entries for the same path
-    shadow earlier ones.  Old data blocks remain in the file but are never
-    referenced; the file grows slightly until the user performs a full Save.
+    1. Choose a **base** ZIP to copy unchanged entries from:
+       - *path~* if it already exists (preserves any data written by a
+         previous autosave call, e.g. a freshly fetched satellite, while now
+         also updating the DEM).
+       - *path* otherwise (the last explicit save).
+       - If neither exists (project never saved), fall back to a full
+         ``save_project`` call.
+    2. Write a new *path~.tmp*: copy all entries from the base except those
+       being replaced, then write the new versions.
+    3. Atomically rename *path~.tmp* → *path~*.
 
-    If *path* doesn't exist (project has never been explicitly saved), falls
-    back to a complete ``save_project`` call so the tilde is still valid.
+    The large satellite texture (ZIP_STORED) is streamed entry-by-entry
+    without decoding when it is not being updated, keeping I/O overhead at a
+    raw-copy level.  When it IS being updated the new texture is written via
+    ``SatelliteTexture.write_png``, which itself streams from its source ZIP
+    if the image is lazy-loaded — and because we write to a *different* file
+    (*tmp*) the source ZIP is never truncated mid-read.
     """
     tilde = path + "~"
+    tmp   = tilde + ".tmp"
 
-    if not Path(tilde).is_file():
-        if Path(path).is_file():
-            shutil.copy2(path, tilde)
-        else:
-            save_project(state, tilde)
-            return
+    tilde_exists = Path(tilde).is_file()
+    path_exists  = Path(path).is_file()
 
-    # Open in append mode and shadow the changed entries.
-    with zipfile.ZipFile(tilde, "a", compression=zipfile.ZIP_DEFLATED) as zf:
-        # Patch project.json in place — read the existing one, update fields.
+    # Choose the base: prefer the existing tilde so incremental data (e.g. a
+    # freshly fetched satellite written by a previous call) is not lost.
+    if tilde_exists:
+        base = tilde
+    elif path_exists:
+        base = path
+    else:
+        # First-ever save: no existing project to derive from.
+        save_project(state, tilde)
+        return
+
+    with zipfile.ZipFile(base, "r") as src_zf:
+        # Build the updated project.json by patching the base payload.
         try:
-            payload: dict[str, Any] = json.loads(zf.read(_PROJECT))
+            payload: dict[str, Any] = json.loads(src_zf.read(_PROJECT))
         except KeyError:
             payload = {}
 
@@ -116,16 +132,51 @@ def autosave_tilde(
             "version": _FORMAT_VERSION,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
-        zf.writestr(_MANIFEST, json.dumps(manifest, indent=2))
-        zf.writestr(_PROJECT,  json.dumps(payload,  indent=2))
 
-        if update_dem and state.elevation_grid is not None:
-            zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
-        if update_sat and state.satellite_texture is not None:
-            _write_sat_png(zf, state.satellite_texture)
+        # Entries we are replacing — always replace the JSON metadata.
+        skip: set[str] = {_MANIFEST, _PROJECT}
+        if update_dem:
+            skip.add(_DEM_BIN)
+        if update_sat:
+            skip.add(_SAT_TEXTURE)
+
+        try:
+            with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as dst_zf:
+                # Copy every unchanged entry from the base ZIP.
+                for info in src_zf.infolist():
+                    if info.filename not in skip:
+                        _copy_zip_entry(src_zf, dst_zf, info)
+
+                # Write the updated entries.
+                dst_zf.writestr(_MANIFEST, json.dumps(manifest, indent=2))
+                dst_zf.writestr(_PROJECT,  json.dumps(payload,  indent=2))
+
+                if update_dem and state.elevation_grid is not None:
+                    dst_zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
+                if update_sat and state.satellite_texture is not None:
+                    _write_sat_png(dst_zf, state.satellite_texture)
+        except Exception:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    Path(tmp).replace(tilde)
 
 
 def save_project(state: ProjectState, path: str) -> None:
+    """Save a project to *path* atomically.
+
+    Writes to a temporary file in the same directory first, then:
+      1. Renames the existing *path* (if any) to *path~* — instant on the same
+         filesystem, gives a recovery copy without duplicating data on disk.
+      2. Renames the temporary file to *path*.
+
+    This matters especially for the lazy-loaded satellite texture: when a
+    project is loaded, ``state.satellite_texture._source_zip`` points at
+    *path* itself.  If we opened *path* for writing directly we would truncate
+    the source while still trying to stream from it, producing a 0-byte
+    ``satellite/texture.png`` in the saved ZIP.  Writing to a distinct temp
+    file avoids this, because the original *path* stays intact until the rename.
+    """
     # Serialise photos first; the list is mutated below to add embedded names.
     serialised_photos = [_serialise_photo(p) for p in state.photos]
 
@@ -174,83 +225,116 @@ def save_project(state: ProjectState, path: str) -> None:
         "saved_at": datetime.now().isoformat(timespec="seconds"),
     }
 
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(_MANIFEST, json.dumps(manifest, indent=2))
+    # Write to a sibling temp file so the original (which may be the satellite
+    # texture's _source_zip) stays intact during the entire write.
+    tmp_path = path + ".tmp"
+    try:
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(_MANIFEST, json.dumps(manifest, indent=2))
 
-        # ── Embed GPX ────────────────────────────────────────────────
-        if state.gpx_path and Path(state.gpx_path).is_file():
-            zf.write(state.gpx_path, _GPX_ENTRY)
-            project_payload["gpx_embedded"] = True
+            # ── Embed GPX ────────────────────────────────────────────────
+            if state.gpx_path and Path(state.gpx_path).is_file():
+                zf.write(state.gpx_path, _GPX_ENTRY)
+                project_payload["gpx_embedded"] = True
 
-        # ── Embed photos ─────────────────────────────────────────────
-        _seen_photo_names: set[str] = set()
-        for photo, ser in zip(state.photos, serialised_photos):
-            if photo.path and Path(photo.path).is_file():
-                p = Path(photo.path)
-                stem, ext = p.stem, p.suffix.lower() or ".jpg"
-                name = f"{stem}{ext}"
-                if name in _seen_photo_names:
-                    counter = 1
-                    while f"{stem}_{counter}{ext}" in _seen_photo_names:
-                        counter += 1
-                    name = f"{stem}_{counter}{ext}"
-                _seen_photo_names.add(name)
-                entry = f"{_PHOTOS_DIR}{name}"
-                zf.write(photo.path, entry)
-                ser["embedded"] = entry   # mutates serialised_photos[i]
-
-        # ── Embed title font ─────────────────────────────────────────
-        if _should_embed_font(state.clip_effects):
-            font_name = (state.clip_effects or {}).get(
-                "clip_effects/title_font", "Noto Serif"
-            )
-            font_file = _resolve_fontfile(font_name)
-            if font_file:
-                ext = Path(font_file).suffix.lower() or ".ttf"
-                zf.write(font_file, f"{_FONT_ENTRY}{ext}")
-                project_payload["font_embedded"] = True
-
-        # ── Embed music ──────────────────────────────────────────────
-        ce = state.clip_effects or {}
-        if ce.get("clip_effects/music_enabled"):
-            paths_raw = ce.get("clip_effects/music_paths", "[]")
-            try:
-                music_paths: list[str] = (
-                    json.loads(paths_raw) if isinstance(paths_raw, str) else list(paths_raw)
-                )
-            except (ValueError, TypeError):
-                music_paths = []
-            _seen_music_names: set[str] = set()
-            embedded_music_entries: list[str] = []
-            for mpath in music_paths:
-                if mpath and Path(mpath).is_file():
-                    p = Path(mpath)
-                    stem, ext = p.stem, p.suffix.lower() or ".mp3"
+            # ── Embed photos ─────────────────────────────────────────────
+            _seen_photo_names: set[str] = set()
+            for photo, ser in zip(state.photos, serialised_photos):
+                if photo.path and Path(photo.path).is_file():
+                    p = Path(photo.path)
+                    stem, ext = p.stem, p.suffix.lower() or ".jpg"
                     name = f"{stem}{ext}"
-                    if name in _seen_music_names:
+                    if name in _seen_photo_names:
                         counter = 1
-                        while f"{stem}_{counter}{ext}" in _seen_music_names:
+                        while f"{stem}_{counter}{ext}" in _seen_photo_names:
                             counter += 1
                         name = f"{stem}_{counter}{ext}"
-                    _seen_music_names.add(name)
-                    entry = f"{_MUSIC_DIR}{name}"
-                    zf.write(mpath, entry)
-                    embedded_music_entries.append(entry)
-            if embedded_music_entries:
-                project_payload["music_embedded"] = embedded_music_entries
+                    _seen_photo_names.add(name)
+                    entry = f"{_PHOTOS_DIR}{name}"
+                    zf.write(photo.path, entry)
+                    ser["embedded"] = entry   # mutates serialised_photos[i]
 
-        # project.json written last so it captures all embedded flags above.
-        zf.writestr(_PROJECT, json.dumps(project_payload, indent=2))
+            # ── Embed title font ─────────────────────────────────────────
+            if _should_embed_font(state.clip_effects):
+                font_name = (state.clip_effects or {}).get(
+                    "clip_effects/title_font", "Noto Serif"
+                )
+                font_file = _resolve_fontfile(font_name)
+                if font_file:
+                    ext = Path(font_file).suffix.lower() or ".ttf"
+                    zf.write(font_file, f"{_FONT_ENTRY}{ext}")
+                    project_payload["font_embedded"] = True
 
-        if state.elevation_grid is not None:
-            zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
-        if state.satellite_texture is not None:
-            _write_sat_png(zf, state.satellite_texture)
+            # ── Embed music ──────────────────────────────────────────────
+            ce = state.clip_effects or {}
+            if ce.get("clip_effects/music_enabled"):
+                paths_raw = ce.get("clip_effects/music_paths", "[]")
+                try:
+                    music_paths: list[str] = (
+                        json.loads(paths_raw) if isinstance(paths_raw, str) else list(paths_raw)
+                    )
+                except (ValueError, TypeError):
+                    music_paths = []
+                _seen_music_names: set[str] = set()
+                embedded_music_entries: list[str] = []
+                for mpath in music_paths:
+                    if mpath and Path(mpath).is_file():
+                        p = Path(mpath)
+                        stem, ext = p.stem, p.suffix.lower() or ".mp3"
+                        name = f"{stem}{ext}"
+                        if name in _seen_music_names:
+                            counter = 1
+                            while f"{stem}_{counter}{ext}" in _seen_music_names:
+                                counter += 1
+                            name = f"{stem}_{counter}{ext}"
+                        _seen_music_names.add(name)
+                        entry = f"{_MUSIC_DIR}{name}"
+                        zf.write(mpath, entry)
+                        embedded_music_entries.append(entry)
+                if embedded_music_entries:
+                    project_payload["music_embedded"] = embedded_music_entries
+
+            # project.json written last so it captures all embedded flags above.
+            zf.writestr(_PROJECT, json.dumps(project_payload, indent=2))
+
+            if state.elevation_grid is not None:
+                zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
+            if state.satellite_texture is not None:
+                _write_sat_png(zf, state.satellite_texture)
+
+    except Exception:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+    # Atomic placement: tmp → path.
+    # The original file stays intact throughout the write (above), so any
+    # lazy satellite texture that references path as its source ZIP was read
+    # from the still-intact file.  The tilde (if any, built by autosave_tilde)
+    # is left for _on_save_complete to remove after this call succeeds.
+    Path(tmp_path).replace(path)
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _copy_zip_entry(
+    src_zf: zipfile.ZipFile,
+    dst_zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+) -> None:
+    """Stream one ZIP entry from *src_zf* into *dst_zf*, preserving its compression type.
+
+    For ZIP_STORED entries (e.g. the satellite PNG, which is already a
+    compressed format) this is a raw byte copy with no codec overhead.
+    For ZIP_DEFLATED entries the decompressed bytes are re-deflated, which
+    is fast for the small JSON / DEM entries that use deflate.
+    """
+    out_info = zipfile.ZipInfo(info.filename)
+    out_info.compress_type = info.compress_type
+    with src_zf.open(info) as src_f, dst_zf.open(out_info, "w", force_zip64=True) as dst_f:
+        shutil.copyfileobj(src_f, dst_f, 1 << 20)  # 1 MiB chunks
+
 
 def _write_sat_png(zf: zipfile.ZipFile, texture: SatelliteTexture) -> None:
     """Stream the satellite texture PNG directly into the ZIP archive.

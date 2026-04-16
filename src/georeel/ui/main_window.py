@@ -1852,9 +1852,10 @@ class MainWindow(QMainWindow):
 
         tilde = path + "~"
         if self._tilde_fresh and Path(tilde).is_file():
-            # Fast path — tilde is ready; just rename it.
+            # Fast path — tilde is a clean, ready-to-use ZIP built by
+            # autosave_tilde.  A single atomic rename replaces path with it.
             try:
-                shutil.move(tilde, path)
+                Path(tilde).replace(path)
             except Exception as e:
                 QMessageBox.critical(self, "Save failed", str(e))
                 self._status_show("Save failed.")
@@ -1912,7 +1913,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", error)
             self._pending_close = False
         else:
-            # Full save completed — any tilde is now redundant.
+            # Full save succeeded — tilde served its crash-recovery purpose,
+            # delete it so it doesn't persist as a confusing leftover.
             Path(path + "~").unlink(missing_ok=True)
             self._tilde_fresh = False
             self._save_last_project_dir(path)
