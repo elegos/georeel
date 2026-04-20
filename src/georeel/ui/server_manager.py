@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 
+from georeel.core import temp_manager
 from georeel.ui.server_client import ServerClient
 
 _log = logging.getLogger(__name__)
@@ -69,9 +70,13 @@ class ServerManager:
         port = _free_port()
         url = f"http://{self._host}:{port}"
         _log.info("Starting georeel-server on %s", url)
+        cmd = ["georeel-server", "--host", self._host, "--port", str(port),
+               "--log-level", "debug"]
+        base_dir = temp_manager.get_base_dir()
+        if base_dir is not None:
+            cmd += ["--temp-dir", str(base_dir)]
         self._process = subprocess.Popen(
-            ["georeel-server", "--host", self._host, "--port", str(port),
-             "--log-level", "debug"],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )

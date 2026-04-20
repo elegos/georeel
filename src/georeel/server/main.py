@@ -16,6 +16,7 @@ class _Args:
     host: str
     port: int
     log_level: str
+    temp_dir: str | None
 
 
 def _parse_args(argv: list[str] | None = None) -> _Args:
@@ -41,8 +42,19 @@ def _parse_args(argv: list[str] | None = None) -> _Args:
         dest="log_level",
         help="Logging verbosity (default: info)",
     )
+    parser.add_argument(
+        "--temp-dir",
+        default=None,
+        dest="temp_dir",
+        help="Base directory for server temp files (default: system /tmp)",
+    )
     ns = parser.parse_args(argv)
-    return _Args(host=str(ns.host), port=int(ns.port), log_level=str(ns.log_level))
+    return _Args(
+        host=str(ns.host),
+        port=int(ns.port),
+        log_level=str(ns.log_level),
+        temp_dir=str(ns.temp_dir) if ns.temp_dir else None,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -54,6 +66,12 @@ def main(argv: list[str] | None = None) -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+
+    from pathlib import Path
+
+    from georeel.core import temp_manager  # noqa: PLC0415
+    if args.temp_dir:
+        temp_manager.set_base_dir(Path(args.temp_dir))
 
     from georeel.server.app import app  # noqa: PLC0415  (import after logging setup)
 
