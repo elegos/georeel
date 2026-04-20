@@ -110,6 +110,19 @@ def detect_and_repair(
         else:
             clean.append(pt)
 
+    # ── Step 1b: remove path spikes ──────────────────────────────────────────
+    # GPS glitches just after a recording pause often slip through the sequential
+    # speed check (e.g. 113 km/h is below the 300 km/h threshold but still
+    # wrong for a hiker).  A spike is characterised by:
+    #   - the point is far from its predecessor (>> typical segment)
+    #   - its successor is also far (the GPS jumped away then snapped back)
+    #   - the direct distance predecessor→successor is small (no real movement)
+    # One pass suffices because spikes are isolated single-point glitches.
+    spikes = _path_spike_indices(clean)
+    if spikes:
+        stats.nullified_removed += len(spikes)
+        clean = [pt for i, pt in enumerate(clean) if i not in spikes]
+
     if mode == REPAIR_NONE or len(clean) < 2:
         return clean, stats
 
@@ -117,13 +130,19 @@ def detect_and_repair(
     if mode == REPAIR_GROUND:
         mode = REPAIR_LINEAR
 
-    # ── Step 2: estimate the typical inter-point interval (median) ───────────
-    pair_gaps = [
-        _time_gap_s(clean[i], clean[i + 1])
+    # ── Step 2: estimate the typical inter-point spacing (median distance) ──────
+    # Using distance (not time) so that the synthetic point count for a gap
+    # reflects how far apart the endpoints are, not how long the recorder was
+    # paused.  A pause at the same spot produces n=1 regardless of duration.
+    pair_dists = [
+        _haversine(
+            clean[i].latitude, clean[i].longitude,
+            clean[i + 1].latitude, clean[i + 1].longitude,
+        )
         for i in range(len(clean) - 1)
     ]
-    valid_gaps = sorted(g for g in pair_gaps if g is not None and 0 < g <= max_gap_s)
-    typical_s = valid_gaps[len(valid_gaps) // 2] if valid_gaps else 1.0
+    valid_dists = sorted(d for d in pair_dists if d > 0)
+    typical_m = valid_dists[len(valid_dists) // 2] if valid_dists else 10.0
 
     # ── Step 3: scan consecutive pairs and fill gaps ──────────────────────────
     result: list[Trackpoint] = [clean[0]]
@@ -131,8 +150,11 @@ def detect_and_repair(
         a, b = clean[i], clean[i + 1]
         gap_s = _time_gap_s(a, b)
         if gap_s is not None and gap_s > max_gap_s:
-            # Number of synthetic points to insert (≥1).
-            n = max(1, round(gap_s / typical_s) - 1)
+            # Number of synthetic points proportional to geographic distance,
+            # not elapsed time.  Ensures a stationary pause (same or nearby
+            # resume point) inserts exactly 1 connecting point.
+            gap_dist_m = _haversine(a.latitude, a.longitude, b.latitude, b.longitude)
+            n = max(1, round(gap_dist_m / typical_m) - 1)
             synthetic, fell_back = _fill_hole(a, b, n, mode, osrm_profile)
             result.extend(synthetic)
             stats.holes_filled += len(synthetic)
@@ -204,6 +226,55 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
     )
     return _R_EARTH * 2 * math.asin(math.sqrt(min(a, 1.0)))
+
+
+def _path_spike_indices(
+    points: list[Trackpoint],
+    detour_factor: float = 5.0,
+    min_spike_m: float = 15.0,
+) -> frozenset[int]:
+    """Return indices of single-point GPS spikes.
+
+    A spike at index *i* satisfies all three conditions:
+      1. dist(i-1, i) > ``detour_factor`` × median segment distance
+      2. dist(i, i+1) > ``detour_factor`` × median segment distance
+      3. dist(i-1, i+1) < dist(i-1, i) (the direct hop is shorter than the detour)
+
+    Condition 3 prevents aggressive trimming of genuine sharp switchbacks on
+    mountain trails: a real hairpin has small individual segments (low absolute
+    distance), while a GPS glitch creates a large absolute jump.
+
+    ``min_spike_m`` sets a floor so that sub-metre noise is ignored even when
+    the track is very slow (camping, near-stationary recording).
+    """
+    if len(points) < 3:
+        return frozenset()
+
+    dists = [
+        _haversine(
+            points[i].latitude, points[i].longitude,
+            points[i + 1].latitude, points[i + 1].longitude,
+        )
+        for i in range(len(points) - 1)
+    ]
+    sorted_d = sorted(d for d in dists if d > 0)
+    if not sorted_d:
+        return frozenset()
+    median_d = sorted_d[len(sorted_d) // 2]
+    threshold = max(min_spike_m, detour_factor * median_d)
+
+    spikes: set[int] = set()
+    for i in range(1, len(points) - 1):
+        d_prev = dists[i - 1]   # dist(i-1 → i)
+        d_next = dists[i]       # dist(i   → i+1)
+        d_direct = _haversine(
+            points[i - 1].latitude, points[i - 1].longitude,
+            points[i + 1].latitude, points[i + 1].longitude,
+        )
+        if d_prev > threshold and d_next > threshold and d_direct < d_prev:
+            spikes.add(i)
+
+    return frozenset(spikes)
 
 
 def _time_gap_s(a: Trackpoint, b: Trackpoint) -> float | None:

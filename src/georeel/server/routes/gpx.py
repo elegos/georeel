@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from georeel.core.gpx_cleaner import CleanStats, detect_and_repair
+from georeel.core.gpx_cleaner import CleanStats, REPAIR_NONE, detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.gpx_stats import compute_stats
 from georeel.server.models.bounding_box import BoundingBoxSchema
@@ -65,6 +65,10 @@ async def parse(file: UploadFile) -> GpxParseResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+    # Always sanitize: remove (0,0) nulls, speed outliers, and GPS spikes.
+    # Hole filling (gap interpolation) is handled separately by /gpx/clean.
+    trackpoints, _ = detect_and_repair(trackpoints, mode=REPAIR_NONE)
 
     stats = compute_stats(trackpoints)
     return GpxParseResponse(

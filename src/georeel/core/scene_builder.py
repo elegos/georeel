@@ -13,7 +13,6 @@ from georeel.core import temp_manager
 _log = logging.getLogger(__name__)
 
 import numpy as np
-from scipy.interpolate import splev, splprep
 
 from .blender_runtime import find_blender
 from .elevation_grid import ElevationGrid
@@ -290,46 +289,28 @@ def _write_track(
     raw_flags: list[bool] = [rec for _, _, rec, _ in raw]
     raw_speeds: list[float] = [spd for _, _, _, spd in raw]
 
-    # Fit parametric cubic B-spline through all trackpoints.
-    # splprep returns u: the parameter values corresponding to each input point.
-    tck, u = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
+    # Arc-length parameterisation along the raw polyline.
+    # A cubic B-spline (s=0) overshoots badly at sharp direction reversals,
+    # producing large phantom loops in the ribbon.  Piecewise-linear resampling
+    # faithfully follows the GPS path without any overshoot.
+    diffs = np.diff(pts, axis=0)
+    seg_lens = np.sqrt((diffs ** 2).sum(axis=1))
+    cumlen = np.concatenate([[0.0], np.cumsum(seg_lens)])
+    total_length = float(cumlen[-1])
 
-    # Compute total arc length on a dense evaluation
-    t_fine = np.linspace(0, 1, max(10_000, len(pts) * 100))
-    _ev_fine = splev(t_fine, tck)
-    xs_fine, ys_fine = (
-        np.asarray(_ev_fine[0], dtype=float),
-        np.asarray(_ev_fine[1], dtype=float),
-    )
-    dx = np.diff(xs_fine)
-    dy = np.diff(ys_fine)
-    cumlen = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
-    total_length = cumlen[-1]
-
-    # Resample at equal spacing
+    # Resample at equal arc-length spacing
     n_samples = max(2, int(total_length / ribbon_spacing_m) + 1)
     sample_dists = np.linspace(0, total_length, n_samples)
-    sample_t = np.interp(sample_dists, cumlen, t_fine)
 
-    _ev = splev(sample_t, tck)
-    xs, ys = np.asarray(_ev[0], dtype=float), np.asarray(_ev[1], dtype=float)
-    # Derivatives for slope computation
-    _dev = splev(sample_t, tck, der=1)
-    dxs, dys = np.asarray(_dev[0], dtype=float), np.asarray(_dev[1], dtype=float)
-
-    # For each ribbon sample, determine whether it lies in a reconstructed segment.
-    # A sample at parameter t falls in segment [u[j], u[j+1]]; it is reconstructed
-    # if either bounding input point is reconstructed.
-    u_arr = np.asarray(u)
+    xs = np.interp(sample_dists, cumlen, pts[:, 0])
+    ys = np.interp(sample_dists, cumlen, pts[:, 1])
 
     points: list[dict[str, Any]] = []
     for i in range(n_samples):
         x, y = float(xs[i]), float(ys[i])
         z = _elev_at_xy(x, y, grid, lat_m, lon_m)
-        # Slope: rise over run using spline tangent and DEM elevation difference
-        # Sample elevation slightly ahead and behind for accurate grade
-        horiz = math.sqrt(float(dxs[i]) ** 2 + float(dys[i]) ** 2)
-        if horiz > 1e-6 and i > 0 and i < n_samples - 1:
+        # Slope from DEM elevation at neighbouring sample points
+        if i > 0 and i < n_samples - 1:
             z_prev = _elev_at_xy(float(xs[i - 1]), float(ys[i - 1]), grid, lat_m, lon_m)
             z_next = _elev_at_xy(float(xs[i + 1]), float(ys[i + 1]), grid, lat_m, lon_m)
             seg_h = math.sqrt(
@@ -339,14 +320,16 @@ def _write_track(
             slope = abs(z_next - z_prev) / seg_h if seg_h > 1e-6 else 0.0
         else:
             slope = 0.0
-        # Map sample parameter back to its input segment; propagate
+        # Map sample distance back to input segment; propagate
         # is_reconstructed and linearly interpolate speed.
-        j = int(np.searchsorted(u_arr, sample_t[i], side="right")) - 1
+        j = int(np.searchsorted(cumlen, sample_dists[i], side="right")) - 1
         j = max(0, min(j, len(raw_flags) - 2))
         is_rec = raw_flags[j] or raw_flags[j + 1]
-        seg_len = float(u_arr[j + 1]) - float(u_arr[j])
+        seg_len_j = float(cumlen[j + 1]) - float(cumlen[j])
         frac = (
-            (float(sample_t[i]) - float(u_arr[j])) / seg_len if seg_len > 1e-12 else 0.0
+            (float(sample_dists[i]) - float(cumlen[j])) / seg_len_j
+            if seg_len_j > 1e-12
+            else 0.0
         )
         spd = raw_speeds[j] + frac * (raw_speeds[j + 1] - raw_speeds[j])
         points.append(
