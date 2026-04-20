@@ -146,6 +146,13 @@ pip install --user georeel.whl
 georeel
 ```
 
+GeoReel automatically starts the pipeline server (`georeel-server`) in the background. You can also start the server separately:
+
+```bash
+georeel-server             # default port 8765
+georeel-server --port 9000 # custom port
+```
+
 ---
 
 ## Build from source
@@ -178,7 +185,8 @@ uv sync
 ### Run from source
 
 ```bash
-uv run main.py
+uv run georeel        # GUI (starts server automatically)
+uv run georeel-server # pipeline server only
 ```
 
 ### Build a wheel

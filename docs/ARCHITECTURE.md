@@ -132,6 +132,66 @@ A `.georeel` file is a standard ZIP archive. All saves are atomic: GeoReel write
 
 ---
 
+## Server Architecture
+
+GeoReel uses a client-server architecture: the PySide6 GUI is a thin REST client; all pipeline logic runs inside a **FastAPI service** (`georeel-server`).
+
+### Startup
+
+```
+GUI starts
+  ├─ GET http://localhost:8765/api/v1/health
+  │    ├─ 200 OK → attach to existing server
+  │    └─ refused → bind random OS port → spawn subprocess
+  │         └─ poll /health until ready (10 s timeout)
+  └─ at GUI exit: delete workspace → terminate subprocess (if owned)
+```
+
+### Components
+
+| Component | Path | Role |
+|---|---|---|
+| `server/app.py` | `georeel.server.app` | FastAPI app factory + lifespan cleanup |
+| `server/jobs.py` | `georeel.server.jobs` | In-memory job registry (UUID → `JobRecord`) |
+| `server/workspace.py` | `georeel.server.workspace` | Per-session temp directories (`WorkspaceManager`) |
+| `server/routes/*.py` | — | One module per resource group |
+| `ui/server_client.py` | `georeel.ui.server_client` | Synchronous `httpx` wrapper (GUI side) |
+| `ui/server_manager.py` | `georeel.ui.server_manager` | Subprocess lifecycle + port selection |
+
+### REST API (all under `/api/v1/`)
+
+| Group | Endpoints | Type |
+|---|---|---|
+| Health | `GET /health` | sync |
+| Workspaces | `POST /workspaces`, `DELETE /workspaces/{id}` | sync |
+| GPX | `POST /gpx/parse`, `POST /gpx/clean` | sync |
+| Photos | `POST /photos/upload`, `POST /photos/match` | sync |
+| Camera | `POST /camera/keyframes` | sync |
+| DEM | `POST /dem/fetch` → job, `GET /dem/{id}/result` | async job |
+| Satellite | `POST /satellite/fetch` → job, `GET /satellite/{id}/result`, `GET /satellite/{id}/texture.png` | async job |
+| Scene | `POST /scene/build` → job | async job |
+| Render | `POST /render/frames` → job | async job |
+| Compositor | `POST /compositor/run` → job | async job |
+| Video | `POST /video/assemble` → job, `GET /video/{id}/download` | async job |
+| Project | `POST /project/save`, `POST /project/load` | sync |
+| Jobs | `GET /jobs/{id}`, `DELETE /jobs/{id}`, `GET /jobs/{id}/events` | polling / SSE |
+
+### Job lifecycle
+
+```
+POST /resource/action  →  {"job_id": "..."}
+  └─ GET /jobs/{id}   →  {"status": "running", "progress": 42, "message": "..."}
+  └─ GET /jobs/{id}   →  {"status": "done", "result_path": "/tmp/..."}
+```
+
+Long-running pipeline stages run in a thread pool (`asyncio.to_thread`). The job registry holds the `cancel_event` (`threading.Event`) checked by each stage at regular intervals. Completed jobs are kept for 30 minutes before eviction.
+
+### Workspace lifecycle
+
+A workspace is a server-side temp directory that holds uploaded photos for a session. The GUI creates one workspace on startup and passes its `workspace_id` to endpoints that need photo files. On GUI exit (`closeEvent`), the workspace is explicitly deleted; any orphaned workspaces are swept by the `lifespan` handler on server shutdown.
+
+---
+
 ## Data Flow Summary
 
 | Stage | Input | Output |

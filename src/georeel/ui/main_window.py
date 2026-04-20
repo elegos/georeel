@@ -5,6 +5,18 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from georeel.ui.server_client import (
+    ServerClient,
+    ServerError,
+    bbox_to_dict,
+    elevation_grid_to_dict,
+    keyframe_to_dict,
+    match_result_to_dict,
+    trackpoint_to_dict,
+    _match_result_from_dict,
+)
+from georeel.ui.server_manager import ServerManager
+
 from PySide6.QtCore import QObject, QSettings, QThread, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -36,12 +48,11 @@ from georeel.core.bounding_box import BoundingBox
 from georeel.core.camera_path import CameraPathError, build_camera_path
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
+from georeel.core.match_result import MatchResult
 from georeel.core.exif_reader import read_photo_metadata
 from georeel.core.frustum import frustum_margin
-from georeel.core.gpx_cleaner import REPAIR_NONE, detect_and_repair
-from georeel.core.gpx_parser import GpxParseError, parse_gpx
+from georeel.core.gpx_cleaner import REPAIR_NONE
 from georeel.core.gpx_stats import compute_stats
-from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
 from georeel.core.pipeline_memory import log_pipeline_memory
@@ -167,6 +178,7 @@ class _LoadWorker(QObject):
         max_speed_mps: float,
         max_gap_s: float,
         max_jump_m: float,
+        client: "ServerClient",
     ):
         super().__init__()
         self._path = path
@@ -174,6 +186,7 @@ class _LoadWorker(QObject):
         self._max_speed_mps = max_speed_mps
         self._max_gap_s = max_gap_s
         self._max_jump_m = max_jump_m
+        self._client = client
 
     def run(self):
         name = Path(self._path).name
@@ -186,14 +199,15 @@ class _LoadWorker(QObject):
             if state.gpx_path:
                 self.progress.emit(f"Loading project: {name} — parsing GPX…")
                 try:
-                    trackpoints, _ = parse_gpx(state.gpx_path)
-                    trackpoints, _ = detect_and_repair(
-                        trackpoints,
-                        self._repair_mode,
-                        max_speed_mps=self._max_speed_mps,
-                        max_gap_s=self._max_gap_s,
-                        max_jump_m=self._max_jump_m,
-                    )
+                    trackpoints, _ = self._client.parse_gpx(state.gpx_path)
+                    if self._repair_mode != REPAIR_NONE:
+                        trackpoints, _ = self._client.clean_gpx(
+                            trackpoints,
+                            mode=self._repair_mode,
+                            max_speed_mps=self._max_speed_mps,
+                            max_gap_s=self._max_gap_s,
+                            max_jump_m=self._max_jump_m,
+                        )
                     gpx_stats = compute_stats(trackpoints)
                 except Exception:
                     gpx_failed = True
@@ -279,6 +293,17 @@ class MainWindow(QMainWindow):
         self._track_length_m: float | None = None
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
+
+        # ── Server lifecycle ───────────────────────────────────────────
+        self._server_manager = ServerManager()
+        try:
+            self._server_client: ServerClient = self._server_manager.start()
+            self._server_workspace_id: str = self._server_client.create_workspace()
+        except Exception as _e:
+            _log.warning("Could not start georeel-server: %s", _e)
+            # Fallback: create a minimal stub so the UI still launches.
+            # _start() will fail gracefully when the server is unavailable.
+            self._server_workspace_id = ""
         self._restore_window_geometry()
 
         central = QWidget()
@@ -458,6 +483,7 @@ class MainWindow(QMainWindow):
             tz_offset_hours=tz_offset,
             render_settings=render_settings,
             cached_elevation_grid=self._cached_elevation_grid,
+            client=self._server_client,
         )
         worker.status.connect(self._status_show)
         worker.dem_fetched.connect(self._on_worker_dem_fetched)
@@ -1088,6 +1114,7 @@ class MainWindow(QMainWindow):
             cached_satellite_texture=self._cached_satellite_texture,
             api_key=str(self._settings.value("imagery/api_key", "")),
             custom_url=str(self._settings.value("imagery/custom_url", "")),
+            client=self._server_client,
             cleaned_trackpoints=self._pipeline.trackpoints or None,
         )
         worker.status.connect(self._status_show)
@@ -1174,20 +1201,19 @@ class MainWindow(QMainWindow):
         self._preview_video_btn.setEnabled(True)
         self._open_blender_btn.setEnabled(True)
         try:
-            from georeel.core.gpx_parser import parse_gpx
-
-            trackpoints, _ = parse_gpx(path)
-            trackpoints, _ = detect_and_repair(
-                trackpoints,
-                str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-                max_speed_mps=float(
-                    str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+            trackpoints, _ = self._server_client.parse_gpx(path)
+            repair_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE))
+            if repair_mode != REPAIR_NONE:
+                trackpoints, _ = self._server_client.clean_gpx(
+                    trackpoints,
+                    mode=repair_mode,
+                    max_speed_mps=float(
+                        str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+                    ) / 3.6,
+                    max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
+                    max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
+                    * 1_000,
                 )
-                / 3.6,
-                max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-                max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
-                * 1_000,
-            )
             self._gpx_stats.update_stats(trackpoints)
             self._track_length_m = compute_stats(trackpoints).total_distance_m
         except Exception:
@@ -1459,27 +1485,27 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Preserve the background-built pipeline if it is fresh (not stale).
-        # Otherwise start a clean pipeline so all stages run from scratch.
-        if self._scene_stale or self._pipeline.scene is None:
-            self._pipeline.cleanup()
-            self._pipeline = Pipeline()
+        # Always start a clean pipeline for the main export run.
+        self._pipeline.cleanup()
+        self._pipeline = Pipeline()
 
-        # Stages 1–5: skip entirely if the background worker already built
-        # a fresh scene for the current inputs.
-        if not self._scene_stale and self._pipeline.scene is not None:
-            self._status_show(f"Reusing existing scene: {self._pipeline.scene}")
-            render_settings = get_render_settings(self._settings)
-            # Jump straight to stage 6
-            self._start_from_camera_path(render_settings)
+        if not self._server_workspace_id:
+            QMessageBox.critical(
+                self,
+                "Server unavailable",
+                "The GeoReel server is not running.\n"
+                "Please start it with: georeel-server",
+            )
             return
 
-        # Stage 1 — GPX Parser
+        client = self._server_client
+
+        # Stage 1 — GPX Parser (via server)
         self._status_show("Parsing GPX…")
         try:
-            trackpoints, bbox = parse_gpx(self._gpx_path)
-        except GpxParseError as e:
-            QMessageBox.critical(self, "GPX error", str(e))
+            trackpoints, bbox = client.parse_gpx(self._gpx_path)
+        except ServerError as exc:
+            QMessageBox.critical(self, "GPX error", str(exc))
             self._status_show("GPX parsing failed.")
             return
 
@@ -1495,25 +1521,27 @@ class MainWindow(QMainWindow):
             max_jump_m = (
                 float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000
             )
-            trackpoints, _cs = detect_and_repair(
-                trackpoints,
-                repair_mode,
-                max_speed_mps=max_speed_mps,
-                max_gap_s=max_gap_s,
-                max_jump_m=max_jump_m,
-                osrm_profile=osrm_profile,
-            )
+            try:
+                trackpoints, _repair_stats = client.clean_gpx(
+                    trackpoints,
+                    mode=repair_mode,
+                    max_speed_mps=max_speed_mps,
+                    max_gap_s=max_gap_s,
+                    max_jump_m=max_jump_m,
+                    osrm_profile=osrm_profile,
+                )
+            except ServerError as exc:
+                QMessageBox.critical(self, "GPX repair error", str(exc))
+                self._status_show("Pipeline stopped: GPX repair failed.")
+                return
             _repair_msg = (
-                f"GPX repaired: {_cs.nullified_removed} bad points removed, "
-                f"{_cs.holes_filled} synthetic points added"
+                f"GPX repaired: {_repair_stats['nullified_removed']} bad points removed, "
+                f"{_repair_stats['holes_filled']} synthetic points added"
             )
-            if _cs.street_fallbacks:
-                _repair_msg += f" ({_cs.street_fallbacks} street→ground fallbacks)"
+            if _repair_stats.get("street_fallbacks"):
+                _repair_msg += f" ({_repair_stats['street_fallbacks']} street→ground fallbacks)"
             _log.info(_repair_msg)
 
-        # Recompute bbox from the (possibly cleaned) trackpoints so that
-        # removed outliers (e.g. null-island artefacts) don't inflate the
-        # DEM / satellite fetch region.
         if trackpoints:
             bbox = BoundingBox(
                 min_lat=min(p.latitude for p in trackpoints),
@@ -1526,18 +1554,45 @@ class MainWindow(QMainWindow):
         self._photo_area.update_pipeline_info(trackpoints=trackpoints)
         self._status_show(f"GPX parsed: {len(trackpoints)} trackpoints, bounds: {bbox}")
 
-        # Stage 2 — Photo Matcher
+        trackpoints_json = [trackpoint_to_dict(tp) for tp in trackpoints]
+
+        # Stage 2 — Photo Matcher (via server)
         photos = self._store.all()
+        match_results: list[MatchResult] = self._pipeline.match_results or []
         if photos:
+            self._status_show(f"Uploading {len(photos)} photo(s) to server…")
+            try:
+                photo_uploads = client.upload_photos(
+                    self._server_workspace_id, [p.path for p in photos]
+                )
+            except ServerError as exc:
+                QMessageBox.critical(self, "Photo upload error", str(exc))
+                self._status_show("Pipeline stopped: photo upload failed.")
+                return
+            ws_to_local = {u["path"]: photos[i].path for i, u in enumerate(photo_uploads)}
+            photo_ids = [u["photo_id"] for u in photo_uploads]
+
             self._status_show("Matching photos to trackpoints…")
             tz_offset = float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
-            results = match_photos(
-                photos, trackpoints, self._match_mode(), tz_offset_hours=tz_offset
-            )
-            self._pipeline.match_results = results
-            self._photo_area.update_match_statuses(results)
+            try:
+                match_dicts = client.match_photos(
+                    self._server_workspace_id,
+                    photo_ids,
+                    trackpoints_json,
+                    self._match_mode(),
+                    tz_offset_hours=tz_offset,
+                )
+            except ServerError as exc:
+                QMessageBox.critical(self, "Photo matching error", str(exc))
+                self._status_show("Pipeline stopped: photo matching failed.")
+                return
+            for m in match_dicts:
+                m["photo_path"] = ws_to_local.get(str(m["photo_path"]), str(m["photo_path"]))
+            match_results = [_match_result_from_dict(m) for m in match_dicts]
+            self._pipeline.match_results = match_results
+            self._photo_area.update_match_statuses(match_results)
 
-            failed = [r for r in results if not r.ok]
+            failed = [r for r in match_results if not r.ok]
             if failed:
                 lines = "\n".join(
                     f"• {Path(r.photo_path).name}: {r.error}" for r in failed
@@ -1550,136 +1605,129 @@ class MainWindow(QMainWindow):
                 self._status_show("Pipeline stopped: photo matching errors.")
                 return
 
-            warnings = [r for r in results if r.warning]
+            warnings_list = [r for r in match_results if r.warning]
             self._status_show(
-                f"Photos matched: {len(results)} ok"
-                + (f", {len(warnings)} warning(s)" if warnings else "")
+                f"Photos matched: {len(match_results)} ok"
+                + (f", {len(warnings_list)} warning(s)" if warnings_list else "")
             )
 
-        # Compute expanded bbox for DEM + imagery (covers camera's visible ground)
+        match_json = [match_result_to_dict(mr) for mr in match_results]
+
+        # Compute expanded bbox for DEM + imagery
         render_settings = get_render_settings(self._settings)
         margin_m = frustum_margin(
             height_m=render_settings.get(KEY_HEIGHT_OFFSET, 200),
             tilt_deg=render_settings.get(KEY_TILT_DEG, 45),
             max_view_m=float(render_settings.get(KEY_FRUSTUM_MARGIN_KM, 50)) * 1_000,
         )
-        track_bbox = self._pipeline.bounding_box
-        fetch_bbox = track_bbox.expand(margin_m)
-
+        fetch_bbox = self._pipeline.bounding_box.expand(margin_m)
         log_pipeline_memory(self._pipeline, "before DEM fetch")
 
-        # Stage 3 — DEM Fetcher
-        cached = self._cached_elevation_grid
-        if (
-            cached is not None
-            and cached.min_lat <= fetch_bbox.min_lat
-            and cached.max_lat >= fetch_bbox.max_lat
-            and cached.min_lon <= fetch_bbox.min_lon
-            and cached.max_lon >= fetch_bbox.max_lon
-        ):
-            self._pipeline.elevation_grid = cached
-            self._status_show(
-                f"DEM: using cached grid ({cached.rows}×{cached.cols} points)."
-            )
-        else:
-            self._status_show(f"Fetching DEM (SRTM, {margin_m / 1000:.1f} km margin)…")
-            self._fetch_progress_bar.setRange(0, 0)
-            self._fetch_progress_bar.show()
+        # Stage 3 — DEM (via server)
+        self._status_show(f"Fetching DEM via server ({margin_m / 1000:.1f} km margin)…")
+        self._fetch_progress_bar.setRange(0, 100)
+        self._fetch_progress_bar.show()
 
-            def _dem_progress(current: int, total: int) -> None:
-                self._fetch_progress_bar.setRange(0, total)
-                self._fetch_progress_bar.setValue(current)
+        try:
+            dem_job_id = client.start_dem_fetch(self._server_workspace_id, bbox_to_dict(fetch_bbox))
+
+            def _dem_cb(pct: int, msg: str) -> None:
+                self._fetch_progress_bar.setValue(pct)
+                if msg:
+                    self._status_show(msg)
                 QApplication.processEvents()
 
-            try:
-                grid = fetch_dem(fetch_bbox, progress_callback=_dem_progress)
-            except DemFetchError as e:
-                self._fetch_progress_bar.hide()
-                QMessageBox.critical(self, "DEM error", str(e))
-                self._status_show("Pipeline stopped: DEM fetch failed.")
-                return
-            self._fetch_progress_bar.hide()
-            self._pipeline.elevation_grid = grid
-            self._cached_elevation_grid = grid
-            self._mark_dirty()
-            self._autosave_tilde(update_dem=True)
-            self._status_show(
-                f"DEM fetched: {grid.rows}×{grid.cols} points "
-                f"({grid.rows * grid.cols:,} total)."
+            client.poll_job(
+                dem_job_id,
+                progress_cb=_dem_cb,
+                process_events=QApplication.processEvents,
             )
-
+            grid = client.get_dem_result(dem_job_id)
+        except ServerError as exc:
+            self._fetch_progress_bar.hide()
+            QMessageBox.critical(self, "DEM error", str(exc))
+            self._status_show("Pipeline stopped: DEM fetch failed.")
+            return
+        self._fetch_progress_bar.hide()
+        self._pipeline.elevation_grid = grid
+        self._cached_elevation_grid = grid
+        self._mark_dirty()
+        self._autosave_tilde(update_dem=True)
+        self._status_show(
+            f"DEM fetched: {grid.rows}×{grid.cols} points "
+            f"({grid.rows * grid.cols:,} total)."
+        )
         log_pipeline_memory(self._pipeline, "after DEM fetch")
 
-        # Stage 4 — Satellite Imagery Fetcher
+        # Stage 4 — Satellite (via server)
         provider_id = str(self._settings.value("imagery/provider", "esri_world"))
         img_quality = str(self._settings.value("imagery/quality", "standard"))
-        fetch_mode = str(self._settings.value("imagery/fetch_mode", "prefetch"))
-        on_demand = fetch_mode == "on_demand"
-        cached_sat = self._cached_satellite_texture
-        if (
-            cached_sat is not None
-            and cached_sat.min_lat <= fetch_bbox.min_lat
-            and cached_sat.max_lat >= fetch_bbox.max_lat
-            and cached_sat.min_lon <= fetch_bbox.min_lon
-            and cached_sat.max_lon >= fetch_bbox.max_lon
-            and cached_sat.provider_id == provider_id
-            and _quality_rank(cached_sat.quality) >= _quality_rank(img_quality)
-        ):
-            self._pipeline.satellite_texture = cached_sat
-            try:
-                dims = f"({cached_sat.width}×{cached_sat.height} px)"
-            except RuntimeError:
-                dims = "(size unknown)"
-            self._status_show(f"Satellite: using cached texture {dims}.")
-        else:
-            self._status_show("Fetching satellite imagery…")
-            self._fetch_progress_bar.setRange(0, 0)
-            self._fetch_progress_bar.show()
+        api_key = str(self._settings.value("imagery/api_key", ""))
+        custom_url = str(self._settings.value("imagery/custom_url", ""))
 
-            def _sat_progress(current: int, total: int) -> None:
-                self._fetch_progress_bar.setRange(0, total)
-                self._fetch_progress_bar.setValue(current)
-                QApplication.processEvents()
+        self._status_show("Fetching satellite imagery via server…")
+        self._fetch_progress_bar.setRange(0, 100)
+        self._fetch_progress_bar.show()
 
-            try:
-                source = build_source(
-                    provider_id=provider_id,
-                    api_key=str(self._settings.value("imagery/api_key", "")),
-                    custom_url=str(self._settings.value("imagery/custom_url", "")),
-                    quality=img_quality,
-                )
-                texture = source.fetch(
-                    fetch_bbox,
-                    progress_callback=_sat_progress,
-                    on_demand=on_demand,
-                )
-            except Exception as e:
-                self._fetch_progress_bar.hide()
-                QMessageBox.critical(self, "Satellite imagery error", str(e))
-                self._status_show("Pipeline stopped: satellite fetch failed.")
-                return
-            self._fetch_progress_bar.hide()
-            self._pipeline.satellite_texture = texture
-            self._cached_satellite_texture = texture
-            self._mark_dirty()
-            self._autosave_tilde(update_sat=True)
-            self._status_show(
-                f"Satellite imagery fetched: {texture.width}×{texture.height} px."
+        try:
+            sat_job_id = client.start_satellite_fetch(
+                self._server_workspace_id,
+                bbox_to_dict(fetch_bbox),
+                provider_id=provider_id,
+                api_key=api_key,
+                custom_url=custom_url,
+                quality=img_quality,
             )
 
+            def _sat_cb(pct: int, msg: str) -> None:
+                self._fetch_progress_bar.setValue(pct)
+                if msg:
+                    self._status_show(msg)
+                QApplication.processEvents()
+
+            client.poll_job(
+                sat_job_id,
+                progress_cb=_sat_cb,
+                process_events=QApplication.processEvents,
+            )
+            texture = client.download_satellite_texture(sat_job_id)
+        except ServerError as exc:
+            self._fetch_progress_bar.hide()
+            QMessageBox.critical(self, "Satellite imagery error", str(exc))
+            self._status_show("Pipeline stopped: satellite fetch failed.")
+            return
+        self._fetch_progress_bar.hide()
+        self._pipeline.satellite_texture = texture
+        self._cached_satellite_texture = texture
+        self._mark_dirty()
+        self._autosave_tilde(update_sat=True)
+        self._status_show(
+            f"Satellite imagery fetched: {texture.width}×{texture.height} px."
+        )
         log_pipeline_memory(self._pipeline, "after satellite fetch")
 
-        # Stage 5 — 3D Scene Builder
+        # Stage 5 — 3D Scene Builder (via server)
         blender_exe = self._settings.value("blender/executable_path") or None
-        dlg = SceneBuildDialog(
-            self._pipeline,
-            blender_exe=blender_exe,
-            settings=render_settings,
-            parent=self,
-        )
+        try:
+            scene_job_id = client.start_scene_build(
+                workspace_id=self._server_workspace_id,
+                dem_job_id=dem_job_id,
+                satellite_job_id=sat_job_id,
+                trackpoints=trackpoints_json,
+                match_results=match_json,
+                settings=render_settings,
+                blender_exe=blender_exe,
+            )
+        except ServerError as exc:
+            QMessageBox.critical(self, "Scene build error", str(exc))
+            self._status_show("Pipeline stopped: scene build failed to start.")
+            return
+
+        dlg = SceneBuildDialog(client, scene_job_id, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted or dlg.blend_path() is None:
             self._status_show("Pipeline stopped: scene build cancelled or failed.")
             return
+
         blend_path = dlg.blend_path()
         self._pipeline.scene = blend_path
         log_pipeline_memory(self._pipeline, "after scene build")
@@ -1689,24 +1737,37 @@ class MainWindow(QMainWindow):
         self._preview_video_btn.setEnabled(True)
         self._status_show(f"3D scene ready: {blend_path}")
 
-        self._start_from_camera_path(render_settings)
+        self._start_from_camera_path(
+            render_settings, scene_job_id, trackpoints_json, match_json, grid
+        )
 
-    def _start_from_camera_path(self, render_settings: dict[str, Any]) -> None:
-        """Run stages 6–9, assuming self._pipeline already has stages 1–5."""
+    def _start_from_camera_path(
+        self,
+        render_settings: dict[str, Any],
+        scene_job_id: str,
+        trackpoints_json: list[dict[str, Any]],
+        match_json: list[dict[str, Any]],
+        elevation_grid: "ElevationGrid",
+    ) -> None:
+        """Run stages 6–9 via the server, assuming stages 1–5 are complete."""
+        client = self._server_client
 
-        # Stage 6 — Camera Path Generator
-        self._status_show("Computing camera path…")
+        # Stage 6 — Camera Path (via server)
+        self._status_show("Computing camera path via server…")
         self._fetch_progress_bar.setRange(0, 0)
         self._fetch_progress_bar.show()
+        QApplication.processEvents()
+
         try:
-            keyframes = build_camera_path(
-                self._pipeline,
-                render_settings,
-                progress_callback=self._camera_path_progress,
+            keyframes = client.build_camera_keyframes(
+                trackpoints=trackpoints_json,
+                elevation_grid=elevation_grid_to_dict(elevation_grid),
+                match_results=match_json,
+                settings=render_settings,
             )
-        except CameraPathError as e:
+        except ServerError as exc:
             self._fetch_progress_bar.hide()
-            QMessageBox.critical(self, "Camera path error", str(e))
+            QMessageBox.critical(self, "Camera path error", str(exc))
             self._status_show("Pipeline stopped: camera path failed.")
             return
         self._fetch_progress_bar.hide()
@@ -1717,43 +1778,67 @@ class MainWindow(QMainWindow):
         self._status_show(
             f"Camera path: {len(keyframes)} frames ({duration_s:.1f} s at {fps} fps)"
         )
-        # Update locality names preview context with the definitive frame count.
         self._locality_names_widget.set_pipeline_context(
             self._pipeline.trackpoints or [], len(keyframes), int(fps)
         )
 
-        # Stage 7 — Frame Renderer
+        keyframes_json = [keyframe_to_dict(kf) for kf in keyframes]
+
+        # Stage 7 — Frame Renderer (via server)
         blender_exe = self._settings.value("blender/executable_path") or None
-        dlg = RenderProgressDialog(
-            self._pipeline,
-            render_settings,
-            blender_exe=blender_exe,
-            parent=self,
-        )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        try:
+            render_job_id = client.start_render_frames(
+                workspace_id=self._server_workspace_id,
+                scene_job_id=scene_job_id,
+                keyframes=keyframes_json,
+                settings=render_settings,
+                blender_exe=blender_exe,
+            )
+        except ServerError as exc:
+            QMessageBox.critical(self, "Render error", str(exc))
+            self._status_show("Pipeline stopped: render failed to start.")
+            return
+
+        render_dlg = RenderProgressDialog(client, render_job_id, parent=self)
+        if render_dlg.exec() != QDialog.DialogCode.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: rendering cancelled or failed.")
             return
-        self._pipeline.rendered_frames_dir = dlg.frames_dir()
+        self._pipeline.rendered_frames_dir = render_dlg.frames_dir()
         self._status_show(f"Frames rendered: {self._pipeline.rendered_frames_dir}")
 
-        # Stage 8 — Photo Overlay Compositor
-        dlg = CompositorProgressDialog(self._pipeline, render_settings, parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        # Stage 8 — Photo Overlay Compositor (via server)
+        try:
+            compositor_job_id = client.start_compositor(
+                workspace_id=self._server_workspace_id,
+                render_job_id=render_job_id,
+                match_results=match_json,
+                keyframes=keyframes_json,
+                settings=render_settings,
+            )
+        except ServerError as exc:
+            QMessageBox.critical(self, "Compositor error", str(exc))
+            self._status_show("Pipeline stopped: compositor failed to start.")
+            return
+
+        comp_dlg = CompositorProgressDialog(client, compositor_job_id, parent=self)
+        if comp_dlg.exec() != QDialog.DialogCode.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: compositing cancelled or failed.")
             return
-        self._pipeline.composited_frames_dir = dlg.composited_frames_dir()
+        self._pipeline.composited_frames_dir = comp_dlg.composited_frames_dir()
         self._status_show(f"Compositing done: {self._pipeline.composited_frames_dir}")
 
-        # Pre-compute locality names timeline (network calls to Nominatim).
-        # Use cached preview result when available to avoid re-querying.
+        # Pre-compute locality names timeline
         locality_settings = self._locality_names_widget.get_settings()
         if locality_settings.get("locality_names/enabled", False):
             import json as _json
             cached_tl = self._locality_names_widget.get_cached_timeline()
             if cached_tl is not None:
-                _log.info("Locality names: reusing cached preview timeline (%d entries)", len(cached_tl))
+                _log.info(
+                    "Locality names: reusing cached preview timeline (%d entries)",
+                    len(cached_tl),
+                )
                 timeline = cached_tl
             else:
                 self._status_show("Building locality names timeline…")
@@ -1765,37 +1850,43 @@ class MainWindow(QMainWindow):
                         len(self._pipeline.camera_keyframes or []),
                         locality_settings,
                     )
-                    # Cache for subsequent saves.
                     self._locality_names_widget.set_cached_timeline(timeline or None)
-                except Exception as e:
-                    _log.warning("Locality names timeline failed: %s", e)
+                except Exception as exc_tl:
+                    _log.warning("Locality names timeline failed: %s", exc_tl)
                     timeline = []
-            locality_settings["locality_names/timeline_json"] = _json.dumps([
-                {"frame_start": e.frame_start, "name": e.name}
-                for e in timeline
-            ])
-            # Pause frame set — used to suppress locality overlay during photos
+            locality_settings["locality_names/timeline_json"] = _json.dumps(
+                [{"frame_start": e.frame_start, "name": e.name} for e in timeline]
+            )
             kf_list = self._pipeline.camera_keyframes or []
             pause_frames = [kf.frame for kf in kf_list if kf.is_pause]
-            locality_settings["locality_names/pause_frames_json"] = _json.dumps(pause_frames)
+            locality_settings["locality_names/pause_frames_json"] = _json.dumps(
+                pause_frames
+            )
 
-        # Stage 9 — Video Assembler
+        # Stage 9 — Video Assembler (via server)
         output_path = self._output_selector.output_path()
         total_frames = len(self._pipeline.camera_keyframes or [])
-        assemble_settings = {
+        assemble_settings: dict[str, Any] = {
             **render_settings,
             **self._clip_effects_widget.get_settings(),
             **locality_settings,
         }
-        dlg = VideoProgressDialog(
-            self._pipeline.composited_frames_dir or "",
-            output_path or "",
-            assemble_settings,
-            total_frames,
-            gpx_path=self._gpx_path,
-            parent=self,
+        try:
+            video_job_id = client.start_video_assemble(
+                workspace_id=self._server_workspace_id,
+                source_job_id=compositor_job_id,
+                total_frames=total_frames,
+                settings=assemble_settings,
+            )
+        except ServerError as exc:
+            QMessageBox.critical(self, "Video error", str(exc))
+            self._status_show("Pipeline stopped: video assembly failed to start.")
+            return
+
+        video_dlg = VideoProgressDialog(
+            client, video_job_id, output_path or "", parent=self
         )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        if video_dlg.exec() != QDialog.DialogCode.Accepted:
             self._pipeline.cleanup()
             self._status_show("Pipeline stopped: video encoding cancelled or failed.")
             return
@@ -2015,6 +2106,7 @@ class MainWindow(QMainWindow):
             max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
             max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
             * 1_000,
+            client=self._server_client,
         )
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -2175,6 +2267,15 @@ class MainWindow(QMainWindow):
             shutil.rmtree(self._project_temp_dir, ignore_errors=True)
         self._project_temp_dir = None
 
+    def _stop_server(self) -> None:
+        """Clean up server workspace and stop a subprocess we own."""
+        try:
+            if self._server_workspace_id:
+                self._server_client.delete_workspace(self._server_workspace_id)
+        except Exception:
+            pass
+        self._server_manager.stop()
+
     def _restore_window_geometry(self) -> None:
         geometry = self._settings.value("window/geometry")
         restored = bool(geometry and self.restoreGeometry(geometry))
@@ -2203,6 +2304,7 @@ class MainWindow(QMainWindow):
         if not self._dirty:
             self._save_window_geometry()
             self._cleanup_temp_dir()
+            self._stop_server()
             event.accept()
             return
 

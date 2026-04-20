@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **REST API server** — all pipeline logic now runs inside `georeel-server`, a FastAPI
+  process managed automatically by the GUI at startup.  The GUI is now a thin HTTP
+  client; all computation (GPX parsing, DEM/satellite fetching, Blender scene build,
+  frame rendering, compositing, video assembly) happens server-side.
+  - `georeel-server` can also be run standalone for headless or scripted use.
+  - `ServerClient` — a fully typed synchronous HTTP wrapper used by all GUI workers.
+  - `ServerManager` — launches and monitors the server subprocess; selects a free
+    ephemeral port and retries health checks until the server is ready.
+- **Server-side workspace lifecycle** — each GUI session owns one workspace on the
+  server.  All uploaded files and intermediate results live inside the workspace
+  directory and are cleaned up automatically:
+  - Workspace directories (and all their jobs) are deleted on server shutdown or when
+    the GUI closes the workspace.
+  - Each job tracks its own temp directory; files are deleted as soon as the job is
+    superseded or cancelled.
+  - Stale `georeel_*` directories left by crashed prior runs are pruned at server
+    startup.
+  - Rendered video files are deleted from the server immediately after the GUI
+    downloads them.
+- **Server-side GPX parsing** — `POST /api/v1/gpx/parse` and `POST /api/v1/gpx/clean`
+  handle GPX file parsing and hole repair.  All UI code paths (main pipeline, keyframe
+  preview worker, scene-prep worker, project load worker, GPX file selection) now
+  call these endpoints; no GPX parsing logic remains in the GUI process.
+- **Server-side photo matching** — photos are uploaded to the workspace via
+  `POST /api/v1/photos/upload` (EXIF metadata extracted server-side); matching against
+  the GPX track is done by `POST /api/v1/photos/match`.  Workspace file paths are
+  remapped back to local paths in the GUI so photo thumbnails and status indicators
+  continue to work unchanged.
+- **Project save/load via server** — `POST /api/v1/project/save` assembles a
+  `.georeel` archive from workspace assets and returns it as a binary download;
+  `POST /api/v1/project/load` accepts a `.georeel` upload, extracts it into a new
+  workspace, and returns the restored state.
+
+### Changed
+
+- Pipeline stages 3–9 (DEM fetch, satellite fetch, scene build, camera path,
+  frame render, compositor, video assembly) now run as async server jobs polled by
+  the GUI rather than blocking in-process threads.
+- `KeyframeCalcWorker` and `ScenePrepWorker` (background preview workers) now
+  delegate GPX parsing and repair to the server; DEM and satellite fetching in those
+  workers remain local (preview-only path, not part of the main export pipeline).
+
 - **Locality names overlay** — a new *Locality names* tab in the main window optionally
   composites the current location name (from Nominatim reverse geocoding) onto the video
   as a fade-in/fade-out overlay.

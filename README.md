@@ -75,6 +75,15 @@ irm https://raw.githubusercontent.com/elegos/georeel/main/scripts/install.ps1 | 
 georeel
 ```
 
+GeoReel automatically starts `georeel-server` as a subprocess on an available port.  If a server is already listening on port 8765 (e.g. started manually or by another GeoReel instance), the GUI connects to it instead of spawning a new one.
+
+To run the server standalone (useful for debugging or headless setups):
+
+```bash
+georeel-server                 # listens on 127.0.0.1:8765
+georeel-server --port 9000     # custom port
+```
+
 ---
 
 ## Usage
@@ -200,12 +209,25 @@ Use *File → Save Project* to write a `.georeel` file. It bundles the GPX track
 
 ```
 georeel/
-├── main.py                        # Entry point
-├── ui/                            # PySide6 GUI
+├── main.py                        # GUI entry point
+├── ui/                            # PySide6 GUI (REST client)
 │   ├── main_window.py
-│   ├── render_settings_dialog.py
+│   ├── server_client.py           # httpx wrapper for georeel-server
+│   ├── server_manager.py          # subprocess lifecycle + port selection
 │   └── ...
-├── core/                          # Pipeline stages
+├── server/                        # FastAPI REST service
+│   ├── main.py                    # georeel-server entry point
+│   ├── app.py                     # FastAPI app factory
+│   ├── jobs.py                    # In-memory job registry
+│   ├── workspace.py               # Per-session temp directories
+│   └── routes/                    # One module per API resource group
+│       ├── health.py, gpx.py, photos.py, camera.py
+│       ├── dem.py, satellite.py, scene.py
+│       ├── render.py, compositor.py, video.py
+│       ├── project.py             # /project/save + /project/load
+│       ├── jobs.py                # /jobs/{id} polling + SSE
+│       └── workspaces.py
+├── core/                          # Pipeline stages (shared by server)
 │   ├── gpx_parser.py              # Stage 1 — GPX parsing
 │   ├── photo_matcher.py           # Stage 2 — Photo matching
 │   ├── dem_fetcher.py             # Stage 3 — Elevation download

@@ -19,8 +19,6 @@ from georeel.core.bounding_box import BoundingBox
 from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.frustum import frustum_margin
-from georeel.core.gpx_cleaner import detect_and_repair
-from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.photo_matcher import match_photos
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
@@ -33,6 +31,7 @@ from georeel.core.scene_builder import (
     build_scene,
 )
 from georeel.core.trackpoint import Trackpoint
+from georeel.ui.server_client import ServerClient, ServerError
 
 
 def _quality_rank(q: str, order: dict[str, Any]) -> int:
@@ -58,6 +57,7 @@ class ScenePrepWorker(QThread):
         cached_satellite_texture: SatelliteTexture | None,
         api_key: str,
         custom_url: str,
+        client: ServerClient,
         cleaned_trackpoints: list[Trackpoint] | None = None,
     ):
         super().__init__()
@@ -70,6 +70,7 @@ class ScenePrepWorker(QThread):
         self._cached_sat = cached_satellite_texture
         self._api_key = api_key
         self._custom_url = custom_url
+        self._client = client
         self._cleaned_trackpoints = cleaned_trackpoints
         self._quality_order = {q: i for i, q in enumerate(QUALITY_ZOOM)}
 
@@ -86,25 +87,28 @@ class ScenePrepWorker(QThread):
         else:
             self.status.emit("Auto-build: parsing GPX…")
             try:
-                trackpoints, _ = parse_gpx(self._gpx_path)
-            except GpxParseError as e:
+                trackpoints, _ = self._client.parse_gpx(self._gpx_path)
+            except ServerError as e:
                 self.error.emit(f"GPX parse error: {e}")
                 return
-            # Apply the same cleaning as the keyframe worker so (0,0) holes
-            # and speed outliers don't inflate the bbox for DEM/satellite fetches.
             repair_mode = self._settings.get("gpx/repair_mode", "none")
-            max_speed_mps = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
-            max_gap_s = float(self._settings.get("gpx/max_gap_s", 30.0))
-            max_jump_m = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
-            osrm_profile = self._settings.get("gpx/osrm_profile", "driving")
-            trackpoints, _ = detect_and_repair(
-                trackpoints,
-                repair_mode,
-                max_speed_mps=max_speed_mps,
-                max_gap_s=max_gap_s,
-                max_jump_m=max_jump_m,
-                osrm_profile=osrm_profile,
-            )
+            if repair_mode != "none":
+                max_speed_mps = float(self._settings.get("gpx/max_speed_kmh", 300)) / 3.6
+                max_gap_s = float(self._settings.get("gpx/max_gap_s", 30.0))
+                max_jump_m = float(self._settings.get("gpx/max_jump_km", 50.0)) * 1_000
+                osrm_profile = str(self._settings.get("gpx/osrm_profile", "driving"))
+                try:
+                    trackpoints, _ = self._client.clean_gpx(
+                        trackpoints,
+                        mode=repair_mode,
+                        max_speed_mps=max_speed_mps,
+                        max_gap_s=max_gap_s,
+                        max_jump_m=max_jump_m,
+                        osrm_profile=osrm_profile,
+                    )
+                except ServerError as e:
+                    self.error.emit(f"GPX repair error: {e}")
+                    return
 
         if not trackpoints:
             self.error.emit("No valid trackpoints after GPX cleaning.")

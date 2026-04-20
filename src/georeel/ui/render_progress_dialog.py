@@ -1,55 +1,64 @@
-from typing import Any
-import threading
+"""Progress dialog for frame rendering via the georeel-server job API."""
 
 from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
     QProgressBar,
     QVBoxLayout,
+    QWidget,
 )
 
-from georeel.core.frame_renderer import FrameRenderError, render_frames
-from georeel.core.pipeline import Pipeline
+from georeel.ui.server_client import ServerClient, ServerError
 
 
 class _Worker(QObject):
-    progress = Signal(int, int)   # current_frame, total_frames
-    finished = Signal(str)        # frames_dir
-    failed   = Signal(str)        # error message
+    progress = Signal(int, int)  # (pct, 100)
+    finished = Signal(str)       # frames_dir
+    failed = Signal(str)
 
-    def __init__(self, pipeline: Pipeline, settings: dict[str, Any], blender_exe: str | None):
+    def __init__(self, client: ServerClient, job_id: str) -> None:
         super().__init__()
-        self._pipeline    = pipeline
-        self._settings    = settings
-        self._blender_exe = blender_exe
-        self._cancel      = threading.Event()
+        self._client = client
+        self._job_id = job_id
+        self._cancelled = False
 
-    def cancel(self):
-        self._cancel.set()
+    def cancel(self) -> None:
+        self._cancelled = True
 
-    def run(self):
+    def run(self) -> None:
+        def _progress(pct: int, _msg: str) -> None:
+            self.progress.emit(pct, 100)
+
         try:
-            frames_dir = render_frames(
-                self._pipeline,
-                self._settings,
-                blender_exe=self._blender_exe,
-                progress_cb=lambda cur, tot: self.progress.emit(cur, tot),
-                cancel_check=self._cancel.is_set,
+            self._client.poll_job(
+                self._job_id,
+                progress_cb=_progress,
+                cancel_check=lambda: self._cancelled,
             )
-            self.finished.emit(frames_dir)
-        except FrameRenderError as e:
-            self.failed.emit(str(e))
-        except Exception as e:
-            self.failed.emit(f"Unexpected error: {e}")
+            job = self._client.get_job(self._job_id)
+            frames_dir = job.get("result_path") or ""
+            if not frames_dir:
+                self.failed.emit("Server did not return a frames directory")
+                return
+            self.finished.emit(str(frames_dir))
+        except ServerError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"Unexpected error: {exc}")
 
 
 class RenderProgressDialog(QDialog):
     """Shows frame-by-frame render progress with a cancel button."""
 
-    def __init__(self, pipeline: Pipeline, settings: dict[str, Any],
-                 blender_exe: str | None = None, parent=None):
+    def __init__(
+        self,
+        client: ServerClient,
+        job_id: str,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Rendering frames")
         self.setMinimumWidth(440)
@@ -65,7 +74,7 @@ class RenderProgressDialog(QDialog):
         layout.addWidget(self._label)
 
         self._bar = QProgressBar()
-        self._bar.setRange(0, 0)
+        self._bar.setRange(0, 100)
         layout.addWidget(self._bar)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -74,7 +83,7 @@ class RenderProgressDialog(QDialog):
         self._cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
 
         self._thread = QThread(self)
-        self._worker = _Worker(pipeline, settings, blender_exe)
+        self._worker = _Worker(client, job_id)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -91,29 +100,28 @@ class RenderProgressDialog(QDialog):
 
     # ------------------------------------------------------------------
 
-    def _cancel(self):
+    def _cancel(self) -> None:
         self._worker.cancel()
         self._label.setText("Cancelling…")
         self._cancel_btn.setEnabled(False)
 
-    def _on_progress(self, current: int, total: int):
-        self._bar.setRange(0, total)
-        self._bar.setValue(current)
-        self._label.setText(f"Rendering frame {current} / {total}…")
+    def _on_progress(self, pct: int, _total: int) -> None:
+        self._bar.setValue(pct)
+        self._label.setText(f"Rendering… {pct}%")
 
-    def _on_finished(self, frames_dir: str):
+    def _on_finished(self, frames_dir: str) -> None:
         self._frames_dir = frames_dir
         self._thread.quit()
         self.accept()
 
-    def _on_failed(self, message: str):
+    def _on_failed(self, message: str) -> None:
         self._thread.quit()
         self._label.setText(f"Failed: {message}")
         self._cancel_btn.setText("Close")
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)
