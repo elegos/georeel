@@ -13,6 +13,7 @@ which is critical for large satellite textures.
 """
 
 import json
+import logging
 import math
 import os
 import shlex
@@ -30,6 +31,7 @@ from .camera_keyframe import CameraKeyframe
 from .pipeline import Pipeline
 from . import temp_manager
 
+_log = logging.getLogger(__name__)
 _BLENDER_SCRIPT = Path(__file__).parent / "blender_scripts" / "render_frames.py"
 
 
@@ -314,9 +316,11 @@ def _render_single(
         )
 
         last_reported_fra = -1
+        output_lines: list[str] = []
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip()
+            output_lines.append(line)
             if line.startswith("Fra:"):
                 try:
                     fra_num = int(line[4:].split()[0])
@@ -339,7 +343,11 @@ def _render_single(
         raise FrameRenderError(f"Unexpected error: {e}") from e
 
     if proc.returncode != 0:
-        raise FrameRenderError(f"Blender exited with code {proc.returncode}.")
+        tail = "\n".join(output_lines[-40:])
+        _log.debug("Blender output:\n%s", "\n".join(output_lines))
+        raise FrameRenderError(
+            f"Blender exited with code {proc.returncode}.\n{tail}"
+        )
 
     if comp_server:
         comp_server.finish()
