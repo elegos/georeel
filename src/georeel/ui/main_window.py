@@ -117,6 +117,19 @@ def _quality_rank(quality: str) -> int:
     return _QUALITY_ORDER.get(quality, 0)
 
 
+def _bbox_covers(
+    fetch_bbox: "BoundingBox",
+    cached: "ElevationGrid | SatelliteTexture",
+) -> bool:
+    """Return True when *cached* fully covers *fetch_bbox*."""
+    return (
+        cached.min_lat <= fetch_bbox.min_lat
+        and cached.max_lat >= fetch_bbox.max_lat
+        and cached.min_lon <= fetch_bbox.min_lon
+        and cached.max_lon >= fetch_bbox.max_lon
+    )
+
+
 _MATCH_MODES = [
     ("Timestamp", "timestamp"),
     ("GPS coordinates", "gps"),
@@ -273,6 +286,8 @@ class MainWindow(QMainWindow):
         self._project_temp_dir: Path | None = None
         self._cached_elevation_grid: ElevationGrid | None = None
         self._cached_satellite_texture: SatelliteTexture | None = None
+        self._cached_dem_job_id: str | None = None
+        self._cached_sat_job_id: str | None = None
         self._dirty = False
         self._suppress_dirty = False
         self._tilde_fresh = False  # True when path~ is ready to rename on save
@@ -462,8 +477,10 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             if any(self._settings.value(k) != dem_before[k] for k in _dem_keys):
                 self._cached_elevation_grid = None
+                self._cached_dem_job_id = None
             if any(self._settings.value(k) != sat_before[k] for k in _sat_keys):
                 self._cached_satellite_texture = None
+                self._cached_sat_job_id = None
             self._apply_temp_dir_setting()
             self._invalidate_scene()
 
@@ -1626,87 +1643,113 @@ class MainWindow(QMainWindow):
         fetch_bbox = self._pipeline.bounding_box.expand(margin_m)
         log_pipeline_memory(self._pipeline, "before DEM fetch")
 
-        # Stage 3 — DEM (via server)
-        self._status_show(f"Fetching DEM via server ({margin_m / 1000:.1f} km margin)…")
-        self._fetch_progress_bar.setRange(0, 100)
-        self._fetch_progress_bar.show()
-
-        try:
-            dem_job_id = client.start_dem_fetch(self._server_workspace_id, bbox_to_dict(fetch_bbox))
-
-            def _dem_cb(pct: int, msg: str) -> None:
-                self._fetch_progress_bar.setValue(pct)
-                if msg:
-                    self._status_show(msg)
-                QApplication.processEvents()
-
-            client.poll_job(
-                dem_job_id,
-                progress_cb=_dem_cb,
-                process_events=QApplication.processEvents,
+        # Stage 3 — DEM (via server, skipped when cached result covers fetch_bbox)
+        cached_grid = self._cached_elevation_grid
+        if cached_grid is not None and self._cached_dem_job_id is not None and _bbox_covers(fetch_bbox, cached_grid):
+            grid = cached_grid
+            dem_job_id = self._cached_dem_job_id
+            self._pipeline.elevation_grid = grid
+            self._status_show(
+                f"DEM: using cached grid ({grid.rows}×{grid.cols} points)."
             )
-            grid = client.get_dem_result(dem_job_id)
-        except ServerError as exc:
+        else:
+            self._status_show(f"Fetching DEM via server ({margin_m / 1000:.1f} km margin)…")
+            self._fetch_progress_bar.setRange(0, 100)
+            self._fetch_progress_bar.show()
+
+            try:
+                dem_job_id = client.start_dem_fetch(self._server_workspace_id, bbox_to_dict(fetch_bbox))
+
+                def _dem_cb(pct: int, msg: str) -> None:
+                    self._fetch_progress_bar.setValue(pct)
+                    if msg:
+                        self._status_show(msg)
+                    QApplication.processEvents()
+
+                client.poll_job(
+                    dem_job_id,
+                    progress_cb=_dem_cb,
+                    process_events=QApplication.processEvents,
+                )
+                grid = client.get_dem_result(dem_job_id)
+            except ServerError as exc:
+                self._fetch_progress_bar.hide()
+                QMessageBox.critical(self, "DEM error", str(exc))
+                self._status_show("Pipeline stopped: DEM fetch failed.")
+                return
             self._fetch_progress_bar.hide()
-            QMessageBox.critical(self, "DEM error", str(exc))
-            self._status_show("Pipeline stopped: DEM fetch failed.")
-            return
-        self._fetch_progress_bar.hide()
-        self._pipeline.elevation_grid = grid
-        self._cached_elevation_grid = grid
-        self._mark_dirty()
-        self._autosave_tilde(update_dem=True)
-        self._status_show(
-            f"DEM fetched: {grid.rows}×{grid.cols} points "
-            f"({grid.rows * grid.cols:,} total)."
-        )
+            self._pipeline.elevation_grid = grid
+            self._cached_elevation_grid = grid
+            self._cached_dem_job_id = dem_job_id
+            self._mark_dirty()
+            self._autosave_tilde(update_dem=True)
+            self._status_show(
+                f"DEM fetched: {grid.rows}×{grid.cols} points "
+                f"({grid.rows * grid.cols:,} total)."
+            )
         log_pipeline_memory(self._pipeline, "after DEM fetch")
 
-        # Stage 4 — Satellite (via server)
+        # Stage 4 — Satellite (via server, skipped when cached result matches)
         provider_id = str(self._settings.value("imagery/provider", "esri_world"))
         img_quality = str(self._settings.value("imagery/quality", "standard"))
         api_key = str(self._settings.value("imagery/api_key", ""))
         custom_url = str(self._settings.value("imagery/custom_url", ""))
 
-        self._status_show("Fetching satellite imagery via server…")
-        self._fetch_progress_bar.setRange(0, 100)
-        self._fetch_progress_bar.show()
-
-        try:
-            sat_job_id = client.start_satellite_fetch(
-                self._server_workspace_id,
-                bbox_to_dict(fetch_bbox),
-                provider_id=provider_id,
-                api_key=api_key,
-                custom_url=custom_url,
-                quality=img_quality,
+        cached_tex = self._cached_satellite_texture
+        if (
+            cached_tex is not None
+            and self._cached_sat_job_id is not None
+            and _bbox_covers(fetch_bbox, cached_tex)
+            and cached_tex.provider_id == provider_id
+            and cached_tex.quality == img_quality
+        ):
+            texture = cached_tex
+            sat_job_id = self._cached_sat_job_id
+            self._pipeline.satellite_texture = texture
+            self._status_show(
+                f"Satellite: using cached imagery ({texture.width}×{texture.height} px)."
             )
+        else:
+            self._status_show("Fetching satellite imagery via server…")
+            self._fetch_progress_bar.setRange(0, 100)
+            self._fetch_progress_bar.show()
 
-            def _sat_cb(pct: int, msg: str) -> None:
-                self._fetch_progress_bar.setValue(pct)
-                if msg:
-                    self._status_show(msg)
-                QApplication.processEvents()
+            try:
+                sat_job_id = client.start_satellite_fetch(
+                    self._server_workspace_id,
+                    bbox_to_dict(fetch_bbox),
+                    provider_id=provider_id,
+                    api_key=api_key,
+                    custom_url=custom_url,
+                    quality=img_quality,
+                )
 
-            client.poll_job(
-                sat_job_id,
-                progress_cb=_sat_cb,
-                process_events=QApplication.processEvents,
-            )
-            texture = client.download_satellite_texture(sat_job_id)
-        except ServerError as exc:
+                def _sat_cb(pct: int, msg: str) -> None:
+                    self._fetch_progress_bar.setValue(pct)
+                    if msg:
+                        self._status_show(msg)
+                    QApplication.processEvents()
+
+                client.poll_job(
+                    sat_job_id,
+                    progress_cb=_sat_cb,
+                    process_events=QApplication.processEvents,
+                )
+                texture = client.download_satellite_texture(sat_job_id)
+            except ServerError as exc:
+                self._fetch_progress_bar.hide()
+                QMessageBox.critical(self, "Satellite imagery error", str(exc))
+                self._status_show("Pipeline stopped: satellite fetch failed.")
+                return
             self._fetch_progress_bar.hide()
-            QMessageBox.critical(self, "Satellite imagery error", str(exc))
-            self._status_show("Pipeline stopped: satellite fetch failed.")
-            return
-        self._fetch_progress_bar.hide()
-        self._pipeline.satellite_texture = texture
-        self._cached_satellite_texture = texture
-        self._mark_dirty()
-        self._autosave_tilde(update_sat=True)
-        self._status_show(
-            f"Satellite imagery fetched: {texture.width}×{texture.height} px."
-        )
+            self._pipeline.satellite_texture = texture
+            self._cached_satellite_texture = texture
+            self._cached_sat_job_id = sat_job_id
+            self._mark_dirty()
+            self._autosave_tilde(update_sat=True)
+            self._status_show(
+                f"Satellite imagery fetched: {texture.width}×{texture.height} px."
+            )
         log_pipeline_memory(self._pipeline, "after satellite fetch")
 
         # Stage 5 — 3D Scene Builder (via server)
@@ -2242,6 +2285,8 @@ class MainWindow(QMainWindow):
 
         self._cached_elevation_grid = None
         self._cached_satellite_texture = None
+        self._cached_dem_job_id = None
+        self._cached_sat_job_id = None
         self._track_length_m = None
         self._project_path = None
         self._locality_names_widget.set_cached_timeline(None)

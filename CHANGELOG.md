@@ -78,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- DEM and satellite imagery are re-fetched from the network on every pipeline
+  run even when nothing has changed.  Both stages now check the cached job ID
+  and the cached result's bounding box (and, for satellite, provider + quality)
+  before starting a new server fetch; cached results are reused when valid.
+  The cache is invalidated when render settings, provider, or GPX track change.
 - Photo upload failed with HTTP 500 on every pipeline run.  The stale-temp
   cleanup in the GUI (`cleanup_stale`) was deleting the server workspace
   directory (`georeel_ws_*`) immediately after the server created it, because
