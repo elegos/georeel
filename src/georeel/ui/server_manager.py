@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+import threading
 import time
 
 from georeel.ui.server_client import ServerClient
@@ -36,6 +37,7 @@ class ServerManager:
         self._port = port
         self._process: subprocess.Popen[bytes] | None = None
         self._client: ServerClient | None = None
+        self._log_thread: threading.Thread | None = None
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -68,10 +70,18 @@ class ServerManager:
         url = f"http://{self._host}:{port}"
         _log.info("Starting georeel-server on %s", url)
         self._process = subprocess.Popen(
-            ["georeel-server", "--host", self._host, "--port", str(port)],
+            ["georeel-server", "--host", self._host, "--port", str(port),
+             "--log-level", "debug"],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        self._log_thread = threading.Thread(
+            target=_forward_stderr,
+            args=(self._process,),
+            daemon=True,
+            name="georeel-server-log",
+        )
+        self._log_thread.start()
 
         client = ServerClient(url)
         deadline = time.monotonic() + 30.0
@@ -115,3 +125,30 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return int(s.getsockname()[1])
+
+
+_SERVER_LOG = logging.getLogger("georeel.server")
+
+_LEVEL_MAP = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
+def _forward_stderr(proc: subprocess.Popen[bytes]) -> None:
+    """Read server stderr line-by-line and re-emit via the GUI logger."""
+    assert proc.stderr is not None
+    for raw in proc.stderr:
+        line = raw.decode(errors="replace").rstrip()
+        if not line:
+            continue
+        # uvicorn/georeel lines look like: "HH:MM:SS  LEVEL     name: message"
+        # Try to parse the level; fall back to INFO.
+        parts = line.split(None, 2)
+        level = logging.INFO
+        if len(parts) >= 2:
+            level = _LEVEL_MAP.get(parts[1].rstrip(":"), logging.INFO)
+        _SERVER_LOG.log(level, "[server] %s", line)

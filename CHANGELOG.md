@@ -78,6 +78,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Photo upload failed with HTTP 500 on every pipeline run.  The stale-temp
+  cleanup in the GUI (`cleanup_stale`) was deleting the server workspace
+  directory (`georeel_ws_*`) immediately after the server created it, because
+  both use the `georeel_` prefix.  Server startup is now deferred to after
+  `_cleanup_stale_temp()` completes.
+- B-spline track ribbon produced phantom loops and overshooting artefacts at
+  sharp direction reversals (e.g. switchbacks).  The cubic B-spline
+  (`scipy.interpolate.splprep`) is replaced by piecewise-linear arc-length
+  resampling, which faithfully follows the GPS path without any overshoot.
+- Single-point GPS spikes (a point that jumps far from the track then snaps
+  back) now pass through the speed check but are caught by a new path-spike
+  filter that removes them before hole-repair runs.
+- Gap-fill synthetic-point count was proportional to elapsed time, causing a
+  stationary recording pause to insert many redundant points at the same
+  location.  The count is now proportional to geographic distance, so a
+  stationary pause inserts exactly one connecting point.
+
 - Sporadic abrupt orientation jumps in the fly-through camera.  A second-pass
   MAD-based (median absolute deviation) spike filter now detects frames where the
   heading change is significantly larger than the median and replaces the affected frames

@@ -1,8 +1,11 @@
+import logging
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
+
+_log = logging.getLogger(__name__)
 
 from georeel.core.exif_reader import read_photo_metadata
 from georeel.core.photo_matcher import match_photos
@@ -47,28 +50,32 @@ async def upload_photos(
     results: list[PhotoMetadataSchema] = []
     photos_dir = ws.directory / "photos"
 
-    for upload in files:
-        photo_id = str(uuid.uuid4())
-        suffix = Path(upload.filename or "photo.jpg").suffix or ".jpg"
-        dest = photos_dir / f"{photo_id}{suffix}"
-        dest.write_bytes(await upload.read())
+    try:
+        for upload in files:
+            photo_id = str(uuid.uuid4())
+            suffix = Path(upload.filename or "photo.jpg").suffix or ".jpg"
+            dest = photos_dir / f"{photo_id}{suffix}"
+            dest.write_bytes(await upload.read())
 
-        metadata = read_photo_metadata(str(dest))
-        entry = PhotoEntry(
-            photo_id=photo_id,
-            path=str(dest),
-            metadata=metadata,
-        )
-        ws.photos[photo_id] = entry
-        results.append(
-            PhotoMetadataSchema(
+            metadata = read_photo_metadata(str(dest))
+            entry = PhotoEntry(
                 photo_id=photo_id,
                 path=str(dest),
-                timestamp=metadata.timestamp,
-                latitude=metadata.latitude,
-                longitude=metadata.longitude,
+                metadata=metadata,
             )
-        )
+            ws.photos[photo_id] = entry
+            results.append(
+                PhotoMetadataSchema(
+                    photo_id=photo_id,
+                    path=str(dest),
+                    timestamp=metadata.timestamp,
+                    latitude=metadata.latitude,
+                    longitude=metadata.longitude,
+                )
+            )
+    except Exception:
+        _log.exception("upload_photos failed")
+        raise
 
     return PhotosUploadResponse(photos=results)
 

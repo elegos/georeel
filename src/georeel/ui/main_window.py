@@ -294,16 +294,6 @@ class MainWindow(QMainWindow):
         self._store = PhotoStore.instance()
         self._settings = QSettings("GeoReel", "GeoReel")
 
-        # ── Server lifecycle ───────────────────────────────────────────
-        self._server_manager = ServerManager()
-        try:
-            self._server_client: ServerClient = self._server_manager.start()
-            self._server_workspace_id: str = self._server_client.create_workspace()
-        except Exception as _e:
-            _log.warning("Could not start georeel-server: %s", _e)
-            # Fallback: create a minimal stub so the UI still launches.
-            # _start() will fail gracefully when the server is unavailable.
-            self._server_workspace_id = ""
         self._restore_window_geometry()
 
         central = QWidget()
@@ -386,6 +376,19 @@ class MainWindow(QMainWindow):
 
         self._apply_temp_dir_setting()
         self._cleanup_stale_temp()
+
+        # ── Server lifecycle ───────────────────────────────────────────
+        # Must start AFTER _cleanup_stale_temp() so the workspace directory
+        # (georeel_ws_* prefix) is not swept by the stale-dir cleanup.
+        self._server_manager = ServerManager()
+        try:
+            self._server_client: ServerClient = self._server_manager.start()
+            self._server_workspace_id: str = self._server_client.create_workspace()
+        except Exception as _e:
+            _log.warning("Could not start georeel-server: %s", _e)
+            # Fallback: create a minimal stub so the UI still launches.
+            # _start() will fail gracefully when the server is unavailable.
+            self._server_workspace_id = ""
 
     # ------------------------------------------------------------------
     # Temp-dir management
