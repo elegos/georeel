@@ -13,7 +13,7 @@ import io
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, final
 
 import httpx
 import numpy as np
@@ -31,6 +31,7 @@ class ServerError(RuntimeError):
     """Raised on HTTP error status or server-side job failure."""
 
 
+@final
 class ServerClient:
     """Synchronous httpx wrapper for georeel-server REST endpoints."""
 
@@ -533,7 +534,7 @@ def _bbox_from_dict(d: dict[str, Any]) -> BoundingBox:
     )
 
 
-def _match_result_from_dict(d: dict[str, Any]) -> MatchResult:
+def match_result_from_dict(d: dict[str, Any]) -> MatchResult:
     return MatchResult(
         photo_path=str(d["photo_path"]),
         trackpoint_index=d.get("trackpoint_index"),

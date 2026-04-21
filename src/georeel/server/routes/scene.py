@@ -125,7 +125,7 @@ async def _run(job_id: str, body: SceneBuildRequest) -> None:
             job.error = "Cancelled"
             return
         job.result = blend_path
-        job._cleanup_path = Path(blend_path).parent
+        job.cleanup_path = Path(blend_path).parent
         job.status = "done"
         job.progress = 100
         job.message = f"Done — {Path(blend_path).name}"

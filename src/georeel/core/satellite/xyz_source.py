@@ -1,5 +1,5 @@
 import logging
-from typing import Callable
+from typing import Callable, final, override
 
 from PIL import Image
 
@@ -23,6 +23,7 @@ _MAX_WORKERS = 8
 _TIMEOUT     = 10   # seconds per tile request
 
 
+@final
 class XyzSource(SatelliteSource):
     """Fetches imagery by downloading XYZ/TMS slippy-map tiles to a TileCache.
 
@@ -57,9 +58,11 @@ class XyzSource(SatelliteSource):
         self._max_zoom    = provider.max_zoom
 
     @property
+    @override
     def name(self) -> str:
         return self._provider.label
 
+    @override
     def fetch(
         self,
         bbox: BoundingBox,
@@ -113,8 +116,8 @@ class XyzSource(SatelliteSource):
             max_lon=bbox.max_lon,
             provider_id=self._provider.id,
             quality=self._quality,
-            _tile_cache=cache,
-            _dim_width=W,
+            tile_cache=cache,
+            dim_width=W,
             _dim_height=H,
         )
 

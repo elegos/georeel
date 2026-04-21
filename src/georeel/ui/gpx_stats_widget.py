@@ -6,6 +6,7 @@ Call update_stats(trackpoints) after parsing; call clear() on reset.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import final
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -50,6 +51,7 @@ def _fmt_dist(m: float) -> str:
     return f"{m:.0f} m"
 
 
+@final
 class GpxStatsWidget(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)

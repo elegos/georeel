@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from .encoder_registry import EncoderConfig, get_encoder
 from . import temp_manager
@@ -59,7 +59,9 @@ def assemble_video(
 
     # Write settings JSON to a temp file so it can be attached for MKV
     settings_json = _serialise_settings(settings)
-    tmp_settings = Path(tempfile.mktemp(suffix="_georeel_settings.json"))
+    _fd, _tmp = tempfile.mkstemp(suffix="_georeel_settings.json")
+    os.close(_fd)
+    tmp_settings = Path(_tmp)
     tmp_settings.write_text(settings_json, encoding="utf-8")
 
     # Title is composited onto frames by PIL before ffmpeg runs so there is
@@ -73,8 +75,8 @@ def assemble_video(
     # When title fade-in is enabled but video fade-in is not, we still prepend
     # black frames (for title_fi_dur seconds) so the title genuinely fades in
     # from black rather than over content.
-    locality_dir: Optional[Path] = None
-    title_dir: Optional[Path] = None
+    locality_dir: Path | None = None
+    title_dir: Path | None = None
     title_enabled = bool(settings.get("clip_effects/title_enabled", False))
     fi_enabled    = bool(settings.get("clip_effects/fade_in_enabled", False))
     fo_enabled    = bool(settings.get("clip_effects/fade_out_enabled", False))
@@ -363,7 +365,7 @@ def _probe_duration(path: str) -> float:
         return 0.0
 
 
-def _resolve_fontfile(font_name: str) -> Optional[str]:
+def _resolve_fontfile(font_name: str) -> str | None:
     """Return the absolute font file path for *font_name* via fc-match, or None."""
     try:
         r = subprocess.run(

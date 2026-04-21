@@ -8,7 +8,7 @@ falls back to opening the video in the system default player otherwise.
 
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, final, override
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QCloseEvent
@@ -55,6 +55,7 @@ def open_preview_video(video_path: str, parent: QWidget | None = None) -> None:
 # ------------------------------------------------------------------
 
 
+@final
 class _PlayerDialog(QDialog):
     def __init__(self, video_path: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -148,9 +149,10 @@ class _PlayerDialog(QDialog):
     def _on_duration_changed(self, duration_ms: int):
         self._seek_bar.setRange(0, duration_ms)
 
-    def closeEvent(self, event: QCloseEvent):
+    @override
+    def closeEvent(self, arg__1: QCloseEvent) -> None:
         self._player.stop()
-        super().closeEvent(event)
+        super().closeEvent(arg__1)
 
 
 # ------------------------------------------------------------------

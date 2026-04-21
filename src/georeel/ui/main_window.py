@@ -2,8 +2,9 @@
 import logging
 import shutil
 import threading
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, final, override
 
 from georeel.ui.server_client import (
     ServerClient,
@@ -13,7 +14,7 @@ from georeel.ui.server_client import (
     keyframe_to_dict,
     match_result_to_dict,
     trackpoint_to_dict,
-    _match_result_from_dict,
+    match_result_from_dict,
 )
 from georeel.ui.server_manager import ServerManager
 
@@ -114,10 +115,6 @@ _QUALITY_ORDER = {
 }  # standard=0, high=1, very_high=2
 
 
-def _quality_rank(quality: str) -> int:
-    return _QUALITY_ORDER.get(quality, 0)
-
-
 def _bbox_covers(
     fetch_bbox: "BoundingBox",
     cached: "ElevationGrid | SatelliteTexture",
@@ -147,6 +144,7 @@ _SPEED_PRESETS = [
 ]
 
 
+@final
 class _SaveWorker(QObject):
     """Runs save_project in a background thread."""
 
@@ -166,6 +164,7 @@ class _SaveWorker(QObject):
             self.failed.emit(str(e))
 
 
+@final
 class _LoadResult:
     """All pre-computed data produced by _LoadWorker so the main thread only does UI."""
 
@@ -179,6 +178,7 @@ class _LoadResult:
         self.exif_cache = exif_cache
 
 
+@final
 class _LoadWorker(QObject):
     """Loads a project and pre-computes GPX + EXIF data in a background thread."""
 
@@ -245,6 +245,7 @@ class _LoadWorker(QObject):
             self.failed.emit(str(e))
 
 
+@final
 class _InjectWorker(QObject):
     """Runs inject_camera_and_open headlessly in a background thread."""
 
@@ -277,6 +278,7 @@ class _InjectWorker(QObject):
             self.failed.emit(str(e))
 
 
+@final
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -661,20 +663,14 @@ class MainWindow(QMainWindow):
 
         _update_thresh_visibility()
         self._gpx_repair_combo.currentIndexChanged.connect(_update_thresh_visibility)
-        self._gpx_speed_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(KEY_GPX_MAX_SPEED_KMH, v)
-        )
-        self._gpx_gap_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(KEY_GPX_MAX_GAP_S, v)
-        )
-        self._gpx_osrm_profile_combo.currentIndexChanged.connect(
-            lambda: self._settings.setValue(
-                KEY_GPX_OSRM_PROFILE, self._gpx_osrm_profile_combo.currentData()
-            )
-        )
-        self._shifting_pin_check.toggled.connect(
-            lambda v: self._settings.setValue(KEY_MARKER_SHIFTING_PIN, v)
-        )
+        self._gpx_speed_spin.valueChanged.connect(partial(self._sv, KEY_GPX_MAX_SPEED_KMH))
+        self._gpx_gap_spin.valueChanged.connect(partial(self._sv, KEY_GPX_MAX_GAP_S))
+
+        def _on_osrm_profile_changed(_: int) -> None:
+            self._settings.setValue(KEY_GPX_OSRM_PROFILE, self._gpx_osrm_profile_combo.currentData())
+
+        self._gpx_osrm_profile_combo.currentIndexChanged.connect(_on_osrm_profile_changed)
+        self._shifting_pin_check.toggled.connect(partial(self._sv, KEY_MARKER_SHIFTING_PIN))
 
         return container
 
@@ -971,9 +967,7 @@ class MainWindow(QMainWindow):
             self._settings.setValue(KEY_RIBBON_COLOR_MODE, mode)
 
         self._ribbon_slope_radio.toggled.connect(_on_color_mode_changed)
-        self._ribbon_self_lit_check.toggled.connect(
-            lambda v: self._settings.setValue(KEY_RIBBON_SELF_LIT, v)
-        )
+        self._ribbon_self_lit_check.toggled.connect(partial(self._sv, KEY_RIBBON_SELF_LIT))
 
         return tab
 
@@ -1069,7 +1063,10 @@ class MainWindow(QMainWindow):
         _log.log(level, message)
         self._status.showMessage(message)
 
-    def _mark_dirty(self, *_):
+    def _sv(self, key: str, v: object) -> None:
+        self._settings.setValue(key, v)
+
+    def _mark_dirty(self, *_: object) -> None:
         if not self._suppress_dirty:
             self._dirty = True
             self._tilde_fresh = False
@@ -1104,7 +1101,7 @@ class MainWindow(QMainWindow):
         self._autosave_thread = threading.Thread(target=_run, daemon=True)
         self._autosave_thread.start()
 
-    def _invalidate_scene(self, *_):
+    def _invalidate_scene(self, *_: object) -> None:
         """Mark the cached scene as stale so _start() will rebuild it."""
         self._scene_stale = True
         self._pipeline.scene = None
@@ -1124,7 +1121,7 @@ class MainWindow(QMainWindow):
 
         render_settings = get_render_settings(self._settings)
         tz_offset = float(str(self._settings.value(KEY_PHOTO_TZ_OFFSET, 0.0)))
-        blender_exe = self._settings.value("blender/executable_path") or None
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
 
         worker = ScenePrepWorker(
             gpx_path=self._gpx_path,
@@ -1292,7 +1289,7 @@ class MainWindow(QMainWindow):
             self._trigger_scene_prep()
             return
 
-        blender_exe = self._settings.value("blender/executable_path") or None
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
         render_settings = get_render_settings(self._settings)
         res = render_settings.get("render/resolution", "1080p")
         wh = {
@@ -1359,7 +1356,7 @@ class MainWindow(QMainWindow):
                 return
             self._fetch_progress_bar.hide()
 
-        blender_exe = self._settings.value("blender/executable_path") or None
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
         self._status_show("Rendering preview video…")
         preview_settings = {
             **render_settings,
@@ -1398,7 +1395,7 @@ class MainWindow(QMainWindow):
             self._trigger_scene_prep()
             return
 
-        blender_exe = self._settings.value("blender/executable_path") or None
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
         from georeel.core.blender_runtime import find_blender
 
         exe = find_blender(blender_exe)
@@ -1610,7 +1607,7 @@ class MainWindow(QMainWindow):
                 return
             for m in match_dicts:
                 m["photo_path"] = ws_to_local.get(str(m["photo_path"]), str(m["photo_path"]))
-            match_results = [_match_result_from_dict(m) for m in match_dicts]
+            match_results = [match_result_from_dict(m) for m in match_dicts]
             self._pipeline.match_results = match_results
             self._photo_area.update_match_statuses(match_results)
 
@@ -1755,7 +1752,7 @@ class MainWindow(QMainWindow):
         log_pipeline_memory(self._pipeline, "after satellite fetch")
 
         # Stage 5 — 3D Scene Builder (via server)
-        blender_exe = self._settings.value("blender/executable_path") or None
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
         try:
             scene_job_id = client.start_scene_build(
                 workspace_id=self._server_workspace_id,
@@ -1833,7 +1830,7 @@ class MainWindow(QMainWindow):
         keyframes_json = [keyframe_to_dict(kf) for kf in keyframes]
 
         # Stage 7 — Frame Renderer (via server)
-        blender_exe = self._settings.value("blender/executable_path") or None
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
         try:
             render_job_id = client.start_render_frames(
                 workspace_id=self._server_workspace_id,
@@ -1964,7 +1961,7 @@ class MainWindow(QMainWindow):
         if isinstance(raw, str):  # QSettings may deserialise a single item as str
             entries: list[str] = [raw]
         elif isinstance(raw, list):
-            entries = [str(x) for x in raw]
+            entries = [str(x) for x in cast(list[object], raw)]
         else:
             entries = []
         return [p for p in entries if Path(p).is_file()]
@@ -1974,7 +1971,7 @@ class MainWindow(QMainWindow):
         if isinstance(raw, str):
             entries: list[str] = [raw]
         elif isinstance(raw, list):
-            entries = [str(x) for x in raw]
+            entries = [str(x) for x in cast(list[object], raw)]
         else:
             entries = []
         paths = [p for p in entries if p != path]
@@ -1992,7 +1989,11 @@ class MainWindow(QMainWindow):
             label = f"{Path(p).name}  —  {Path(p).parent}"
             action = self._recent_menu.addAction(label)
             action.setToolTip(p)
-            action.triggered.connect(lambda checked, path=p: self._load_from_path(path))
+
+            def _open_recent(_checked: bool, _path: str = p) -> None:
+                self._load_from_path(_path)
+
+            action.triggered.connect(_open_recent)
 
     def _suggest_output_from_project(self, project_path: str):
         """Auto-fill output path from the project filename if not already set."""
@@ -2329,7 +2330,7 @@ class MainWindow(QMainWindow):
 
     def _restore_window_geometry(self) -> None:
         geometry = self._settings.value("window/geometry")
-        restored = bool(geometry and self.restoreGeometry(geometry))
+        restored = bool(geometry and self.restoreGeometry(geometry))  # pyright: ignore[reportArgumentType]
         if restored:
             # Validate: center must land on a known screen and the window must
             # fit within that screen's available area (guards against lower-res
@@ -2351,7 +2352,8 @@ class MainWindow(QMainWindow):
     def _save_window_geometry(self) -> None:
         self._settings.setValue("window/geometry", self.saveGeometry())
 
-    def closeEvent(self, event: QCloseEvent):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         if not self._dirty:
             self._save_window_geometry()
             self._cleanup_temp_dir()

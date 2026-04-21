@@ -44,7 +44,7 @@ def _fix_undeclared_namespaces(content: str) -> str:
     if not missing:
         return content
 
-    injections = []
+    injections: list[str] = []
     for prefix in sorted(missing):
         uri = _KNOWN_NS.get(prefix, f"urn:unknown-ns:{prefix}")
         injections.append(f'xmlns:{prefix}="{uri}"')

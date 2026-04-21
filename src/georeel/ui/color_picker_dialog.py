@@ -7,6 +7,7 @@ with name, hex, and HSL values displayed below each swatch.
 
 import colorsys
 from collections.abc import Callable
+from typing import final, override
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPalette
@@ -243,6 +244,7 @@ _CELL_W = _SWATCH_W + 4
 _COLS = 10
 
 
+@final
 class _ColorSwatch(QFrame):
     def __init__(self, name: str, hex_color: str, on_select: Callable[["_ColorSwatch"], None], parent: QWidget | None = None):
         super().__init__(parent)
@@ -313,6 +315,7 @@ class _ColorSwatch(QFrame):
             self.setAutoFillBackground(False)
         self.setPalette(p)
 
+    @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._on_select(self)
@@ -323,6 +326,7 @@ class _ColorSwatch(QFrame):
 # ------------------------------------------------------------------
 
 
+@final
 class ColorPickerDialog(QDialog):
     """Grid color picker showing all CSS3/X11 named colors."""
 

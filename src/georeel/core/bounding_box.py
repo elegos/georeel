@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from typing import override
 
 _M_PER_DEG_LAT = 111_320.0
 
@@ -23,6 +24,7 @@ class BoundingBox:
             max_lon=self.max_lon + lon_delta,
         )
 
+    @override
     def __str__(self) -> str:
         return (
             f"({self.min_lat:.5f}, {self.min_lon:.5f}) → "

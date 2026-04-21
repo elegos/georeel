@@ -1,5 +1,6 @@
 # pyright: reportUninitializedInstanceVariable=false
 from pathlib import Path
+from typing import final, override
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QPixmap, QResizeEvent, QShortcut
@@ -17,6 +18,7 @@ from .image_loader import load_qimage
 _MAX_DEFAULT_WIDTH = 1080
 
 
+@final
 class PhotoPreviewWindow(QMainWindow):
     photo_removed = Signal(str)
 
@@ -137,6 +139,7 @@ class PhotoPreviewWindow(QMainWindow):
         self._prev_btn.setEnabled(self._index > 0)
         self._next_btn.setEnabled(self._index < len(self._paths) - 1)
 
-    def resizeEvent(self, event: QResizeEvent):
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_pixmap()

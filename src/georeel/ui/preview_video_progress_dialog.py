@@ -6,7 +6,7 @@ frame-by-frame progress.  On success the output path is available via
 output_path().
 """
 
-from typing import Any
+from typing import Any, final, override
 import os
 import tempfile
 import threading
@@ -26,6 +26,7 @@ from georeel.core.pipeline import Pipeline
 from georeel.core.preview_video import PreviewVideoError, render_preview_video
 
 
+@final
 class _Worker(QObject):
     progress       = Signal(int, int)  # current, total  (Blender render)
     title_progress = Signal(int, int)  # current, total  (PIL title compositing)
@@ -65,6 +66,7 @@ class _Worker(QObject):
             self.failed.emit(f"Unexpected error: {e}")
 
 
+@final
 class PreviewVideoProgressDialog(QDialog):
     """Shows rendering progress for the preview video."""
 
@@ -154,8 +156,9 @@ class PreviewVideoProgressDialog(QDialog):
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event: QCloseEvent):
+    @override
+    def closeEvent(self, arg__1: QCloseEvent) -> None:
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)
-        super().closeEvent(event)
+        super().closeEvent(arg__1)

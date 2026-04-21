@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import final
 
 from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
@@ -13,6 +14,7 @@ _DEFAULT_FILENAME = "output.mkv"
 _SETTINGS_KEY = "output/last_directory"
 
 
+@final
 class OutputFileSelector(QWidget):
     path_changed = Signal()
 

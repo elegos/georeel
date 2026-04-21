@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Callable
+from typing import Callable, final, override
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDropEvent
@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QFileDialog, QLabel, QPushButton, QVBoxLayout, QWi
 from .drop_area import DropArea
 
 
+@final
 class GpxDropArea(DropArea):
     def __init__(self, on_file_selected: Callable[[str], None], parent: QWidget | None = None):
         super().__init__(parent)
@@ -38,6 +39,7 @@ class GpxDropArea(DropArea):
         if path:
             self._set_file(path)
 
+    @override
     def dropEvent(self, event: QDropEvent):
         urls = event.mimeData().urls()
         if urls:

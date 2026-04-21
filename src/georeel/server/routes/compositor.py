@@ -88,7 +88,7 @@ async def _run(job_id: str, body: CompositorRunRequest) -> None:
             job.error = "Cancelled"
             return
         job.result = comp_dir
-        job._cleanup_path = Path(comp_dir)
+        job.cleanup_path = Path(comp_dir)
         job.status = "done"
         job.progress = 100
         job.message = "Done — compositor finished"

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import final
 
 from PySide6.QtCore import QDateTime
 from PySide6.QtWidgets import (
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 
+@final
 class DateTimePickerDialog(QDialog):
     def __init__(self, filename: str, current: datetime | None, parent: QWidget | None = None):
         super().__init__(parent)

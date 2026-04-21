@@ -2,8 +2,9 @@
 """Clip effects settings widget — fade-in/fade-out, title, and music controls."""
 
 import json
+from functools import partial
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar, cast, final, override
 
 from PySide6.QtCore import QRect, QSettings, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPaintEvent
@@ -91,6 +92,7 @@ _PREVIEW_SIZES = {
 }
 
 
+@final
 class _TitlePreviewWidget(QWidget):
     """Miniature live preview of the title overlay."""
 
@@ -111,7 +113,8 @@ class _TitlePreviewWidget(QWidget):
         self._apply_size()
         self.update()
 
-    def paintEvent(self, _event: QPaintEvent):
+    @override
+    def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), Qt.GlobalColor.black)
 
@@ -190,6 +193,7 @@ class _TitlePreviewWidget(QWidget):
         painter.drawText(draw_rect, align_flag, text)
 
 
+@final
 class ClipEffectsWidget(QWidget):
     """Provides fade-in/fade-out, title, and music settings backed by QSettings."""
 
@@ -205,6 +209,9 @@ class ClipEffectsWidget(QWidget):
     def _qsv(self, key: str, default: _T) -> _T:
         """Type-safe QSettings.value() wrapper — infers return type from default."""
         return cast(_T, self._settings.value(key, default, type=type(default)))
+
+    def _sv(self, key: str, v: object) -> None:
+        self._settings.setValue(key, v)
 
     def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)
@@ -300,9 +307,9 @@ class ClipEffectsWidget(QWidget):
         form.addRow("Black clip duration:", black_spin)
         form.addRow("Fade duration:", fade_spin)
 
-        group.toggled.connect(lambda v, k=key_enabled: self._settings.setValue(k, v))
-        black_spin.valueChanged.connect(lambda v, k=key_black: self._settings.setValue(k, v))
-        fade_spin.valueChanged.connect(lambda v, k=key_fade: self._settings.setValue(k, v))
+        group.toggled.connect(partial(self._sv, key_enabled))
+        black_spin.valueChanged.connect(partial(self._sv, key_black))
+        fade_spin.valueChanged.connect(partial(self._sv, key_fade))
 
         setattr(self, attr_prefix + "_group", group)
         setattr(self, attr_prefix + "_black_spin", black_spin)
@@ -318,7 +325,7 @@ class ClipEffectsWidget(QWidget):
         group = QGroupBox("Title")
         group.setCheckable(True)
         group.setChecked(self._qsv(_KEY_TITLE_ENABLED, False))
-        group.toggled.connect(lambda v: self._settings.setValue(_KEY_TITLE_ENABLED, v))
+        group.toggled.connect(partial(self._sv, _KEY_TITLE_ENABLED))
         self._title_group = group
 
         outer = QVBoxLayout(group)
@@ -458,34 +465,47 @@ class ClipEffectsWidget(QWidget):
         def _refresh():
             self._title_preview.refresh()
 
-        text_edit.textChanged.connect(
-            lambda: (self._settings.setValue(_KEY_TITLE_TEXT, text_edit.toPlainText()), _refresh())
-        )
-        font_combo.currentFontChanged.connect(
-            lambda f: (self._settings.setValue(_KEY_TITLE_FONT, f.family()), _refresh())
-        )
-        size_spin.valueChanged.connect(
-            lambda v: (self._settings.setValue(_KEY_TITLE_FONT_SIZE, v), _refresh())
-        )
+        def _on_text_changed() -> None:
+            self._settings.setValue(_KEY_TITLE_TEXT, text_edit.toPlainText())
+            _refresh()
+
+        def _on_font_changed(f: QFont) -> None:
+            self._settings.setValue(_KEY_TITLE_FONT, f.family())
+            _refresh()
+
+        def _on_size_changed(v: int) -> None:
+            self._settings.setValue(_KEY_TITLE_FONT_SIZE, v)
+            _refresh()
+
+        def _on_margin_changed(v: int) -> None:
+            self._settings.setValue(_KEY_TITLE_MARGIN, v)
+            _refresh()
+
+        def _on_align_changed(_: int) -> None:
+            self._settings.setValue(_KEY_TITLE_ALIGNMENT, align_combo.currentData())
+            _refresh()
+
+        def _on_shadow_changed(v: bool) -> None:
+            self._settings.setValue(_KEY_TITLE_SHADOW, v)
+            _refresh()
+
+        def _on_group_toggled(_: bool) -> None:
+            _refresh()
+
+        text_edit.textChanged.connect(_on_text_changed)
+        font_combo.currentFontChanged.connect(_on_font_changed)
+        size_spin.valueChanged.connect(_on_size_changed)
         anchor_combo.currentIndexChanged.connect(self._on_anchor_changed)
-        margin_spin.valueChanged.connect(
-            lambda v: (self._settings.setValue(_KEY_TITLE_MARGIN, v), _refresh())
-        )
-        align_combo.currentIndexChanged.connect(
-            lambda _: (self._settings.setValue(_KEY_TITLE_ALIGNMENT, align_combo.currentData()), _refresh())
-        )
+        margin_spin.valueChanged.connect(_on_margin_changed)
+        align_combo.currentIndexChanged.connect(_on_align_changed)
         color_btn.clicked.connect(self._pick_color)
-        shadow_chk.toggled.connect(
-            lambda v: (self._settings.setValue(_KEY_TITLE_SHADOW, v), _refresh())
-        )
-        dur_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(_KEY_TITLE_DURATION, v)
-        )
-        fi_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_TITLE_FI_ENABLED, v))
-        fi_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_TITLE_FI_DUR, v))
-        fo_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_TITLE_FO_ENABLED, v))
-        fo_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_TITLE_FO_DUR, v))
-        group.toggled.connect(lambda _: _refresh())
+        shadow_chk.toggled.connect(_on_shadow_changed)
+        dur_spin.valueChanged.connect(partial(self._sv, _KEY_TITLE_DURATION))
+        fi_chk.toggled.connect(partial(self._sv, _KEY_TITLE_FI_ENABLED))
+        fi_dur.valueChanged.connect(partial(self._sv, _KEY_TITLE_FI_DUR))
+        fo_chk.toggled.connect(partial(self._sv, _KEY_TITLE_FO_ENABLED))
+        fo_dur.valueChanged.connect(partial(self._sv, _KEY_TITLE_FO_DUR))
+        group.toggled.connect(_on_group_toggled)
 
         return group
 
@@ -497,7 +517,7 @@ class ClipEffectsWidget(QWidget):
         group = QGroupBox("Music")
         group.setCheckable(True)
         group.setChecked(self._qsv(_KEY_MUSIC_ENABLED, False))
-        group.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_ENABLED, v))
+        group.toggled.connect(partial(self._sv, _KEY_MUSIC_ENABLED))
         self._music_group = group
 
         outer = QVBoxLayout(group)
@@ -644,17 +664,20 @@ class ClipEffectsWidget(QWidget):
 
         add_btn.clicked.connect(_add_files)
         remove_btn.clicked.connect(_remove_selected)
-        # Persist order after drag-and-drop reorder.
-        music_list.model().rowsMoved.connect(lambda *_: _save_paths())
+        def _on_rows_moved(*_: object) -> None:
+            _save_paths()
 
-        delay_spin.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_DELAY, v))
-        fi_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FI_ENABLED, v))
-        fi_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FI_DUR, v))
-        fo_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FO_ENABLED, v))
-        fo_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_FO_DUR, v))
-        cf_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_CF_ENABLED, v))
-        cf_dur.valueChanged.connect(lambda v: self._settings.setValue(_KEY_MUSIC_CF_DUR, v))
-        loop_chk.toggled.connect(lambda v: self._settings.setValue(_KEY_MUSIC_LOOP, v))
+        # Persist order after drag-and-drop reorder.
+        music_list.model().rowsMoved.connect(_on_rows_moved)
+
+        delay_spin.valueChanged.connect(partial(self._sv, _KEY_MUSIC_DELAY))
+        fi_chk.toggled.connect(partial(self._sv, _KEY_MUSIC_FI_ENABLED))
+        fi_dur.valueChanged.connect(partial(self._sv, _KEY_MUSIC_FI_DUR))
+        fo_chk.toggled.connect(partial(self._sv, _KEY_MUSIC_FO_ENABLED))
+        fo_dur.valueChanged.connect(partial(self._sv, _KEY_MUSIC_FO_DUR))
+        cf_chk.toggled.connect(partial(self._sv, _KEY_MUSIC_CF_ENABLED))
+        cf_dur.valueChanged.connect(partial(self._sv, _KEY_MUSIC_CF_DUR))
+        loop_chk.toggled.connect(partial(self._sv, _KEY_MUSIC_LOOP))
 
         return group
 

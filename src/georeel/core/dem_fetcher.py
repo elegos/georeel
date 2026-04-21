@@ -154,7 +154,7 @@ def fetch_dem(
         futures = {pool.submit(_load, tlat, tlon): (tlat, tlon)
                    for tlat, tlon in all_tiles}
         for future in as_completed(futures):
-            tile_lat, tile_lon, geo_file = future.result()
+            _, _, geo_file = future.result()
 
             tiles_done += 1
             if progress_callback is not None:

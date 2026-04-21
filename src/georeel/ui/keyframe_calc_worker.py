@@ -13,7 +13,7 @@ dem_fetched(object)                    — ElevationGrid (update main-window cac
 error(str)                             — failure message
 """
 
-from typing import Any
+from typing import Any, final, override
 
 from PySide6.QtCore import QThread, Signal
 
@@ -29,6 +29,7 @@ from georeel.core.trackpoint import Trackpoint
 from georeel.ui.server_client import ServerClient, ServerError
 
 
+@final
 class KeyframeCalcWorker(QThread):
     status = Signal(str)
     keyframes_ready = Signal(
@@ -55,6 +56,7 @@ class KeyframeCalcWorker(QThread):
         self._cached_dem = cached_elevation_grid
         self._client = client
 
+    @override
     def run(self) -> None:
         pipeline = Pipeline()
 

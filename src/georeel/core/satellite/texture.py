@@ -43,21 +43,21 @@ class SatelliteTexture:
     _tiles_dir: Path | None = field(default=None, repr=False)
     _tiles_manifest: dict[str, Any] | None = field(default=None, repr=False)
     # Set by from_zip_lazy — stream directly from the source ZIP without decoding.
-    _source_zip: Path | None = field(default=None, repr=False)
+    source_zip: Path | None = field(default=None, repr=False)
     _source_entry: str | None = field(default=None, repr=False)
     # Set by XyzSource.fetch() — on-disk XYZ tiles, no global canvas ever built.
-    _tile_cache: TileCache | None = field(default=None, repr=False)
+    tile_cache: TileCache | None = field(default=None, repr=False)
     # Cached pixel dimensions — populated from image.size, tile manifest,
     # tile cache geometry, or the PNG IHDR header.
-    _dim_width: int | None = field(default=None, repr=False)
+    dim_width: int | None = field(default=None, repr=False)
     _dim_height: int | None = field(default=None, repr=False)
 
     @property
     def width(self) -> int:
         if self.image is not None:
             return self.image.width
-        if self._dim_width is not None:
-            return self._dim_width
+        if self.dim_width is not None:
+            return self.dim_width
         raise RuntimeError(
             "SatelliteTexture dimensions not available (image not loaded and no cached size)."
         )
@@ -99,15 +99,15 @@ class SatelliteTexture:
             self._tiles_dir = tiles_dir
         if tiles_manifest is not None:
             self._tiles_manifest = tiles_manifest
-            self._dim_width  = tiles_manifest.get("image_width")
+            self.dim_width  = tiles_manifest.get("image_width")
             self._dim_height = tiles_manifest.get("image_height")
         if self.image is not None:
-            self._dim_width  = self.image.width
+            self.dim_width  = self.image.width
             self._dim_height = self.image.height
         mb = self.memory_bytes() / 1024 ** 2
         self.image = None
         # Blender tiles are now on disk; the XYZ tile cache is no longer needed.
-        self._tile_cache = None
+        self.tile_cache = None
         _log.info("[memory] SatelliteTexture image freed (%.0f MB reclaimed)", mb)
 
     # ------------------------------------------------------------------
@@ -130,9 +130,9 @@ class SatelliteTexture:
             return
 
         # Lazy ZIP source — stream the stored PNG bytes directly without decoding.
-        if self._source_zip is not None and self._source_entry is not None:
+        if self.source_zip is not None and self._source_entry is not None:
             _log.info("[memory] Streaming satellite texture from source ZIP (no decode)")
-            with zipfile.ZipFile(self._source_zip, "r") as zf:
+            with zipfile.ZipFile(self.source_zip, "r") as zf:
                 with zf.open(self._source_entry) as src:
                     while True:
                         chunk = src.read(1 << 20)  # 1 MiB at a time
@@ -143,12 +143,12 @@ class SatelliteTexture:
 
         # Tile cache — composite the full bbox on demand (used when saving a
         # project before the scene has been built, so no Blender tiles exist yet).
-        if self._tile_cache is not None:
+        if self.tile_cache is not None:
             from ..bounding_box import BoundingBox
             bbox = BoundingBox(self.min_lat, self.max_lat, self.min_lon, self.max_lon)
             _log.info("[memory] Compositing full satellite texture from tile cache for save")
             with PIL_LOCK:
-                img = self._tile_cache.composite(bbox)
+                img = self.tile_cache.composite(bbox)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 img.save(dest, format="PNG", optimize=False)
@@ -278,9 +278,9 @@ class SatelliteTexture:
             provider_id=provider_id,
             quality=quality,
         )
-        obj._source_zip = zip_path
+        obj.source_zip = zip_path
         obj._source_entry = entry
-        obj._dim_width = dim_w
+        obj.dim_width = dim_w
         obj._dim_height = dim_h
         return obj
 
@@ -291,9 +291,9 @@ class SatelliteTexture:
         """
         if self.image is not None:
             return self.image
-        if self._source_zip is not None and self._source_entry is not None:
+        if self.source_zip is not None and self._source_entry is not None:
             _log.info("[memory] Loading satellite texture image from source ZIP")
-            with zipfile.ZipFile(self._source_zip, "r") as zf:
+            with zipfile.ZipFile(self.source_zip, "r") as zf:
                 with zf.open(self._source_entry) as src:
                     with PIL_LOCK:
                         image = Image.open(src)
@@ -301,7 +301,7 @@ class SatelliteTexture:
                         if image.mode != "RGB":
                             image = image.convert("RGB")
             self.image = image
-            self._dim_width  = image.width
+            self.dim_width  = image.width
             self._dim_height = image.height
             return image
         raise RuntimeError(

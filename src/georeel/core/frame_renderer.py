@@ -22,7 +22,7 @@ import subprocess
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, final
 
 from PIL import Image as _PILImage
 
@@ -39,6 +39,7 @@ class FrameRenderError(Exception):
     pass
 
 
+@final
 class _CompressionServer:
     """Listens on a localhost TCP port; Blender sends a PNG path (newline-
     terminated) after each frame is written.  A thread pool re-compresses
@@ -205,7 +206,7 @@ def render_frames(
     n_segments = int(settings.get("render/n_segments", 1))
 
     work_dir = temp_manager.make_temp_dir("georeel_frames_")
-    pipeline._temp_dirs.append(work_dir)
+    pipeline.temp_dirs.append(work_dir)
     kf_path  = work_dir / "keyframes.json"
     out_dir  = work_dir / "frames"
     out_dir.mkdir()

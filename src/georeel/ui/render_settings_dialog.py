@@ -1,6 +1,6 @@
 # pyright: reportUninitializedInstanceVariable=false
 import shutil
-from typing import Any, cast
+from typing import Any, cast, final
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor
@@ -176,6 +176,7 @@ def get_render_settings(settings: QSettings) -> dict[str, Any]:
 # ------------------------------------------------------------------
 
 
+@final
 class RenderSettingsDialog(QDialog):
     def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)

@@ -11,7 +11,7 @@ satellite_fetched     — satellite texture was fetched/reused
 error(str)            — a stage failed; blend_path will be empty
 """
 
-from typing import Any
+from typing import Any, final, override
 
 from PySide6.QtCore import QThread, Signal
 
@@ -26,7 +26,7 @@ from georeel.core.pipeline_memory import log_pipeline_memory
 from georeel.core.satellite import SatelliteTexture, build_source
 from georeel.core.satellite.providers import QUALITY_ZOOM
 from georeel.core.scene_builder import (
-    _PREVIEW_MAX_TEXTURE_PIXELS,
+    PREVIEW_MAX_TEXTURE_PIXELS,
     SceneBuildError,
     build_scene,
 )
@@ -38,6 +38,7 @@ def _quality_rank(q: str, order: dict[str, Any]) -> int:
     return order.get(q, 0)
 
 
+@final
 class ScenePrepWorker(QThread):
     status = Signal(str)
     scene_ready = Signal(str, object)  # (blend_path, pipeline)
@@ -74,6 +75,7 @@ class ScenePrepWorker(QThread):
         self._cleaned_trackpoints = cleaned_trackpoints
         self._quality_order = {q: i for i, q in enumerate(QUALITY_ZOOM)}
 
+    @override
     def run(self) -> None:
         pipeline = Pipeline()
 
@@ -245,7 +247,7 @@ class ScenePrepWorker(QThread):
                 pipeline,
                 blender_exe=self._blender_exe,
                 settings=self._settings,
-                max_texture_pixels=_PREVIEW_MAX_TEXTURE_PIXELS,
+                max_texture_pixels=PREVIEW_MAX_TEXTURE_PIXELS,
             )
         except SceneBuildError as e:
             self.error.emit(f"Scene build error: {e}")

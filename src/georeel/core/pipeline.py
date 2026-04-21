@@ -71,10 +71,10 @@ class Pipeline:
     # Large intermediate dirs (frame sequences) are registered here so
     # they can be removed as soon as the job finishes or is cancelled.
     # ------------------------------------------------------------------ #
-    _temp_dirs: list[Path] = field(default_factory=list, repr=False)
+    temp_dirs: list[Path] = field(default_factory=list, repr=False)
 
     def cleanup(self) -> None:
         """Delete all registered temporary directories."""
-        for d in list(self._temp_dirs):
+        for d in list(self.temp_dirs):
             shutil.rmtree(d, ignore_errors=True)
-        self._temp_dirs.clear()
+        self.temp_dirs.clear()

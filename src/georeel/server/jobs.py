@@ -23,7 +23,7 @@ class JobRecord:
     _cancel: threading.Event = field(default_factory=threading.Event, repr=False)
     # Directory to rmtree when this job is cleaned up.  Set by routes that
     # write intermediate output outside the workspace (scene, render, compositor).
-    _cleanup_path: Path | None = field(default=None, repr=False)
+    cleanup_path: Path | None = field(default=None, repr=False)
 
     def cancel(self) -> None:
         """Signal the running job to stop at its next cancellation checkpoint."""
@@ -34,11 +34,11 @@ class JobRecord:
 
     def cleanup_files(self) -> None:
         """Delete on-disk output produced by this job, if any."""
-        if self._cleanup_path is not None:
+        if self.cleanup_path is not None:
             try:
-                shutil.rmtree(self._cleanup_path, ignore_errors=True)
+                shutil.rmtree(self.cleanup_path, ignore_errors=True)
             finally:
-                self._cleanup_path = None
+                self.cleanup_path = None
 
 
 class JobRegistry:

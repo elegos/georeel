@@ -29,7 +29,7 @@ class SceneBuildError(Exception):
     pass
 
 
-_PREVIEW_MAX_TEXTURE_PIXELS = 8_000_000  # ~4K×2K — keeps Blender preview under ~100 MB
+PREVIEW_MAX_TEXTURE_PIXELS = 8_000_000  # ~4K×2K — keeps Blender preview under ~100 MB
 
 
 def build_scene(
@@ -658,7 +658,7 @@ def _write_texture_tiles(
     cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Dispatch to the tile-cache or PIL-image tiling path."""
-    if texture._tile_cache is not None:
+    if texture.tile_cache is not None:
         return _write_texture_tiles_from_cache(
             texture,
             grid,
@@ -704,7 +704,7 @@ def _write_texture_tiles_from_cache(
 
     from .bounding_box import BoundingBox
 
-    cache: Any = texture._tile_cache  # type: ignore[assignment]
+    cache: Any = texture.tile_cache  # type: ignore[assignment]
 
     lat_span = grid.max_lat - grid.min_lat
     lon_span = grid.max_lon - grid.min_lon
@@ -861,7 +861,7 @@ def _write_texture_tiles_from_image(
     if img is None:
         # Lazy-loaded from a project ZIP — decode now (only happens on first
         # scene build after loading a project without re-fetching the texture).
-        if texture._source_zip is not None:
+        if texture.source_zip is not None:
             if status_cb:
                 status_cb("Loading satellite texture from project file…")
             img = texture.load_image()

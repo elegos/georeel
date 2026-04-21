@@ -40,9 +40,6 @@ def _rss_mb() -> float:
         return float("nan")
 
 
-def _mem(label: str) -> None:
-    _log.debug("[camera_path mem] %s — RSS %.0f MB", label, _rss_mb())
-
 # Douglas-Peucker tolerance (metres).  Points closer than this to the
 # straight line between their neighbours are removed.
 _DP_EPSILON_M = 20.0
@@ -471,25 +468,6 @@ def _douglas_peucker(pts: np.ndarray, epsilon: float) -> np.ndarray:
 # ------------------------------------------------------------------
 
 
-def _height_at(
-    x: float,
-    y: float,
-    grid: ElevationGrid,
-    bbox: BoundingBox,
-    lat_m: float,
-    lon_m: float,
-    height_mode: str,
-    height_offset: float,
-) -> float:
-    lat = bbox.min_lat + y / lat_m * (bbox.max_lat - bbox.min_lat)
-    lon = bbox.min_lon + x / lon_m * (bbox.max_lon - bbox.min_lon)
-    if height_mode == "dem_smooth":
-        elev = _smooth_elevation(grid, lat, lon)
-    else:
-        elev = grid.elevation_at(lat, lon)
-    return elev + height_offset
-
-
 def _height_at_batch(
     xs: np.ndarray,
     ys: np.ndarray,
@@ -513,18 +491,6 @@ def _height_at_batch(
         ]
         return np.mean(samples, axis=0)
     return grid.elevation_at_batch(lats, lons)
-
-
-def _smooth_elevation(grid: ElevationGrid, lat: float, lon: float) -> float:
-    """Mean elevation over a 3×3 neighbourhood (1.5× grid spacing)."""
-    dlat = (grid.max_lat - grid.min_lat) / (grid.rows - 1) * 1.5
-    dlon = (grid.max_lon - grid.min_lon) / (grid.cols - 1) * 1.5
-    samples = [
-        grid.elevation_at(lat + r * dlat, lon + c * dlon)
-        for r in (-1, 0, 1)
-        for c in (-1, 0, 1)
-    ]
-    return sum(samples) / len(samples)
 
 
 # ------------------------------------------------------------------

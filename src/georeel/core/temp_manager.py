@@ -26,7 +26,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from collections.abc import Sequence
 
 _log = logging.getLogger(__name__)
 

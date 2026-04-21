@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast, final
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
@@ -31,13 +32,14 @@ _SETTINGS_KEY_VERSION = "blender/preferred_version"
 
 
 def load_blender_path(settings: QSettings) -> str | None:
-    return settings.value(_SETTINGS_KEY_PATH) or None
+    return cast(str | None, settings.value(_SETTINGS_KEY_PATH) or None)
 
 
 def save_blender_path(settings: QSettings, path: str | None):
     settings.setValue(_SETTINGS_KEY_PATH, path or "")
 
 
+@final
 class BlenderSettingsDialog(QDialog):
     def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)

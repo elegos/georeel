@@ -12,6 +12,7 @@ import socket
 import subprocess
 import threading
 import time
+from typing import final
 
 from georeel.core import temp_manager
 from georeel.ui.server_client import ServerClient
@@ -26,6 +27,7 @@ class ServerStartError(RuntimeError):
     """Raised when the server cannot be started within the timeout."""
 
 
+@final
 class ServerManager:
     """Owns the georeel-server subprocess (when spawned) and the HTTP client."""
 

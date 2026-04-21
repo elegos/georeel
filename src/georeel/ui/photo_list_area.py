@@ -1,7 +1,7 @@
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, final, override
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDropEvent, QIcon, QImageReader, QKeyEvent, QPixmap
@@ -43,6 +43,7 @@ _THUMBNAIL_HEIGHT = 48
 _COLOR_WARNING = QColor(255, 165, 0)
 
 
+@final
 class PhotoListArea(DropArea):
     photos_changed = Signal()
     calculate_keyframes_requested = Signal()
@@ -214,6 +215,7 @@ class PhotoListArea(DropArea):
         for p in paths:
             self._add_path(p)
 
+    @override
     def dropEvent(self, event: QDropEvent):
         added = False
         for url in event.mimeData().urls():

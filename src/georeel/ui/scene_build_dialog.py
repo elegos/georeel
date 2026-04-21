@@ -7,6 +7,7 @@ the server-side ``.blend`` file path (valid since server is co-located).
 """
 
 import logging
+from typing import final, override
 
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QCloseEvent
@@ -24,6 +25,7 @@ from georeel.ui.server_client import ServerClient, ServerError
 _log = logging.getLogger(__name__)
 
 
+@final
 class _Worker(QObject):
     status = Signal(str)
     tile_progress = Signal(int, int)  # (pct, 100) reused for bar range
@@ -62,6 +64,7 @@ class _Worker(QObject):
             self.failed.emit(f"Unexpected error: {exc}")
 
 
+@final
 class SceneBuildDialog(QDialog):
     """Shows progress while the server builds the 3D scene."""
 
@@ -140,8 +143,9 @@ class SceneBuildDialog(QDialog):
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    @override
+    def closeEvent(self, arg__1: QCloseEvent) -> None:
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)
-        super().closeEvent(event)
+        super().closeEvent(arg__1)

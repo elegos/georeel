@@ -1,5 +1,7 @@
 {
-  "exclude": ["src/georeel/core/blender_scripts", "tests"],
+  "exclude": [".venv", "**/node_modules", "**/__pycache__", "**/.*", "src/georeel/core/blender_scripts", "tests"],
   "reportImplicitStringConcatenation": false,
   "reportUnusedCallResult": false,
+  "venvPath": ".",
+  "venv": ".venv"
 }

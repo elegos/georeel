@@ -2,7 +2,8 @@
 """Locality names settings widget — Nominatim reverse geocoding overlay."""
 
 from datetime import datetime, timezone
-from typing import Any, TypeVar, cast
+from functools import partial
+from typing import Any, TypeVar, cast, final, override
 
 from PySide6.QtCore import QSettings, QThread, Signal
 from PySide6.QtWidgets import (
@@ -63,6 +64,7 @@ def _format_track_time(
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+@final
 class _LocalityPreviewWorker(QThread):
     """Background worker that calls build_locality_timeline and emits results."""
 
@@ -81,6 +83,7 @@ class _LocalityPreviewWorker(QThread):
         self._total_frames = total_frames
         self._settings     = settings
 
+    @override
     def run(self) -> None:
         try:
             from georeel.core.nominatim_client import build_locality_timeline
@@ -118,6 +121,7 @@ _POSITIONS = [
 ]
 
 
+@final
 class LocalityNamesWidget(QWidget):
     """Provides locality names overlay settings backed by QSettings."""
 
@@ -128,6 +132,9 @@ class LocalityNamesWidget(QWidget):
     def _qsv(self, key: str, default: _T) -> _T:
         """Type-safe QSettings.value() wrapper — infers return type from default."""
         return cast(_T, self._settings.value(key, default, type=type(default)))
+
+    def _sv(self, key: str, v: object) -> None:
+        self._settings.setValue(key, v)
 
     def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)
@@ -202,7 +209,7 @@ class LocalityNamesWidget(QWidget):
         group = QGroupBox("Locality names")
         group.setCheckable(True)
         group.setChecked(self._qsv(_KEY_ENABLED, False))
-        group.toggled.connect(lambda v: self._settings.setValue(_KEY_ENABLED, v))
+        group.toggled.connect(partial(self._sv, _KEY_ENABLED))
         self._group = group
 
         outer = QVBoxLayout(group)
@@ -247,9 +254,7 @@ class LocalityNamesWidget(QWidget):
         self._custom_url_edit = QLineEdit()
         self._custom_url_edit.setPlaceholderText("http://localhost:8080")
         self._custom_url_edit.setText(self._qsv(_KEY_CUSTOM_URL, ""))
-        self._custom_url_edit.textChanged.connect(
-            lambda v: self._settings.setValue(_KEY_CUSTOM_URL, v)
-        )
+        self._custom_url_edit.textChanged.connect(partial(self._sv, _KEY_CUSTOM_URL))
         custom_row.addWidget(QLabel("URL:"))
         custom_row.addWidget(self._custom_url_edit)
 
@@ -270,9 +275,7 @@ class LocalityNamesWidget(QWidget):
             "How often (in track time) to query Nominatim for the current location.\n"
             "Lower values give finer-grained name changes but more API calls."
         )
-        self._check_every_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(_KEY_CHECK_EVERY_S, v)
-        )
+        self._check_every_spin.valueChanged.connect(partial(self._sv, _KEY_CHECK_EVERY_S))
         form2.addRow("Check every:", self._check_every_spin)
 
         # ── Detail level ──────────────────────────────────────────────
@@ -285,11 +288,10 @@ class LocalityNamesWidget(QWidget):
         self._detail_combo.setToolTip(
             "Nominatim zoom level controlling the granularity of the returned name."
         )
-        self._detail_combo.currentIndexChanged.connect(
-            lambda _: self._settings.setValue(
-                _KEY_DETAIL_LEVEL, self._detail_combo.currentData()
-            )
-        )
+        def _on_detail_changed(_: int) -> None:
+            self._settings.setValue(_KEY_DETAIL_LEVEL, self._detail_combo.currentData())
+
+        self._detail_combo.currentIndexChanged.connect(_on_detail_changed)
         form2.addRow("Detail level:", self._detail_combo)
 
         # ── Position ──────────────────────────────────────────────────
@@ -300,11 +302,11 @@ class LocalityNamesWidget(QWidget):
             if value == saved_pos:
                 self._position_combo.setCurrentIndex(self._position_combo.count() - 1)
         self._position_combo.setToolTip("Where on the frame to render the locality name.")
-        self._position_combo.currentIndexChanged.connect(
-            lambda _: self._settings.setValue(
-                _KEY_POSITION, self._position_combo.currentData()
-            )
-        )
+
+        def _on_position_changed(_: int) -> None:
+            self._settings.setValue(_KEY_POSITION, self._position_combo.currentData())
+
+        self._position_combo.currentIndexChanged.connect(_on_position_changed)
         form2.addRow("Position:", self._position_combo)
 
         # ── Duration ──────────────────────────────────────────────────
@@ -321,9 +323,7 @@ class LocalityNamesWidget(QWidget):
         self._duration_spin.setToolTip(
             "How long each locality name label stays visible (with 1 s fade each side)."
         )
-        self._duration_spin.valueChanged.connect(
-            lambda v: self._settings.setValue(_KEY_DURATION, v)
-        )
+        self._duration_spin.valueChanged.connect(partial(self._sv, _KEY_DURATION))
 
         self._duration_forever_chk = QCheckBox("Forever")
         self._duration_forever_chk.setToolTip(
@@ -353,9 +353,7 @@ class LocalityNamesWidget(QWidget):
         self._update_color_btn(self._color_btn, self._text_color)
         self._shadow_chk = QCheckBox("Shadow")
         self._shadow_chk.setChecked(self._qsv(_KEY_SHADOW, True))
-        self._shadow_chk.toggled.connect(
-            lambda v: self._settings.setValue(_KEY_SHADOW, v)
-        )
+        self._shadow_chk.toggled.connect(partial(self._sv, _KEY_SHADOW))
         color_row.addWidget(self._color_btn)
         color_row.addWidget(self._shadow_chk)
         color_row.addStretch()
@@ -400,17 +398,23 @@ class LocalityNamesWidget(QWidget):
             self._settings.setValue(_KEY_SERVICE, svc)
             self._custom_widget.setVisible(svc == "custom")
 
+        def _on_service_toggled(_: bool) -> None:
+            _update_service_widgets()
+
+        def _on_setting_changed(_: object) -> None:
+            self._invalidate_timeline()
+
         _update_service_widgets()
-        self._osm_radio.toggled.connect(lambda _: _update_service_widgets())
-        self._custom_radio.toggled.connect(lambda _: _update_service_widgets())
+        self._osm_radio.toggled.connect(_on_service_toggled)
+        self._custom_radio.toggled.connect(_on_service_toggled)
         # Invalidate cached timeline when any Nominatim-query-affecting setting changes.
         # _invalidate_timeline always calls _update_preview_btn_state, so service/URL
         # changes (which affect the custom_url_empty check) are also covered here.
-        self._osm_radio.toggled.connect(lambda _: self._invalidate_timeline())
-        self._custom_radio.toggled.connect(lambda _: self._invalidate_timeline())
-        self._custom_url_edit.textChanged.connect(lambda _: self._invalidate_timeline())
-        self._check_every_spin.valueChanged.connect(lambda _: self._invalidate_timeline())
-        self._detail_combo.currentIndexChanged.connect(lambda _: self._invalidate_timeline())
+        self._osm_radio.toggled.connect(_on_setting_changed)
+        self._custom_radio.toggled.connect(_on_setting_changed)
+        self._custom_url_edit.textChanged.connect(_on_setting_changed)
+        self._check_every_spin.valueChanged.connect(_on_setting_changed)
+        self._detail_combo.currentIndexChanged.connect(_on_setting_changed)
 
         # Set initial button state (e.g. disabled when custom URL is blank on load).
         self._update_preview_btn_state()

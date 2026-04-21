@@ -25,6 +25,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "basedpyright>=1.39.0",
+    "pyside6-stubs>=6.7.3.0",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
 ]

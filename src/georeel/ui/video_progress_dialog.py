@@ -4,6 +4,8 @@ The server assembles the video inside its workspace.  When the job is done the
 worker downloads the MP4 to the user-chosen *output_path*.
 """
 
+from typing import final, override
+
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
 from georeel.ui.server_client import ServerClient, ServerError
 
 
+@final
 class _Worker(QObject):
     progress = Signal(int, int)   # (pct, 100)
     finished = Signal()
@@ -53,6 +56,7 @@ class _Worker(QObject):
             self.failed.emit(f"Unexpected error: {exc}")
 
 
+@final
 class VideoProgressDialog(QDialog):
     """Shows FFmpeg encoding progress with a cancel button."""
 
@@ -117,8 +121,9 @@ class VideoProgressDialog(QDialog):
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    @override
+    def closeEvent(self, arg__1: QCloseEvent) -> None:
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)
-        super().closeEvent(event)
+        super().closeEvent(arg__1)

@@ -392,7 +392,7 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
             p["path"] = str(dest)
 
     # ── Extract font ─────────────────────────────────────────────────
-    clip_effects = payload.get("clip_effects") or {}
+    clip_effects: dict[str, Any] = payload.get("clip_effects") or {}
     if payload.get("font_embedded"):
         font_entries = [n for n in namelist if n.startswith(_FONT_ENTRY)]
         if font_entries:
@@ -450,7 +450,7 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
             provider_id=sat_meta.get("provider_id", ""),
             quality=sat_meta.get("quality", "standard"),
         )
-        if satellite_texture._dim_width is None:
+        if satellite_texture.dim_width is None:
             # The PNG header was unreadable (0-byte or corrupted).
             # Discard it so the pipeline safely falls back to re-downloading it.
             satellite_texture = None

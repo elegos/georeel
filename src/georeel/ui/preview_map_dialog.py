@@ -6,6 +6,8 @@ Default: image scaled to fit the window (zoom-to-fit).
 Zoom in/out: Ctrl+scroll wheel, or the + / - / Fit buttons.
 """
 
+from typing import final, override
+
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtGui import QMouseEvent, QPixmap, QResizeEvent, QShowEvent, QWheelEvent
 from PySide6.QtWidgets import (
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 
+@final
 class PreviewMapDialog(QDialog):
     _ZOOM_STEP = 1.25
     _ZOOM_MIN = 0.05
@@ -101,45 +104,48 @@ class PreviewMapDialog(QDialog):
     # Qt overrides
     # ------------------------------------------------------------------
 
-    def showEvent(self, event: QShowEvent):
-        super().showEvent(event)
+    @override
+    def showEvent(self, arg__1: QShowEvent) -> None:
+        super().showEvent(arg__1)
         self._apply_fit()
 
-    def resizeEvent(self, event: QResizeEvent):
-        super().resizeEvent(event)
+    @override
+    def resizeEvent(self, arg__1: QResizeEvent) -> None:
+        super().resizeEvent(arg__1)
         if self._fit_mode:
             self._apply_fit()
 
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if obj is self._scroll.viewport():
-            if isinstance(event, QWheelEvent):
-                mods = event.modifiers()
+    @override
+    def eventFilter(self, arg__1: QObject, arg__2: QEvent) -> bool:
+        if arg__1 is self._scroll.viewport():
+            if isinstance(arg__2, QWheelEvent):
+                mods = arg__2.modifiers()
                 if mods & Qt.KeyboardModifier.ControlModifier:
-                    delta = event.angleDelta().y()
+                    delta = arg__2.angleDelta().y()
                     if delta > 0:
-                        self._zoom_by(self._ZOOM_STEP, event.position().toPoint())
+                        self._zoom_by(self._ZOOM_STEP, arg__2.position().toPoint())
                     elif delta < 0:
-                        self._zoom_by(1.0 / self._ZOOM_STEP, event.position().toPoint())
+                        self._zoom_by(1.0 / self._ZOOM_STEP, arg__2.position().toPoint())
                     return True
                 if mods & Qt.KeyboardModifier.ShiftModifier:
-                    delta = event.angleDelta().y()
+                    delta = arg__2.angleDelta().y()
                     bar = self._scroll.horizontalScrollBar()
                     bar.setValue(bar.value() - delta)
                     return True
-            elif isinstance(event, QMouseEvent):
+            elif isinstance(arg__2, QMouseEvent):
                 if (
-                    event.type() == event.Type.MouseButtonPress
-                    and event.button() == Qt.MouseButton.LeftButton
+                    arg__2.type() == arg__2.Type.MouseButtonPress
+                    and arg__2.button() == Qt.MouseButton.LeftButton
                 ):
-                    self._drag_origin = event.position().toPoint()
+                    self._drag_origin = arg__2.position().toPoint()
                     self._scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
                     return True
                 elif (
-                    event.type() == event.Type.MouseMove
+                    arg__2.type() == arg__2.Type.MouseMove
                     and self._drag_origin is not None
                 ):
-                    delta = event.position().toPoint() - self._drag_origin
-                    self._drag_origin = event.position().toPoint()
+                    delta = arg__2.position().toPoint() - self._drag_origin
+                    self._drag_origin = arg__2.position().toPoint()
                     self._scroll.horizontalScrollBar().setValue(
                         self._scroll.horizontalScrollBar().value() - delta.x()
                     )
@@ -148,13 +154,13 @@ class PreviewMapDialog(QDialog):
                     )
                     return True
                 elif (
-                    event.type() == event.Type.MouseButtonRelease
-                    and event.button() == Qt.MouseButton.LeftButton
+                    arg__2.type() == arg__2.Type.MouseButtonRelease
+                    and arg__2.button() == Qt.MouseButton.LeftButton
                 ):
                     self._drag_origin = None
                     self._scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
                     return True
-        return super().eventFilter(obj, event)
+        return super().eventFilter(arg__1, arg__2)
 
     # ------------------------------------------------------------------
     # Zoom helpers

@@ -88,7 +88,7 @@ async def _run(job_id: str, body: RenderFramesRequest) -> None:
             job.error = "Cancelled"
             return
         job.result = frames_dir
-        job._cleanup_path = Path(frames_dir)
+        job.cleanup_path = Path(frames_dir)
         job.status = "done"
         job.progress = 100
         job.message = f"Done — {total} frames rendered"

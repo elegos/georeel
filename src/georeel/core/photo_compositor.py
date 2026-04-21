@@ -161,7 +161,7 @@ def composite_photos(
     out_w, out_h = _RESOLUTIONS.get(resolution, (1920, 1080))
 
     comp_work_dir = temp_manager.make_temp_dir("georeel_comp_")
-    pipeline._temp_dirs.append(comp_work_dir)
+    pipeline.temp_dirs.append(comp_work_dir)
     out_dir = comp_work_dir / "frames"
     out_dir.mkdir()
 

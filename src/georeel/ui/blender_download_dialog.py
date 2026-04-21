@@ -1,4 +1,5 @@
 import threading
+from typing import final, override
 
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QCloseEvent
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
 from georeel.core.blender_runtime import BlenderDownloadError, BlenderVersion, download_blender
 
 
+@final
 class _Worker(QObject):
     progress = Signal(int, int)   # downloaded, total
     finished = Signal(str)        # executable path
@@ -41,6 +43,7 @@ class _Worker(QObject):
             self.failed.emit(f"Unexpected error: {e}")
 
 
+@final
 class BlenderDownloadDialog(QDialog):
     """Shows download progress and allows cancellation."""
 
@@ -115,8 +118,9 @@ class BlenderDownloadDialog(QDialog):
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event: QCloseEvent):
+    @override
+    def closeEvent(self, arg__1: QCloseEvent) -> None:
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)
-        super().closeEvent(event)
+        super().closeEvent(arg__1)

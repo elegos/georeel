@@ -22,7 +22,7 @@ import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable
+from typing import Callable, final
 
 import requests
 from PIL import Image
@@ -105,6 +105,7 @@ def _crop_bounds(
 # TileCache
 # ------------------------------------------------------------------
 
+@final
 class TileCache:
     """Parallel downloader and on-demand compositor for XYZ satellite tiles.
 
