@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from georeel.core.blender_runtime import (
@@ -38,7 +39,7 @@ def save_blender_path(settings: QSettings, path: str | None):
 
 
 class BlenderSettingsDialog(QDialog):
-    def __init__(self, settings: QSettings, parent=None):
+    def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Blender Settings")
         self.setMinimumWidth(500)

@@ -7,11 +7,12 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QLabel,
     QVBoxLayout,
+    QWidget,
 )
 
 
 class DateTimePickerDialog(QDialog):
-    def __init__(self, filename: str, current: datetime | None, parent=None):
+    def __init__(self, filename: str, current: datetime | None, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Edit timestamp")
         self.setMinimumWidth(280)

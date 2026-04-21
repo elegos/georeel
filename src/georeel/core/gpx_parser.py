@@ -4,6 +4,7 @@ import re
 from datetime import timezone
 
 import gpxpy
+import gpxpy.gpx
 
 from .bounding_box import BoundingBox
 from .trackpoint import Trackpoint
@@ -64,7 +65,7 @@ def _fix_undeclared_namespaces(content: str) -> str:
     return fixed if fixed != content else content
 
 
-def _elevation_from_extensions(point) -> float | None:
+def _elevation_from_extensions(point: gpxpy.gpx.GPXTrackPoint) -> float | None:
     """Try to read elevation from Garmin TrackPoint extensions as a fallback."""
     try:
         for ext in point.extensions:

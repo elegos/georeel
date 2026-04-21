@@ -28,7 +28,7 @@ def frustum_margin(height_m: float, tilt_deg: float,
     any direction along the track, so the margin is applied uniformly.
     """
     # Vertical FOV for the 16:9 sensor/lens combination
-    hfov = 2 * math.atan(_SENSOR_W_MM / 2 / _FOCAL_MM)
+    2 * math.atan(_SENSOR_W_MM / 2 / _FOCAL_MM)
     vfov = 2 * math.atan(_SENSOR_W_MM / _ASPECT / 2 / _FOCAL_MM)
 
     # Angle below horizontal of the top edge of the frame

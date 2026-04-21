@@ -16,7 +16,7 @@ _SETTINGS_KEY = "output/last_directory"
 class OutputFileSelector(QWidget):
     path_changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         layout = QHBoxLayout(self)

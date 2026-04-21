@@ -6,9 +6,10 @@ with name, hex, and HSL values displayed below each swatch.
 """
 
 import colorsys
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPalette
 from PySide6.QtWidgets import (
     QColorDialog,
     QDialog,
@@ -205,8 +206,8 @@ def _sort_key(entry: tuple[str, str]) -> tuple[float, float, float]:
 
 
 def _hsl_label(hex_color: str) -> str:
-    h, s, l = _hex_to_hsl(hex_color)
-    return f"hsl({h}°, {s}%, {l}%)"
+    h, s, lightness = _hex_to_hsl(hex_color)
+    return f"hsl({h}°, {s}%, {lightness}%)"
 
 
 def _build_color_list() -> list[tuple[str, str]]:
@@ -243,7 +244,7 @@ _COLS = 10
 
 
 class _ColorSwatch(QFrame):
-    def __init__(self, name: str, hex_color: str, on_select, parent=None):
+    def __init__(self, name: str, hex_color: str, on_select: Callable[["_ColorSwatch"], None], parent: QWidget | None = None):
         super().__init__(parent)
         self.color_name = name
         self.hex_color = hex_color
@@ -312,7 +313,7 @@ class _ColorSwatch(QFrame):
             self.setAutoFillBackground(False)
         self.setPalette(p)
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._on_select(self)
 
@@ -329,7 +330,7 @@ class ColorPickerDialog(QDialog):
         self,
         current_name: str = _DEFAULT_COLOR_NAME,
         current_custom_hex: str = "#228B22",
-        parent=None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Select pin color")

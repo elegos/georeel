@@ -6,8 +6,8 @@ Default: image scaled to fit the window (zoom-to-fit).
 Zoom in/out: Ctrl+scroll wheel, or the + / - / Fit buttons.
 """
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtGui import QMouseEvent, QPixmap, QResizeEvent, QShowEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 
@@ -27,7 +28,7 @@ class PreviewMapDialog(QDialog):
     _ZOOM_MIN = 0.05
     _ZOOM_MAX = 20.0
 
-    def __init__(self, image_path: str, initial_dir: str = "", parent=None):
+    def __init__(self, image_path: str, initial_dir: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Preview Map")
         self.resize(960, 600)
@@ -100,16 +101,16 @@ class PreviewMapDialog(QDialog):
     # Qt overrides
     # ------------------------------------------------------------------
 
-    def showEvent(self, event):
+    def showEvent(self, event: QShowEvent):
         super().showEvent(event)
         self._apply_fit()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
         if self._fit_mode:
             self._apply_fit()
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self._scroll.viewport():
             if isinstance(event, QWheelEvent):
                 mods = event.modifiers()

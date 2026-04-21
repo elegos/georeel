@@ -11,6 +11,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 if TYPE_CHECKING:
@@ -35,7 +37,7 @@ except ImportError:
     _has_multimedia = False
 
 
-def open_preview_video(video_path: str, parent=None) -> None:
+def open_preview_video(video_path: str, parent: QWidget | None = None) -> None:
     """Open *video_path* for playback.
 
     If QtMultimedia is available, shows a player dialog.
@@ -54,7 +56,7 @@ def open_preview_video(video_path: str, parent=None) -> None:
 
 
 class _PlayerDialog(QDialog):
-    def __init__(self, video_path: str, parent=None):
+    def __init__(self, video_path: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Preview Video")
         self.resize(1280, 760)
@@ -131,7 +133,7 @@ class _PlayerDialog(QDialog):
         else:
             self._player.play()
 
-    def _on_state_changed(self, state):
+    def _on_state_changed(self, state: "QMediaPlayer.PlaybackState"):
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self._play_btn.setText("⏸")
         else:
@@ -146,7 +148,7 @@ class _PlayerDialog(QDialog):
     def _on_duration_changed(self, duration_ms: int):
         self._seek_bar.setRange(0, duration_ms)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent):
         self._player.stop()
         super().closeEvent(event)
 

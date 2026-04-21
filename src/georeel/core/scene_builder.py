@@ -10,8 +10,6 @@ from typing import Any, Callable
 
 from georeel.core import temp_manager
 
-_log = logging.getLogger(__name__)
-
 import numpy as np
 
 from .blender_runtime import find_blender
@@ -20,6 +18,8 @@ from .pil_lock import PIL_LOCK
 from .pipeline import Pipeline
 from .satellite import SatelliteTexture
 from .sun_position import sun_angles, sun_direction_vector
+
+_log = logging.getLogger(__name__)
 
 _BLENDER_SCRIPT = Path(__file__).parent / "blender_scripts" / "build_scene.py"
 _TIMEOUT_SECONDS = 300  # 5 minutes

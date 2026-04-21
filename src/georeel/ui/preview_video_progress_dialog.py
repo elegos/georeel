@@ -1,4 +1,3 @@
-from typing import Any
 """
 Progress dialog for preview video rendering.
 
@@ -7,17 +6,20 @@ frame-by-frame progress.  On success the output path is available via
 output_path().
 """
 
+from typing import Any
 import os
 import tempfile
 import threading
 
 from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
     QProgressBar,
     QVBoxLayout,
+    QWidget,
 )
 
 from georeel.core.pipeline import Pipeline
@@ -67,7 +69,7 @@ class PreviewVideoProgressDialog(QDialog):
     """Shows rendering progress for the preview video."""
 
     def __init__(self, pipeline: Pipeline, settings: dict[str, Any],
-                 blender_exe: str | None = None, parent=None):
+                 blender_exe: str | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Rendering preview video")
         self.setMinimumWidth(440)
@@ -152,7 +154,7 @@ class PreviewVideoProgressDialog(QDialog):
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent):
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)

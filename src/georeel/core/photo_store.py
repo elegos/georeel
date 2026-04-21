@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from .photo_metadata import PhotoMetadata
 
 
@@ -19,7 +21,7 @@ class PhotoStore:
         if not any(p.path == metadata.path for p in self._photos):
             self._photos.append(metadata)
 
-    def update_timestamp(self, path: str, timestamp) -> None:
+    def update_timestamp(self, path: str, timestamp: datetime | None) -> None:
         self._photos = [
             PhotoMetadata(
                 path=p.path,

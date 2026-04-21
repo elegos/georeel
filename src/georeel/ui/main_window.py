@@ -46,13 +46,14 @@ from PySide6.QtWidgets import (
 from georeel.core import temp_manager
 from georeel.core.bounding_box import BoundingBox
 from georeel.core.camera_path import CameraPathError, build_camera_path
-from georeel.core.dem_fetcher import DemFetchError, fetch_dem
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.match_result import MatchResult
 from georeel.core.exif_reader import read_photo_metadata
 from georeel.core.frustum import frustum_margin
 from georeel.core.gpx_cleaner import REPAIR_NONE
-from georeel.core.gpx_stats import compute_stats
+from georeel.core.camera_keyframe import CameraKeyframe
+from georeel.core.gpx_stats import GpxStats, compute_stats
+from georeel.core.trackpoint import Trackpoint
 from georeel.core.photo_store import PhotoStore
 from georeel.core.pipeline import Pipeline
 from georeel.core.pipeline_memory import log_pipeline_memory
@@ -63,7 +64,7 @@ from georeel.core.project import (
     load_project,
     save_project,
 )
-from georeel.core.satellite import SatelliteTexture, build_source
+from georeel.core.satellite import SatelliteTexture
 from georeel.core.satellite.providers import QUALITY_ZOOM
 
 from .blender_settings_dialog import BlenderSettingsDialog
@@ -152,7 +153,7 @@ class _SaveWorker(QObject):
     finished = Signal()
     failed = Signal(str)
 
-    def __init__(self, state, path: str):
+    def __init__(self, state: ProjectState, path: str):
         super().__init__()
         self._state = state
         self._path = path
@@ -170,9 +171,10 @@ class _LoadResult:
 
     __slots__ = ("state", "gpx_stats", "gpx_failed", "exif_cache")
 
-    def __init__(self, state, gpx_stats, gpx_failed, exif_cache):
+    def __init__(self, state: ProjectState, gpx_stats: GpxStats | None,
+                 gpx_failed: bool, exif_cache: dict[str, Any]):
         self.state = state
-        self.gpx_stats = gpx_stats  # GpxStats | None
+        self.gpx_stats = gpx_stats
         self.gpx_failed = gpx_failed
         self.exif_cache = exif_cache
 
@@ -250,7 +252,7 @@ class _InjectWorker(QObject):
     failed = Signal(str)
 
     def __init__(
-        self, exe: str, blend_path: str, keyframes, resolution: str, fps: int = 30
+        self, exe: str, blend_path: str, keyframes: list[CameraKeyframe], resolution: str, fps: int = 30
     ):
         super().__init__()
         self._exe = exe
@@ -513,7 +515,7 @@ class MainWindow(QMainWindow):
         self._keyframe_calc_worker = worker
         worker.start()
 
-    def _on_keyframes_ready(self, keyframes, match_results, trackpoints):
+    def _on_keyframes_ready(self, keyframes: list[CameraKeyframe], match_results: list[MatchResult], trackpoints: list[Trackpoint]):
         self._fetch_progress_bar.hide()
         self._photo_area.set_calc_kf_running(False)
         self._photo_area.update_match_statuses(match_results)
@@ -838,7 +840,7 @@ class MainWindow(QMainWindow):
         self._duration_label = QLabel()
         self._duration_label.setStyleSheet("color: gray;")
 
-        def _on_preset_changed(idx):
+        def _on_preset_changed(idx: int):
             presets = [v for _, v in _SPEED_PRESETS]
             if idx < len(presets):
                 self._speed_spin.blockSignals(True)
@@ -849,7 +851,7 @@ class MainWindow(QMainWindow):
                 self._invalidate_scene()
                 self._mark_dirty()
 
-        def _on_speed_changed(value):
+        def _on_speed_changed(value: float):
             self._speed_preset_combo.blockSignals(True)
             self._speed_preset_combo.setCurrentIndex(self._speed_preset_index(value))
             self._speed_preset_combo.blockSignals(False)
@@ -1154,19 +1156,19 @@ class MainWindow(QMainWindow):
             self._fetch_progress_bar.setRange(0, 0)
         self._fetch_progress_bar.show()
 
-    def _on_worker_dem_fetched(self, grid):
+    def _on_worker_dem_fetched(self, grid: ElevationGrid):
         self._fetch_progress_bar.hide()
         self._cached_elevation_grid = grid
         self._mark_dirty()
         self._autosave_tilde(update_dem=True)
 
-    def _on_worker_satellite_fetched(self, texture):
+    def _on_worker_satellite_fetched(self, texture: SatelliteTexture):
         self._fetch_progress_bar.hide()
         self._cached_satellite_texture = texture
         self._mark_dirty()
         self._autosave_tilde(update_sat=True)
 
-    def _on_worker_scene_ready(self, blend_path: str, pipeline):
+    def _on_worker_scene_ready(self, blend_path: str, pipeline: Pipeline):
         self._pipeline = pipeline
         if pipeline.trackpoints:
             self._photo_area.update_pipeline_info(trackpoints=pipeline.trackpoints)
@@ -2169,7 +2171,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _on_load_worker_finished(self, result: object) -> None:
-        self._on_load_complete(self._pending_load_path, result, None)
+        self._on_load_complete(self._pending_load_path, result if isinstance(result, _LoadResult) else None, None)
 
     def _on_load_worker_progress(self, msg: str) -> None:
         self._status.showMessage(msg)
@@ -2177,7 +2179,7 @@ class MainWindow(QMainWindow):
     def _on_load_worker_failed(self, msg: str) -> None:
         self._on_load_complete(self._pending_load_path, None, msg)
 
-    def _on_load_complete(self, path: str, result, error: str | None) -> None:
+    def _on_load_complete(self, path: str, result: _LoadResult | None, error: str | None) -> None:
         self._fetch_progress_bar.hide()
         self.centralWidget().setEnabled(True)
         self.menuBar().setEnabled(True)
@@ -2188,6 +2190,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load failed", error)
             self._status_show("Load failed.")
             return
+        assert result is not None
         self._apply_loaded_project(result, path)
 
     def _apply_loaded_project(self, result: _LoadResult, path: str) -> None:

@@ -21,6 +21,12 @@ from scipy.interpolate import splev, splprep
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import fftconvolve
 
+from .bounding_box import BoundingBox
+from .camera_keyframe import CameraKeyframe
+from .elevation_grid import ElevationGrid
+from .pipeline import Pipeline
+from .trackpoint import Trackpoint
+
 _log = logging.getLogger(__name__)
 
 
@@ -36,13 +42,6 @@ def _rss_mb() -> float:
 
 def _mem(label: str) -> None:
     _log.debug("[camera_path mem] %s — RSS %.0f MB", label, _rss_mb())
-
-
-from .bounding_box import BoundingBox
-from .camera_keyframe import CameraKeyframe
-from .elevation_grid import ElevationGrid
-from .pipeline import Pipeline
-from .trackpoint import Trackpoint
 
 # Douglas-Peucker tolerance (metres).  Points closer than this to the
 # straight line between their neighbours are removed.

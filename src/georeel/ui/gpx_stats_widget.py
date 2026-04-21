@@ -5,6 +5,8 @@ Call update_stats(trackpoints) after parsing; call clear() on reset.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -33,7 +35,7 @@ _ROWS = [
 ]
 
 
-def _fmt_duration(td) -> str:
+def _fmt_duration(td: timedelta) -> str:
     total_s = int(td.total_seconds())
     h, rem = divmod(total_s, 3600)
     m, s = divmod(rem, 60)
@@ -49,7 +51,7 @@ def _fmt_dist(m: float) -> str:
 
 
 class GpxStatsWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         layout = QVBoxLayout(self)
@@ -111,7 +113,8 @@ class GpxStatsWidget(QWidget):
             item.setText(text)
 
     def _apply(self, s: GpxStats) -> None:
-        fmt_ts = lambda ts: ts.strftime("%Y-%m-%d %H:%M:%S UTC") if ts else "—"
+        def fmt_ts(ts: datetime | None) -> str:
+            return ts.strftime("%Y-%m-%d %H:%M:%S UTC") if ts else "—"
 
         self._set(0,  fmt_ts(s.start_time))
         self._set(1,  fmt_ts(s.end_time))

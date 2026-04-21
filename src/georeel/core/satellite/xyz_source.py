@@ -3,15 +3,15 @@ from typing import Callable
 
 from PIL import Image
 
-# Satellite tiles come from a known server — not arbitrary user files — so the
-# decompression-bomb guard is not needed here.
-Image.MAX_IMAGE_PIXELS = None
-
 from ..bounding_box import BoundingBox
 from .providers import PROVIDERS, ProviderConfig, QUALITY_ZOOM, get_provider
 from .source import SatelliteSource
 from .texture import SatelliteTexture
 from .tile_cache import TileCache, lon_to_x, lat_to_y, tile_nw
+
+# Satellite tiles come from a known server — not arbitrary user files — so the
+# decompression-bomb guard is not needed here.
+Image.MAX_IMAGE_PIXELS = None
 
 # Legacy private-name aliases kept for any code that imported them directly.
 _lon_to_x = lon_to_x

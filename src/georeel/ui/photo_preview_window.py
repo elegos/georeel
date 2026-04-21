@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QKeySequence, QPixmap, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -20,7 +20,7 @@ _MAX_DEFAULT_WIDTH = 1080
 class PhotoPreviewWindow(QMainWindow):
     photo_removed = Signal(str)
 
-    def __init__(self, paths: list[str], index: int, parent=None):
+    def __init__(self, paths: list[str], index: int, parent: QWidget | None = None):
         super().__init__(parent)
         self._paths = list(paths)
         self._index = index
@@ -137,6 +137,6 @@ class PhotoPreviewWindow(QMainWindow):
         self._prev_btn.setEnabled(self._index > 0)
         self._next_btn.setEnabled(self._index < len(self._paths) - 1)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
         self._update_pixmap()

@@ -5,14 +5,14 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
 
-_log = logging.getLogger(__name__)
-
 from georeel.core.exif_reader import read_photo_metadata
 from georeel.core.photo_matcher import match_photos
 from georeel.server.models.match_result import MatchResultSchema
 from georeel.server.models.photo_metadata import PhotoMetadataSchema
 from georeel.server.models.trackpoint import TrackpointSchema
 from georeel.server.workspace import PhotoEntry, get_manager
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/photos", tags=["photos"])
 

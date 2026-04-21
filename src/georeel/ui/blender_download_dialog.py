@@ -1,12 +1,14 @@
 import threading
 
 from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
     QProgressBar,
     QVBoxLayout,
+    QWidget,
 )
 
 from georeel.core.blender_runtime import BlenderDownloadError, BlenderVersion, download_blender
@@ -42,7 +44,7 @@ class _Worker(QObject):
 class BlenderDownloadDialog(QDialog):
     """Shows download progress and allows cancellation."""
 
-    def __init__(self, version: BlenderVersion, parent=None):
+    def __init__(self, version: BlenderVersion, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Downloading Blender {version.label}")
         self.setMinimumWidth(420)
@@ -113,7 +115,7 @@ class BlenderDownloadDialog(QDialog):
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.reject)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent):
         self._worker.cancel()
         self._thread.quit()
         self._thread.wait(3000)

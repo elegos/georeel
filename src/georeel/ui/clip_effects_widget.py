@@ -6,9 +6,7 @@ from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from PySide6.QtCore import QRect, QSettings, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
-
-_T = TypeVar("_T")
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -28,6 +26,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+_T = TypeVar("_T")
 
 _KEY_FI_ENABLED   = "clip_effects/fade_in_enabled"
 _KEY_FI_BLACK_DUR = "clip_effects/fade_in_black_dur"
@@ -94,7 +94,7 @@ _PREVIEW_SIZES = {
 class _TitlePreviewWidget(QWidget):
     """Miniature live preview of the title overlay."""
 
-    def __init__(self, settings: QSettings, parent=None):
+    def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self._settings = settings
         self._apply_size()
@@ -111,7 +111,7 @@ class _TitlePreviewWidget(QWidget):
         self._apply_size()
         self.update()
 
-    def paintEvent(self, _event):
+    def paintEvent(self, _event: QPaintEvent):
         painter = QPainter(self)
         painter.fillRect(self.rect(), Qt.GlobalColor.black)
 
@@ -206,7 +206,7 @@ class ClipEffectsWidget(QWidget):
         """Type-safe QSettings.value() wrapper — infers return type from default."""
         return cast(_T, self._settings.value(key, default, type=type(default)))
 
-    def __init__(self, settings: QSettings, parent=None):
+    def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self._settings = settings
 

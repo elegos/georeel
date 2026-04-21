@@ -177,7 +177,7 @@ def get_render_settings(settings: QSettings) -> dict[str, Any]:
 
 
 class RenderSettingsDialog(QDialog):
-    def __init__(self, settings: QSettings, parent=None):
+    def __init__(self, settings: QSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Pipeline Settings")
         self.setMinimumSize(580, 320)

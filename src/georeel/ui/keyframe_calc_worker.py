@@ -1,5 +1,3 @@
-from typing import Any
-
 """
 Lightweight background worker: runs stages 1–3 + camera path (stage 6)
 without satellite imagery or Blender scene building.  Used by the
@@ -14,6 +12,8 @@ keyframes_ready(object, object, object) — (list[CameraKeyframe], list[MatchRes
 dem_fetched(object)                    — ElevationGrid (update main-window cache)
 error(str)                             — failure message
 """
+
+from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 

@@ -12,7 +12,6 @@ The script:
   3. Renders a single frame (frame 1) to the requested output path.
 """
 
-import math
 import sys
 
 
@@ -155,8 +154,8 @@ def main() -> None:
         if not out_node:
             continue
 
-        surface_links = [l for l in links
-                         if l.to_node == out_node and l.to_socket.name == 'Surface']
+        surface_links = [lnk for lnk in links
+                         if lnk.to_node == out_node and lnk.to_socket.name == 'Surface']
         if surface_links and surface_links[0].from_node.type == 'EMISSION':
             continue  # already emission — ribbon, pins, marker are fine
 
@@ -166,7 +165,7 @@ def main() -> None:
             continue  # no texture to show; leave as-is
 
         # Remove all links going into the output node, add a fresh Emission
-        for lnk in [l for l in links if l.to_node == out_node]:
+        for lnk in [lnk for lnk in links if lnk.to_node == out_node]:
             links.remove(lnk)
         emit = nodes.new("ShaderNodeEmission")
         emit.inputs["Strength"].default_value = 1.0

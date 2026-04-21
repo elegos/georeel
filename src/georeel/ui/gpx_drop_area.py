@@ -3,13 +3,13 @@ from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDropEvent
-from PySide6.QtWidgets import QFileDialog, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QFileDialog, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .drop_area import DropArea
 
 
 class GpxDropArea(DropArea):
-    def __init__(self, on_file_selected: Callable[[str], None], parent=None):
+    def __init__(self, on_file_selected: Callable[[str], None], parent: QWidget | None = None):
         super().__init__(parent)
         self._on_file_selected = on_file_selected
 

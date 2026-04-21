@@ -1,11 +1,11 @@
-from PySide6.QtGui import QDragEnterEvent
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent
 from PySide6.QtWidgets import QWidget
 
 
 class DropArea(QWidget):
     """Base class for drag-and-drop enabled areas."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setAcceptDrops(True)
 
@@ -15,7 +15,7 @@ class DropArea(QWidget):
         else:
             event.ignore()
 
-    def dragMoveEvent(self, event):
+    def dragMoveEvent(self, event: QDragMoveEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from georeel.core.camera_keyframe import CameraKeyframe
@@ -46,7 +47,7 @@ class PhotoListArea(DropArea):
     photos_changed = Signal()
     calculate_keyframes_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._store = PhotoStore.instance()
         self._tz_offset_hours: float = 0.0
@@ -180,7 +181,7 @@ class PhotoListArea(DropArea):
         """Seed the EXIF cache with pre-read metadata so _rebuild_table skips disk reads."""
         self._original_exif.update(cache)
 
-    def set_photos(self, photos):
+    def set_photos(self, photos: list[PhotoMetadata]):
         self._store.clear()
         for metadata in photos:
             self._store.add(metadata)
@@ -381,7 +382,7 @@ class PhotoListArea(DropArea):
             form.addRow("Timestamp:", _val_label("—"))
 
         # GPS
-        def _fmt_gps(lat, lon):
+        def _fmt_gps(lat: float | None, lon: float | None) -> str:
             if lat is None or lon is None:
                 return "—"
             return f"{lat:.6f}°, {lon:.6f}°"
@@ -497,7 +498,7 @@ class PhotoListArea(DropArea):
         self._calc_kf_btn.setText("Calculating…" if running else "Calculate keyframes")
 
     def _rebuild_table(self):
-        def sort_key(m):
+        def sort_key(m: PhotoMetadata):
             return (m.timestamp is None, m.timestamp, Path(m.path).name.lower())
 
         photos = sorted(self._store.all(), key=sort_key)

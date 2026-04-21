@@ -346,11 +346,9 @@ def _fill_hole(
 
     # Elevation: linearly interpolate between the two valid endpoints.
     el_a, el_b = a.elevation, b.elevation
-    have_el = el_a is not None and el_b is not None
 
     # Timestamps: linearly interpolate (None when either endpoint has none).
     ts_a, ts_b = a.timestamp, b.timestamp
-    have_ts = ts_a is not None and ts_b is not None
     total_s = (ts_b - ts_a).total_seconds() if (ts_a is not None and ts_b is not None) else 0.0
 
     result: list[Trackpoint] = []

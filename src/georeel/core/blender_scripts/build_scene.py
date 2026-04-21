@@ -1104,7 +1104,7 @@ def _build_ribbon(bpy, track_data: list[dict],
 
     pauses = sched.get("pauses", [])
     if pauses or pre_total:
-        dp = f'modifiers["Unfold"].frame_start'
+        dp = 'modifiers["Unfold"].frame_start'
         if obj.animation_data is None:
             obj.animation_data_create()
         # Initial KF at frame 1: frame_start = pre_total+1 → 0 faces during pre-photos

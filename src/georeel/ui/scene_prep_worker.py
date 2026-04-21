@@ -1,5 +1,3 @@
-from typing import Any
-
 """
 Background worker: runs pipeline stages 1–5 (GPX → DEM → satellite → scene)
 so the Preview Map button can be offered as soon as the GPX is loaded.
@@ -12,6 +10,8 @@ dem_fetched           — elevation grid was fetched/reused (updates main window
 satellite_fetched     — satellite texture was fetched/reused
 error(str)            — a stage failed; blend_path will be empty
 """
+
+from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
