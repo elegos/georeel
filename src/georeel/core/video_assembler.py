@@ -75,7 +75,6 @@ def assemble_video(
     # When title fade-in is enabled but video fade-in is not, we still prepend
     # black frames (for title_fi_dur seconds) so the title genuinely fades in
     # from black rather than over content.
-    locality_dir: Path | None = None
     title_dir: Path | None = None
     title_enabled = bool(settings.get("clip_effects/title_enabled", False))
     fi_enabled    = bool(settings.get("clip_effects/fade_in_enabled", False))
@@ -122,21 +121,6 @@ def assemble_video(
             progress_cb=title_progress_cb,
         )
         frames_dir = str(title_dir)
-
-    # Locality names compositing
-    if bool(settings.get("locality_names/enabled", False)) and settings.get("locality_names/timeline_json"):
-        # Suppress locality names during the fade-out black clip: the last
-        # fo_black seconds of the PIL content sequence must carry no overlay so
-        # that the black cover (added by tpad stop_duration) is clean.
-        n_fo_suppress = round(fo_black * fps) if fo_enabled and fo_black > 0 else 0
-        locality_dir = temp_manager.make_temp_dir("georeel_locality_")
-        _composite_locality_frames(
-            frames_dir, locality_dir, settings, fps,
-            n_prepended_black=n_black_frames,
-            n_suppress_end=n_fo_suppress,
-            progress_cb=None,
-        )
-        frames_dir = str(locality_dir)
 
     # skip_prepend: black frames are real PNGs (tpad start omitted) and the
     # luminance fade is already baked by PIL (fade=in filter also omitted).
@@ -219,8 +203,6 @@ def assemble_video(
         raise VideoAssembleError(f"FFmpeg error: {e}") from e
     finally:
         tmp_settings.unlink(missing_ok=True)
-        if locality_dir and locality_dir.exists():
-            shutil.rmtree(locality_dir, ignore_errors=True)
         if title_dir and title_dir.exists():
             shutil.rmtree(title_dir, ignore_errors=True)
         if prep_dir and prep_dir.exists():
@@ -450,28 +432,18 @@ def _resolve_overlay(
     return result
 
 
-def _composite_locality_frames(
+def composite_locality_frames(
     src_dir: str,
     dst_dir: Path,
     settings: dict[str, Any],
     fps: int,
-    n_prepended_black: int = 0,
-    n_suppress_end: int = 0,
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> None:
-    """Composite locality name overlays onto frames.
+    """Composite locality name overlays onto rendered terrain frames.
 
-    Reads ``locality_names/timeline_json`` from settings — a JSON list of
-    ``{"frame_start": int, "name": str}`` objects sorted by frame_start.
-
-    Frame suppression:
-    * Frames whose index is less than *n_prepended_black* are initial black
-      frames (prepended for title or fade-in); no overlay is applied.
-    * Frames whose *original* index (``frame_index - n_prepended_black``) is
-      listed in ``locality_names/pause_frames_json`` are photo-pause frames;
-      no overlay is applied.
-    * The last *n_suppress_end* frames of the sequence are suppressed to
-      prevent locality names from appearing during the fade-out black clip.
+    Called before the photo compositor so that names blend naturally with
+    photo fade-in/out transitions — the photo compositor will replace pause
+    frames entirely, so no suppression of pause frames is needed here.
 
     Hard-links frames that need no overlay.
     """
@@ -485,12 +457,6 @@ def _composite_locality_frames(
     except (ValueError, TypeError):
         timeline = []
 
-    try:
-        pause_list: list[int] = json.loads(settings.get("locality_names/pause_frames_json", "[]") or "[]")
-        pause_set: set[int] = set(pause_list)
-    except (ValueError, TypeError):
-        pause_set = set()
-
     frames = sorted(Path(src_dir).glob("*.png"))
     total = len(frames)
 
@@ -498,7 +464,6 @@ def _composite_locality_frames(
         return
 
     if not timeline:
-        # No entries — hard-link everything
         for src in frames:
             dst = dst_dir / src.name
             try:
@@ -517,8 +482,6 @@ def _composite_locality_frames(
     fade_s           = 1.0  # fixed 1s fade
 
     if duration_forever:
-        # Entry stays visible until the next entry's cross-fade begins;
-        # use a sentinel value large enough to never expire naturally.
         duration_frames = 10 ** 9
     else:
         duration_frames = max(2, round(duration_s * fps))
@@ -530,7 +493,6 @@ def _composite_locality_frames(
     h_part = parts[1] if len(parts) > 1 else "center"
     margin = 20
 
-    # Probe frame size
     with Image.open(frames[0]) as probe:
         frame_w, frame_h = probe.size
 
@@ -562,7 +524,6 @@ def _composite_locality_frames(
     shadow_off = max(1, round(font_size * 0.03))
 
     def _text_xy(text: str, font: Any) -> tuple[int, int]:
-        """Compute top-left pixel position for text."""
         _dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         bbox = _dummy.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -590,23 +551,7 @@ def _composite_locality_frames(
             idx = 0
         dst = dst_dir / fp.name
 
-        # Map to original rendered-frame space (strip prepended black)
-        orig_idx = idx - n_prepended_black
-
-        # Suppress overlay on:
-        # • prepended black frames (fade-in black clip) — orig_idx < 0
-        # • photo-pause frames
-        # • trailing frames that correspond to the fade-out black clip duration
-        if orig_idx < 0 or orig_idx in pause_set or (
-            n_suppress_end > 0 and idx >= total - n_suppress_end
-        ):
-            try:
-                os.link(fp, dst)
-            except OSError:
-                shutil.copy2(fp, dst)
-            return
-
-        active = _resolve_overlay(orig_idx, timeline, duration_frames, fade_frames)
+        active = _resolve_overlay(idx, timeline, duration_frames, fade_frames)
         if not active:
             try:
                 os.link(fp, dst)

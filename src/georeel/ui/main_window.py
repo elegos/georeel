@@ -1357,10 +1357,37 @@ class MainWindow(QMainWindow):
             self._fetch_progress_bar.hide()
 
         blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
+
+        # Build locality timeline for preview (same logic as full pipeline)
+        locality_settings = self._locality_names_widget.get_settings()
+        if locality_settings.get("locality_names/enabled", False):
+            import json as _json
+            cached_tl = self._locality_names_widget.get_cached_timeline()
+            if cached_tl is not None:
+                timeline_preview = cached_tl
+            else:
+                self._status_show("Building locality names timeline…")
+                QApplication.processEvents()
+                try:
+                    from georeel.core.nominatim_client import build_locality_timeline
+                    timeline_preview = build_locality_timeline(
+                        self._pipeline.trackpoints,
+                        len(self._pipeline.camera_keyframes or []),
+                        locality_settings,
+                    )
+                    self._locality_names_widget.set_cached_timeline(timeline_preview or None)
+                except Exception as exc_tl:
+                    _log.warning("Locality names timeline failed: %s", exc_tl)
+                    timeline_preview = []
+            locality_settings["locality_names/timeline_json"] = _json.dumps(
+                [{"frame_start": e.frame_start, "name": e.name} for e in timeline_preview]
+            )
+
         self._status_show("Rendering preview video…")
         preview_settings = {
             **render_settings,
             **self._clip_effects_widget.get_settings(),
+            **locality_settings,
         }
         dlg = PreviewVideoProgressDialog(
             self._pipeline,
@@ -1852,29 +1879,8 @@ class MainWindow(QMainWindow):
         self._pipeline.rendered_frames_dir = render_dlg.frames_dir()
         self._status_show(f"Frames rendered: {self._pipeline.rendered_frames_dir}")
 
-        # Stage 8 — Photo Overlay Compositor (via server)
-        try:
-            compositor_job_id = client.start_compositor(
-                workspace_id=self._server_workspace_id,
-                render_job_id=render_job_id,
-                match_results=match_json,
-                keyframes=keyframes_json,
-                settings=render_settings,
-            )
-        except ServerError as exc:
-            QMessageBox.critical(self, "Compositor error", str(exc))
-            self._status_show("Pipeline stopped: compositor failed to start.")
-            return
-
-        comp_dlg = CompositorProgressDialog(client, compositor_job_id, parent=self)
-        if comp_dlg.exec() != QDialog.DialogCode.Accepted:
-            self._pipeline.cleanup()
-            self._status_show("Pipeline stopped: compositing cancelled or failed.")
-            return
-        self._pipeline.composited_frames_dir = comp_dlg.composited_frames_dir()
-        self._status_show(f"Compositing done: {self._pipeline.composited_frames_dir}")
-
-        # Pre-compute locality names timeline
+        # Pre-compute locality names timeline (must happen before compositor so
+        # names are baked into terrain frames before photos are overlaid)
         locality_settings = self._locality_names_widget.get_settings()
         if locality_settings.get("locality_names/enabled", False):
             import json as _json
@@ -1902,11 +1908,31 @@ class MainWindow(QMainWindow):
             locality_settings["locality_names/timeline_json"] = _json.dumps(
                 [{"frame_start": e.frame_start, "name": e.name} for e in timeline]
             )
-            kf_list = self._pipeline.camera_keyframes or []
-            pause_frames = [kf.frame for kf in kf_list if kf.is_pause]
-            locality_settings["locality_names/pause_frames_json"] = _json.dumps(
-                pause_frames
+
+        # Stage 8 — Photo Overlay Compositor (via server)
+        # Locality settings are merged in so the compositor can bake names into
+        # terrain frames before photos are overlaid.
+        compositor_settings: dict[str, Any] = {**render_settings, **locality_settings}
+        try:
+            compositor_job_id = client.start_compositor(
+                workspace_id=self._server_workspace_id,
+                render_job_id=render_job_id,
+                match_results=match_json,
+                keyframes=keyframes_json,
+                settings=compositor_settings,
             )
+        except ServerError as exc:
+            QMessageBox.critical(self, "Compositor error", str(exc))
+            self._status_show("Pipeline stopped: compositor failed to start.")
+            return
+
+        comp_dlg = CompositorProgressDialog(client, compositor_job_id, parent=self)
+        if comp_dlg.exec() != QDialog.DialogCode.Accepted:
+            self._pipeline.cleanup()
+            self._status_show("Pipeline stopped: compositing cancelled or failed.")
+            return
+        self._pipeline.composited_frames_dir = comp_dlg.composited_frames_dir()
+        self._status_show(f"Compositing done: {self._pipeline.composited_frames_dir}")
 
         # Stage 9 — Video Assembler (via server)
         output_path = self._output_selector.output_path()
