@@ -286,8 +286,11 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # Insert subsampled camera animation keyframes                         #
     #                                                                     #
-    # We use 0-based frame numbers (seq_idx) so output filenames match    #
-    # the 000000.png … {N-1:06d}.png pattern the compositor expects.      #
+    # We use 1-based frame numbers (idx + 1) so the camera animation      #
+    # aligns with the ribbon Build modifier and waypoint marker            #
+    # animations that scene_builder.py inserts at 1-indexed frames.       #
+    # Output filenames (000001.png … {N:06d}.png) are matched by the      #
+    # compositor using frame_num directly (no -1 adjustment needed).      #
     #                                                                     #
     # Stride=10 → ~10× fewer keyframe_insert calls vs per-frame.         #
     # Blender uses LINEAR interpolation between subsampled keyframes;     #
@@ -299,7 +302,7 @@ def main() -> None:
     _STRIDE = 10
     indices = _select_keyframe_indices(keyframes_data, _STRIDE)
 
-    # Map from Blender frame (seq_idx) → interpolation type
+    # Map from Blender frame (1-indexed) → interpolation type
     frame_interp: dict[int, str] = {}
 
     cam_obj.rotation_mode = "QUATERNION"
@@ -313,10 +316,11 @@ def main() -> None:
         cam_obj.location            = pos
         cam_obj.rotation_quaternion = rot_quat
 
-        cam_obj.keyframe_insert(data_path="location",            frame=idx)
-        cam_obj.keyframe_insert(data_path="rotation_quaternion", frame=idx)
+        blender_frame = idx + 1
+        cam_obj.keyframe_insert(data_path="location",            frame=blender_frame)
+        cam_obj.keyframe_insert(data_path="rotation_quaternion", frame=blender_frame)
 
-        frame_interp[idx] = 'CONSTANT' if kf.get("is_pause", False) else 'LINEAR'
+        frame_interp[blender_frame] = 'CONSTANT' if kf.get("is_pause", False) else 'LINEAR'
 
     print(f"[georeel] Inserted {len(indices)} keyframes "
           f"(stride={_STRIDE}, total={total})")
@@ -340,8 +344,8 @@ def main() -> None:
     # "######" in the filepath → 6-digit zero-padded frame number.        #
     # ------------------------------------------------------------------ #
 
-    scene.frame_start = frame_start_arg if frame_start_arg is not None else 0
-    scene.frame_end   = frame_end_arg   if frame_end_arg   is not None else total - 1
+    scene.frame_start = frame_start_arg if frame_start_arg is not None else 1
+    scene.frame_end   = frame_end_arg   if frame_end_arg   is not None else total
     scene.render.filepath = f"{output_dir}/######"
 
     n_frames = scene.frame_end - scene.frame_start + 1

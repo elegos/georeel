@@ -20,7 +20,7 @@ def _make_kf(frame: int, is_pause: bool = False, photo_path=None):
 
 def _write_frames(path: Path, count: int, size=(64, 48)):
     path.mkdir(parents=True, exist_ok=True)
-    for i in range(count):
+    for i in range(1, count + 1):
         Image.new("RGB", size, (100, 150, 200)).save(path / f"{i:06d}.png")
 
 

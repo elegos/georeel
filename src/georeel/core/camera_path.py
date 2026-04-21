@@ -166,43 +166,36 @@ def build_camera_path(
         # Fall back to full set if simplification removes too many points
         pts = simplified if len(simplified) >= 4 else pts
 
-    # Fit parametric cubic B-spline (s=0 → passes through every point)
-    n_pts = len(pts)
-    tck, _ = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
-    del pts
-
-    _step(1, f"spline fitted  n_pts={n_pts}")
-
     # ------------------------------------------------------------------ #
     # 3. Resample at equal arc-length (one sample per frame)              #
     # ------------------------------------------------------------------ #
 
-    # Cap the fine-grid size: 2 M points is more than enough arc-length
-    # accuracy for any track length, and avoids gigabytes of temporaries.
-    n_fine = min(max(10_000, n_pts * 100), 2_000_000)
-    t_fine = np.linspace(0, 1, n_fine)
-    xs_fine, ys_fine = splev(t_fine, tck)
-    dx_fine = np.diff(xs_fine)
-    dy_fine = np.diff(ys_fine)
-    cumlen = np.concatenate([[0.0], np.cumsum(np.sqrt(dx_fine**2 + dy_fine**2))])
-    total_length = cumlen[-1]
-    del dx_fine, dy_fine, xs_fine, ys_fine  # free ~4 × n_fine floats
+    n_pts = len(pts)
 
-    # Sanity-check the computed track length before using it to size arrays.
-    # A track longer than 2,000 km almost certainly contains uncleaned bad GPS
-    # points (teleportation jumps).  Warn but continue — the user can re-clean
-    # the GPX with a stricter jump threshold.
+    # Piecewise-linear cumulative arc length of the projected points.
+    # Both n_frames and (for the default tangent orientation mode) the position
+    # resampling use this so the camera look-at advances at the same rate as the
+    # ribbon in scene_builder, which also uses PL arc-length resampling.
+    # The B-spline smooths GPS noise and is therefore typically shorter than the
+    # PL path; using B-spline arc for resampling would make the look-at lag
+    # behind the ribbon position at every frame, producing a visible sync offset.
+    _pl_diffs = np.diff(pts, axis=0)
+    _seg_lens = np.sqrt((_pl_diffs ** 2).sum(axis=1))
+    cumlen_pl = np.concatenate([[0.0], np.cumsum(_seg_lens)])
+    pl_total_length = float(cumlen_pl[-1])
+    del _pl_diffs, _seg_lens
+
     _TRACK_WARN_KM = 2_000.0
-    if total_length > _TRACK_WARN_KM * 1_000:
+    if pl_total_length > _TRACK_WARN_KM * 1_000:
         _log.warning(
             "[camera_path] Track arc-length is %.0f km — this is almost certainly "
             "caused by bad GPS points that were not removed by the GPX cleaner.  "
             "Re-run GPX cleaning with a stricter max-jump or max-speed threshold.",
-            total_length / 1_000,
+            pl_total_length / 1_000,
         )
 
     dist_per_frame = speed_mps / fps
-    n_frames_raw = max(2, int(total_length / dist_per_frame))
+    n_frames_raw = max(2, int(pl_total_length / dist_per_frame))
 
     # Hard cap: no more than 2 hours of video at the chosen fps.
     # Beyond this the memory cost of Python keyframe objects becomes extreme
@@ -216,20 +209,42 @@ def build_camera_path(
             n_frames_raw,
             n_frames_max,
             _MAX_VIDEO_S / 3600,
-            total_length / 1_000,
+            pl_total_length / 1_000,
         )
     n_frames = min(n_frames_raw, n_frames_max)
-    sample_dists = np.linspace(0, total_length, n_frames)
-    sample_t = np.interp(sample_dists, cumlen, t_fine)
-    del t_fine, cumlen, sample_dists  # no longer needed
 
-    _ev = splev(sample_t, tck)
-    xs, ys = np.asarray(_ev[0], dtype=float), np.asarray(_ev[1], dtype=float)
+    if orient_mode == "tangent":
+        # Tangent mode derives heading from step vectors between xs/ys — no spline
+        # needed.  Resample directly on the PL path: look-at at frame F is at
+        # PL arc distance F * pl_total / n_frames, perfectly matching the ribbon.
+        sample_dists_pl = np.linspace(0, pl_total_length, n_frames)
+        xs = np.interp(sample_dists_pl, cumlen_pl, pts[:, 0])
+        ys = np.interp(sample_dists_pl, cumlen_pl, pts[:, 1])
+        del pts, sample_dists_pl, cumlen_pl
+        sample_t: np.ndarray | None = None
+        tck = None
+    else:
+        # Non-tangent orientation modes need the B-spline derivative at each frame.
+        # Fit the spline and build a fine arc-length grid for parameter look-up.
+        del cumlen_pl
+        tck, _ = splprep([pts[:, 0], pts[:, 1]], s=0, k=3)
+        del pts
+        n_fine = min(max(10_000, n_pts * 100), 2_000_000)
+        t_fine = np.linspace(0, 1, n_fine)
+        xs_fine, ys_fine = splev(t_fine, tck)
+        dx_fine = np.diff(xs_fine)
+        dy_fine = np.diff(ys_fine)
+        cumlen_bs = np.concatenate([[0.0], np.cumsum(np.sqrt(dx_fine**2 + dy_fine**2))])
+        total_length_bs = float(cumlen_bs[-1])
+        del dx_fine, dy_fine, xs_fine, ys_fine
+        sample_dists_bs = np.linspace(0, total_length_bs, n_frames)
+        sample_t = np.interp(sample_dists_bs, cumlen_bs, t_fine)
+        del t_fine, cumlen_bs, sample_dists_bs
+        _ev = splev(sample_t, tck)
+        xs = np.asarray(_ev[0], dtype=float)
+        ys = np.asarray(_ev[1], dtype=float)
 
-    _step(
-        2,
-        f"resampled  n_fine={n_fine}  n_frames={n_frames}  length={total_length / 1000:.1f} km",
-    )
+    _step(1, f"resampled  n_pts={n_pts}  n_frames={n_frames}  length={pl_total_length / 1000:.1f} km")
 
     # ------------------------------------------------------------------ #
     # 4. Terrain heights and tilt                                         #

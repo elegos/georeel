@@ -239,8 +239,8 @@ def render_frames(
         resolution=resolution,
         quality=quality,
         total=total,
-        frame_start=0,
-        frame_end=total - 1,
+        frame_start=1,
+        frame_end=total,
         tile_filter=None,
         progress_cb=progress_cb,
         cancel_check=cancel_check,
@@ -409,11 +409,11 @@ def _render_segmented(
     seg_size  = math.ceil(total / n_segments)
 
     for seg_idx in range(n_segments):
-        seg_start = seg_idx * seg_size
-        seg_end   = min(seg_start + seg_size - 1, total - 1)
+        seg_start = seg_idx * seg_size + 1        # 1-indexed Blender frame
+        seg_end   = min(seg_start + seg_size - 1, total)
 
         if use_tile_filter and len(tiles) > 1:
-            seg_kfs = keyframes[seg_start : seg_end + 1]
+            seg_kfs = keyframes[seg_start - 1 : seg_end]  # 0-based Python slice
             cam_xs  = [kf.x for kf in seg_kfs]
             cam_ys  = [kf.y for kf in seg_kfs]
             tile_ids = _filter_tiles(

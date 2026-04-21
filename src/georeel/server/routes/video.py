@@ -73,8 +73,11 @@ async def _run(job_id: str, body: VideoAssembleRequest, ws_dir: Path) -> None:
     progress_cb = make_progress_cb(job, "Frame", min_pct=1, max_pct=99)
     cancel_check = make_cancel_check(job)
 
+    actual_output_path: str = output_path
+
     def _blocking() -> None:
-        assemble_video(
+        nonlocal actual_output_path
+        actual_output_path = assemble_video(
             frames_dir=frames_dir,
             output_path=output_path,
             settings=dict(body.settings),
@@ -90,7 +93,7 @@ async def _run(job_id: str, body: VideoAssembleRequest, ws_dir: Path) -> None:
             job.status = "error"
             job.error = "Cancelled"
             return
-        job.result = output_path
+        job.result = actual_output_path
         job.status = "done"
         job.progress = 100
         job.message = f"Done — {body.output_filename}"

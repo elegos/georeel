@@ -71,9 +71,17 @@ class TestAttachSettingsArgs:
         args = _attach_settings_args("/tmp/s.json", "webm")
         assert args == []
 
-    def test_mimetype_present(self, tmp_path):
+    def test_mimetype_present_default_slot(self, tmp_path):
         args = _attach_settings_args("/tmp/s.json", "mkv")
-        assert "mimetype=application/json" in " ".join(args)
+        combined = " ".join(args)
+        assert "mimetype=application/json" in combined
+        assert "-metadata:s:t:0" in combined
+
+    def test_mimetype_present_explicit_slot(self, tmp_path):
+        args = _attach_settings_args("/tmp/s.json", "mkv", attach_idx=1)
+        combined = " ".join(args)
+        assert "mimetype=application/json" in combined
+        assert "-metadata:s:t:1" in combined
 
 
 # ── _write_settings ───────────────────────────────────────────────

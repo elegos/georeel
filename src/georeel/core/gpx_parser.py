@@ -1,4 +1,6 @@
+import io
 import logging
+import re
 from datetime import timezone
 
 import gpxpy
@@ -16,6 +18,50 @@ _GARMIN_NS = "http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
 
 class GpxParseError(Exception):
     pass
+
+
+# Well-known namespace URIs for common GPX extension prefixes.
+_KNOWN_NS: dict[str, str] = {
+    "ns3":    "http://www.garmin.com/xmlschemas/TrackPointExtension/v1",
+    "gpxtpx": "http://www.garmin.com/xmlschemas/TrackPointExtension/v1",
+    "gpxx":   "http://www.garmin.com/xmlschemas/GpxExtensions/v3",
+    "wptx1":  "http://www.garmin.com/xmlschemas/WaypointExtension/v1",
+}
+
+
+def _fix_undeclared_namespaces(content: str) -> str:
+    """Inject missing xmlns:prefix declarations into the GPX root element.
+
+    Some tools produce files that reference namespace prefixes (e.g. ``ns3:``)
+    without declaring them, which makes the file invalid XML.  This commonly
+    happens when two GPX files are merged and only the first file's root
+    element is kept.
+    """
+    declared: set[str] = set(re.findall(r'xmlns:(\w+)\s*=', content))
+    used: set[str] = set(re.findall(r'</?(\w+):', content))
+    missing = used - declared
+    if not missing:
+        return content
+
+    injections = []
+    for prefix in sorted(missing):
+        uri = _KNOWN_NS.get(prefix, f"urn:unknown-ns:{prefix}")
+        injections.append(f'xmlns:{prefix}="{uri}"')
+        _log.warning(
+            "[gpx_parser] GPX file uses undeclared namespace prefix '%s'; "
+            "injecting declaration (URI: %s)",
+            prefix,
+            uri,
+        )
+
+    injection_str = "\n    " + "\n    ".join(injections)
+
+    # Inject into the root <gpx ...> opening tag, just before its closing >.
+    def _inject(m: re.Match[str]) -> str:
+        return m.group(0)[:-1] + injection_str + ">"
+
+    fixed = re.sub(r"<gpx\b[^>]*>", _inject, content, count=1, flags=re.DOTALL)
+    return fixed if fixed != content else content
 
 
 def _elevation_from_extensions(point) -> float | None:
@@ -41,8 +87,19 @@ def parse_gpx(path: str) -> tuple[list[Trackpoint], BoundingBox]:
     try:
         with open(path, encoding="utf-8") as f:
             gpx = gpxpy.parse(f)
-    except Exception as e:
-        raise GpxParseError(f"Cannot read GPX file: {e}") from e
+    except Exception as first_err:
+        # Attempt recovery: inject any undeclared namespace prefixes, then retry.
+        try:
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            fixed = _fix_undeclared_namespaces(content)
+            if fixed == content:
+                raise GpxParseError(f"Cannot read GPX file: {first_err}") from first_err
+            gpx = gpxpy.parse(io.StringIO(fixed))
+        except GpxParseError:
+            raise
+        except Exception as e:
+            raise GpxParseError(f"Cannot read GPX file: {first_err}") from e
 
     trackpoints: list[Trackpoint] = []
     missing_ele = 0

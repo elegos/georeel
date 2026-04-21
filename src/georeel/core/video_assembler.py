@@ -5,6 +5,7 @@ Encodes the composited frame sequence into the final output video using FFmpeg.
 """
 
 import json
+import math
 import os
 import re
 import shlex
@@ -31,7 +32,7 @@ def assemble_video(
     progress_cb: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     title_progress_cb: Callable[[int, int], None] | None = None,
-) -> None:
+) -> str:
     """Encode *frames_dir*/%06d.png → *output_path* using settings from QSettings dict."""
 
     ffmpeg = shutil.which("ffmpeg")
@@ -162,7 +163,11 @@ def assemble_video(
         + _container_args(enc, container)
         + music_codec_args  # -map 0:v -map 1:a -c:a aac -b:a 192k
         + _attach_args(gpx_path, container)
-        + _attach_settings_args(str(tmp_settings), container)
+        + _attach_settings_args(
+            str(tmp_settings),
+            container,
+            attach_idx=1 if _attach_args(gpx_path, container) else 0,
+        )
         + [str(out)]
     )
 
@@ -239,6 +244,7 @@ def assemble_video(
 
     _copy_gpx_alongside(gpx_path, out, container)
     _write_settings(settings, out, container)
+    return str(out)
 
 
 # ------------------------------------------------------------------
@@ -248,8 +254,9 @@ def assemble_video(
 def _prepend_black_frames(src_dir: str, dst_dir: Path, n_black: int) -> None:
     """Write n_black pure-black PNGs then the src_dir frames into dst_dir.
 
-    The black frames get indices 000000 … 0000N-1; the original frames are
-    renumbered starting at N.  Frame dimensions are read from the first source
+    The black frames get indices 000000 … {n_black-1:06d}; the original frames
+    are renumbered sequentially starting at n_black regardless of their
+    original filenames.  Frame dimensions are read from the first source
     frame; if no frames exist a 1×1 black pixel is used as fallback.
     """
     from PIL import Image
@@ -265,12 +272,8 @@ def _prepend_black_frames(src_dir: str, dst_dir: Path, n_black: int) -> None:
     for i in range(n_black):
         black.save(dst_dir / f"{i:06d}.png", format="PNG")
 
-    for src in src_frames:
-        try:
-            idx = int(src.stem) + n_black
-        except ValueError:
-            continue
-        dst = dst_dir / f"{idx:06d}.png"
+    for i, src in enumerate(src_frames):
+        dst = dst_dir / f"{i + n_black:06d}.png"
         try:
             os.link(src, dst)
         except OSError:
@@ -342,6 +345,22 @@ def _fade_filters(
     prepend_extra = 0 if skip_prepend else round(fi_black * fps)
     extra_frames = prepend_extra + round(fo_black * fps)
     return filters, total_frames + extra_frames
+
+
+def _probe_duration(path: str) -> float:
+    """Return the audio duration of *path* in seconds using ffprobe, or 0.0 on failure."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return 0.0
+    try:
+        r = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
 
 
 def _resolve_fontfile(font_name: str) -> Optional[str]:
@@ -919,11 +938,13 @@ def _music_audio_cmd_parts(
 
     # ── Multiple files: build -filter_complex ─────────────────────────────────
     # In loop mode repeat the whole playlist enough times to cover T.
-    # Assume a minimum track length of 10 s; cap at 50 repetitions (≥500 s coverage
-    # per file pair, enough for any realistic video length).
+    # Probe actual track durations via ffprobe; fall back to 60 s per track
+    # (a conservative lower-bound for typical music files) when probing fails.
     if loop:
-        min_cycle_s = 10.0 * len(music_paths)
-        reps = min(50, max(2, int(T / min_cycle_s) + 2))
+        cycle_s = sum(_probe_duration(p) for p in music_paths)
+        if cycle_s <= 0:
+            cycle_s = 60.0 * len(music_paths)
+        reps = max(2, math.ceil(T / cycle_s) + 1)
         file_sequence = music_paths * reps
     else:
         file_sequence = list(music_paths)
@@ -1026,13 +1047,14 @@ def _serialise_settings(settings: dict[str, Any]) -> str:
     return json.dumps(safe, indent=2, sort_keys=True, default=str)
 
 
-def _attach_settings_args(settings_path: str, container: str) -> list[str]:
+def _attach_settings_args(settings_path: str, container: str, attach_idx: int = 0) -> list[str]:
     if container not in _SETTINGS_ATTACHMENT_CONTAINERS:
         return []
+    slot = f"t:{attach_idx}"
     return [
         "-attach", settings_path,
-        "-metadata:s:t:1", "mimetype=application/json",
-        "-metadata:s:t:1", "filename=georeel_settings.json",
+        f"-metadata:s:{slot}", "mimetype=application/json",
+        f"-metadata:s:{slot}", "filename=georeel_settings.json",
     ]
 
 

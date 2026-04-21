@@ -78,16 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- DEM and satellite imagery are re-fetched from the network on every pipeline
-  run even when nothing has changed.  Both stages now check the cached job ID
-  and the cached result's bounding box (and, for satellite, provider + quality)
-  before starting a new server fetch; cached results are reused when valid.
-  The cache is invalidated when render settings, provider, or GPX track change.
-- Photo upload failed with HTTP 500 on every pipeline run.  The stale-temp
-  cleanup in the GUI (`cleanup_stale`) was deleting the server workspace
-  directory (`georeel_ws_*`) immediately after the server created it, because
-  both use the `georeel_` prefix.  Server startup is now deferred to after
-  `_cleanup_stale_temp()` completes.
 - B-spline track ribbon produced phantom loops and overshooting artefacts at
   sharp direction reversals (e.g. switchbacks).  The cubic B-spline
   (`scipy.interpolate.splprep`) is replaced by piecewise-linear arc-length
@@ -100,6 +90,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   location.  The count is now proportional to geographic distance, so a
   stationary pause inserts exactly one connecting point.
 
+- GPX files that reference namespace prefixes (e.g. `ns3:TrackPointExtension`)
+  without declaring them in the root element now parse correctly.  This
+  commonly affects files merged from two GPX exports where only the first
+  file's root element (and its namespace declarations) was kept.  The parser
+  now detects undeclared prefixes, injects the well-known URI for recognised
+  ones (Garmin TrackPoint / GpxExtensions / WaypointExtension), and uses a
+  synthetic `urn:unknown-ns:` fallback for any others.
+- Output video was all black (except the title overlay and music) and only
+  about 10 seconds long despite a full render.  Root cause: `_prepend_black_frames`
+  renumbered source frames as `int(stem) + n_black`, which is correct for
+  0-based stems but creates a 1-frame gap at index `n_black` when compositor
+  output is 1-indexed (`000001.png`…).  Frame `000150.png` was missing, causing
+  FFmpeg to stop reading after 149 frames.  Source frames are now renumbered
+  via `enumerate` so the output is always a gapless `000000`…`{n_black+N-1}` sequence.
+- Music loop with multiple tracks created far too many FFmpeg input streams
+  (one per implied 10 s chunk, so two 3-minute tracks produced ~40 inputs for
+  a 6-minute video).  The repetition count is now derived from actual track
+  durations probed via `ffprobe`; the 60 s-per-track fallback applies only when
+  `ffprobe` is unavailable.
+- Ribbon and waypoint marker were consistently ahead of the camera and photo
+  carousels throughout the fly-through (initially ~3 s, reduced to ~2 s after an
+  intermediate fix).  Root cause: the camera resampled its look-at positions along
+  the B-spline arc of the GPS track, while the ribbon and marker use piecewise-linear
+  arc-length resampling.  The B-spline smooths GPS measurement noise and is therefore
+  systematically shorter than the PL path; as a result the camera look-at lagged
+  behind the ribbon position at every frame.  For the default tangent orientation
+  mode, the B-spline is now bypassed entirely: look-at positions are resampled
+  directly along the PL path via `np.interp`, so the camera look-at advances at
+  exactly the same rate as the ribbon face reveal.  The B-spline is retained only
+  for non-default orientation modes that require the spline derivative.
 - Sporadic abrupt orientation jumps in the fly-through camera.  A second-pass
   MAD-based (median absolute deviation) spike filter now detects frames where the
   heading change is significantly larger than the median and replaces the affected frames

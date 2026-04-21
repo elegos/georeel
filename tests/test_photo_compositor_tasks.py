@@ -35,10 +35,10 @@ class TestFlyBlocks:
         tasks = _build_frame_tasks(runs, tmp_path, tmp_path, 1920, 1080, "fade", 5)
         assert [t["frame_num"] for t in tasks] == [5, 6, 7]
 
-    def test_fly_run_src_path_uses_frame_minus_one(self, tmp_path):
+    def test_fly_run_src_path_uses_frame_num(self, tmp_path):
         runs = [_run_fly([3])]
         tasks = _build_frame_tasks(runs, tmp_path, tmp_path, 1920, 1080, "fade", 5)
-        assert tasks[0]["src_path"] == str(tmp_path / "000002.png")
+        assert tasks[0]["src_path"] == str(tmp_path / "000003.png")
 
     def test_fly_run_photo_key_is_none(self, tmp_path):
         runs = [_run_fly([1, 2])]

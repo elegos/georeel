@@ -295,8 +295,8 @@ def _build_frame_tasks(
                 for frame_num in block["frames"]:
                     tasks.append({
                         "frame_num":      frame_num,
-                        "src_path":       str(src_dir / f"{frame_num - 1:06d}.png"),
-                        "out_path":       str(out_dir / f"{frame_num - 1:06d}.png"),
+                        "src_path":       str(src_dir / f"{frame_num:06d}.png"),
+                        "out_path":       str(out_dir / f"{frame_num:06d}.png"),
                         "op":             "copy",
                         "photo_key":      None,
                         "next_photo_key": None,
@@ -318,8 +318,8 @@ def _build_frame_tasks(
                 for frame_num in frame_nums:
                     tasks.append({
                         "frame_num":      frame_num,
-                        "src_path":       str(src_dir / f"{frame_num - 1:06d}.png"),
-                        "out_path":       str(out_dir / f"{frame_num - 1:06d}.png"),
+                        "src_path":       str(src_dir / f"{frame_num:06d}.png"),
+                        "out_path":       str(out_dir / f"{frame_num:06d}.png"),
                         "op":             "copy",
                         "photo_key":      None,
                         "next_photo_key": None,
@@ -352,8 +352,8 @@ def _build_frame_tasks(
 
                 tasks.append({
                     "frame_num":      frame_num,
-                    "src_path":       str(src_dir / f"{frame_num - 1:06d}.png"),
-                    "out_path":       str(out_dir / f"{frame_num - 1:06d}.png"),
+                    "src_path":       str(src_dir / f"{frame_num:06d}.png"),
+                    "out_path":       str(out_dir / f"{frame_num:06d}.png"),
                     "op":             op,
                     "photo_key":      photo_path,
                     "next_photo_key": nk,
