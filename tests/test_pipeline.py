@@ -26,24 +26,24 @@ class TestPipeline:
         d2 = tmp_path / "dir2"
         d1.mkdir()
         d2.mkdir()
-        p._temp_dirs.append(d1)
-        p._temp_dirs.append(d2)
+        p.temp_dirs.append(d1)
+        p.temp_dirs.append(d2)
         p.cleanup()
         assert not d1.exists()
         assert not d2.exists()
 
     def test_cleanup_tolerates_missing_dirs(self, tmp_path):
         p = Pipeline()
-        p._temp_dirs.append(tmp_path / "nonexistent")
+        p.temp_dirs.append(tmp_path / "nonexistent")
         p.cleanup()  # should not raise
 
     def test_cleanup_clears_temp_dirs_list(self, tmp_path):
         p = Pipeline()
         d = tmp_path / "d"
         d.mkdir()
-        p._temp_dirs.append(d)
+        p.temp_dirs.append(d)
         p.cleanup()
-        assert p._temp_dirs == []
+        assert p.temp_dirs == []
 
     def test_fields_assignable(self):
         p = Pipeline()

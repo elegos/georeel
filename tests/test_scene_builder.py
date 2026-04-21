@@ -308,8 +308,8 @@ class TestWriteTextureTilesFromImage:
         img = Image.new("RGB", (width, height), color=(128, 64, 32))
         texture = MagicMock()
         texture.image = img
-        texture._source_zip = None
-        texture._tile_cache = None
+        texture.source_zip = None
+        texture.tile_cache = None
         texture.min_lat = 46.0
         texture.max_lat = 47.0
         texture.min_lon = 7.0
@@ -384,8 +384,8 @@ class TestWriteTextureTilesFromImage:
         img = Image.new("RGB", (200, 200), color=(100, 100, 100))
         texture = MagicMock()
         texture.image = img
-        texture._source_zip = None
-        texture._tile_cache = None
+        texture.source_zip = None
+        texture.tile_cache = None
         # Texture covers a larger area than the DEM
         texture.min_lat = 45.5
         texture.max_lat = 47.5
@@ -425,9 +425,9 @@ class TestBuildSceneErrors:
         """If Blender exits non-zero, SceneBuildError is raised."""
         p = _make_pipeline()
         p.satellite_texture = MagicMock()
-        p.satellite_texture._tile_cache = None
+        p.satellite_texture.tile_cache = None
         p.satellite_texture.image = Image.new("RGB", (50, 50))
-        p.satellite_texture._source_zip = None
+        p.satellite_texture.source_zip = None
         p.satellite_texture.min_lat = 46.0
         p.satellite_texture.max_lat = 47.0
         p.satellite_texture.min_lon = 7.0
@@ -451,9 +451,9 @@ class TestBuildSceneErrors:
     def test_cancel_check_raises(self, tmp_path):
         p = _make_pipeline()
         p.satellite_texture = MagicMock()
-        p.satellite_texture._tile_cache = None
+        p.satellite_texture.tile_cache = None
         p.satellite_texture.image = Image.new("RGB", (50, 50))
-        p.satellite_texture._source_zip = None
+        p.satellite_texture.source_zip = None
         p.satellite_texture.min_lat = 46.0
         p.satellite_texture.max_lat = 47.0
         p.satellite_texture.min_lon = 7.0

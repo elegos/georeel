@@ -72,7 +72,7 @@ def log_pipeline_memory(pipeline: object, label: str = "") -> None:
                 f"  satellite     : {w}×{h} px  {bands}-band  {_fmt(sat_mb)}"
             )
         else:
-            src_zip = getattr(sat, "_source_zip", None)
+            src_zip = getattr(sat, "source_zip", None)
             td = getattr(sat, "_tiles_dir", None)
             if src_zip is not None:
                 lines.append(

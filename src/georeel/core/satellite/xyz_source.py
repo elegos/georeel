@@ -118,7 +118,7 @@ class XyzSource(SatelliteSource):
             quality=self._quality,
             tile_cache=cache,
             dim_width=W,
-            _dim_height=H,
+            dim_height=H,
         )
 
 

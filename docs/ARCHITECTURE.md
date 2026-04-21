@@ -94,7 +94,7 @@ Launches Blender headlessly and runs `blender_scripts/render_frames.py`, which p
 
 When `render/n_segments > 1`, the render is split into N sequential Blender passes. Each pass loads only the terrain tiles whose world-space bounding boxes intersect the camera's AABB for that frame range, expanded by `render/frustum_margin_km`. This keeps per-pass VRAM proportional to the visible terrain fraction. Each Blender process exits completely between segments, fully releasing GPU memory before the next segment starts.
 
-Output PNGs are stored in a temporary directory that is registered on `Pipeline._temp_dirs` for post-job cleanup.
+Output PNGs are stored in a temporary directory that is registered on `Pipeline.temp_dirs` for post-job cleanup.
 
 ### 8. Photo Overlay Compositor (`core/photo_compositor.py`)
 Groups consecutive pause keyframes into blocks and renders them as a photo carousel:
@@ -103,7 +103,7 @@ Groups consecutive pause keyframes into blocks and renders them as a photo carou
 - Letterboxing: blurred photo fill or black bars, preserving aspect ratio
 - Transition: fade (cross-dissolve) or cut (hard edit)
 
-Supports all resolution presets (landscape 16:9, portrait 9:16, square 1:1). Output is stored in a temporary directory registered on `Pipeline._temp_dirs` for post-job cleanup.
+Supports all resolution presets (landscape 16:9, portrait 9:16, square 1:1). Output is stored in a temporary directory registered on `Pipeline.temp_dirs` for post-job cleanup.
 
 ### 9. Video Assembler (`core/video_assembler.py`)
 Encodes the final frame sequence into a video file using FFmpeg. Configurable container (MKV/MP4), codec (H.264/H.265/AV1), and encoder with automatic detection of available hardware accelerators (NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox) and software fallbacks. For MKV output, the source GPX and render settings JSON are attached as named attachments.

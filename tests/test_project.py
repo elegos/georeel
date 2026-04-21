@@ -463,7 +463,7 @@ class TestAtomicSave:
 
         loaded = load_project(path)
         assert loaded.satellite_texture is not None
-        assert loaded.satellite_texture._source_zip == Path(path)
+        assert loaded.satellite_texture.source_zip == Path(path)
 
         # Simulate "output file name changed, then Save":
         save_project(

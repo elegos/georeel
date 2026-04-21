@@ -109,7 +109,7 @@ def _pipeline_with_lazy_sat(source_zip_name="test.georeel"):
     from pathlib import Path
     sat = SimpleNamespace(
         image=None,
-        _source_zip=Path(source_zip_name),
+        source_zip=Path(source_zip_name),
         _tiles_dir=None,
     )
     p.satellite_texture = sat
@@ -121,7 +121,7 @@ def _pipeline_with_freed_sat(tiles_dir="/tmp/tiles"):
     from pathlib import Path
     sat = SimpleNamespace(
         image=None,
-        _source_zip=None,
+        source_zip=None,
         _tiles_dir=Path(tiles_dir),
     )
     p.satellite_texture = sat

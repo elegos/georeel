@@ -50,7 +50,7 @@ class SatelliteTexture:
     # Cached pixel dimensions — populated from image.size, tile manifest,
     # tile cache geometry, or the PNG IHDR header.
     dim_width: int | None = field(default=None, repr=False)
-    _dim_height: int | None = field(default=None, repr=False)
+    dim_height: int | None = field(default=None, repr=False)
 
     @property
     def width(self) -> int:
@@ -66,8 +66,8 @@ class SatelliteTexture:
     def height(self) -> int:
         if self.image is not None:
             return self.image.height
-        if self._dim_height is not None:
-            return self._dim_height
+        if self.dim_height is not None:
+            return self.dim_height
         raise RuntimeError(
             "SatelliteTexture dimensions not available (image not loaded and no cached size)."
         )
@@ -100,10 +100,10 @@ class SatelliteTexture:
         if tiles_manifest is not None:
             self._tiles_manifest = tiles_manifest
             self.dim_width  = tiles_manifest.get("image_width")
-            self._dim_height = tiles_manifest.get("image_height")
+            self.dim_height = tiles_manifest.get("image_height")
         if self.image is not None:
             self.dim_width  = self.image.width
-            self._dim_height = self.image.height
+            self.dim_height = self.image.height
         mb = self.memory_bytes() / 1024 ** 2
         self.image = None
         # Blender tiles are now on disk; the XYZ tile cache is no longer needed.
@@ -119,8 +119,8 @@ class SatelliteTexture:
 
         Priority order:
         1. Image in RAM — save directly.
-        2. Lazy ZIP source (_source_zip) — copy raw bytes, zero decode.
-        3. Tile cache (_tile_cache) — composite full bbox on demand.
+        2. Lazy ZIP source (source_zip) — copy raw bytes, zero decode.
+        3. Tile cache (tile_cache) — composite full bbox on demand.
         4. Blender tile manifest (_tiles_manifest) — reassemble from tile PNGs.
         """
         if self.image is not None:
@@ -281,7 +281,7 @@ class SatelliteTexture:
         obj.source_zip = zip_path
         obj._source_entry = entry
         obj.dim_width = dim_w
-        obj._dim_height = dim_h
+        obj.dim_height = dim_h
         return obj
 
     def load_image(self) -> Image.Image:
@@ -302,7 +302,7 @@ class SatelliteTexture:
                             image = image.convert("RGB")
             self.image = image
             self.dim_width  = image.width
-            self._dim_height = image.height
+            self.dim_height = image.height
             return image
         raise RuntimeError(
             "SatelliteTexture has no image and no source ZIP to load from."

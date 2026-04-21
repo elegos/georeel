@@ -493,6 +493,37 @@ def _height_at_batch(
     return grid.elevation_at_batch(lats, lons)
 
 
+def _smooth_elevation(
+    grid: ElevationGrid,
+    lat: float,
+    lon: float,
+) -> float:
+    dlat = (grid.max_lat - grid.min_lat) / (grid.rows - 1) * 1.5
+    dlon = (grid.max_lon - grid.min_lon) / (grid.cols - 1) * 1.5
+    samples = [
+        grid.elevation_at(lat + r * dlat, lon + c * dlon)
+        for r in (-1, 0, 1)
+        for c in (-1, 0, 1)
+    ]
+    return float(np.mean(samples))
+
+
+def _height_at(
+    x: float,
+    y: float,
+    grid: ElevationGrid,
+    bbox: BoundingBox,
+    lat_m: float,
+    lon_m: float,
+    height_mode: str,
+    height_offset: float = 0.0,
+) -> float:
+    result = float(_height_at_batch(
+        np.array([x]), np.array([y]), grid, bbox, lat_m, lon_m, height_mode
+    )[0])
+    return result + height_offset
+
+
 # ------------------------------------------------------------------
 # Orientation helpers
 # ------------------------------------------------------------------

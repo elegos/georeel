@@ -173,7 +173,7 @@ def save_project(state: ProjectState, path: str) -> None:
       2. Renames the temporary file to *path*.
 
     This matters especially for the lazy-loaded satellite texture: when a
-    project is loaded, ``state.satellite_texture._source_zip`` points at
+    project is loaded, ``state.satellite_texture.source_zip`` points at
     *path* itself.  If we opened *path* for writing directly we would truncate
     the source while still trying to stream from it, producing a 0-byte
     ``satellite/texture.png`` in the saved ZIP.  Writing to a distinct temp
@@ -228,7 +228,7 @@ def save_project(state: ProjectState, path: str) -> None:
     }
 
     # Write to a sibling temp file so the original (which may be the satellite
-    # texture's _source_zip) stays intact during the entire write.
+    # texture's source_zip) stays intact during the entire write.
     tmp_path = path + ".tmp"
     try:
         with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

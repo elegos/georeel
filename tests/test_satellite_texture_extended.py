@@ -87,8 +87,8 @@ class TestDimProperties:
             max_lat=1,
             min_lon=0,
             max_lon=1,
-            _dim_width=300,
-            _dim_height=200,
+            dim_width=300,
+            dim_height=200,
         )
         assert t.width == 300
         assert t.height == 200
@@ -118,14 +118,14 @@ class TestFreeImage:
     def test_dims_cached_from_image_before_free(self):
         t = _make_texture(200, 150)
         t.free_image()
-        assert t._dim_width == 200
-        assert t._dim_height == 150
+        assert t.dim_width == 200
+        assert t.dim_height == 150
 
     def test_tile_cache_cleared_on_free(self):
         t = _make_texture()
-        t._tile_cache = MagicMock()
+        t.tile_cache = MagicMock()
         t.free_image()
-        assert t._tile_cache is None
+        assert t.tile_cache is None
 
     def test_tiles_dir_set_on_free(self):
         t = _make_texture()
@@ -141,8 +141,8 @@ class TestFreeImage:
         manifest = {"image_width": 400, "image_height": 300, "tiles": []}
         t.free_image(tiles_manifest=manifest)
         # Image dims (100×80) override the manifest values (400×300).
-        assert t._dim_width == 100
-        assert t._dim_height == 80
+        assert t.dim_width == 100
+        assert t.dim_height == 80
         assert t._tiles_manifest is manifest
 
 
@@ -222,7 +222,7 @@ class TestWritePngFromTileCache:
         fake_img = Image.new("RGB", (128, 96), (50, 100, 150))
         mock_cache = MagicMock()
         mock_cache.composite.return_value = fake_img
-        t._tile_cache = mock_cache
+        t.tile_cache = mock_cache
 
         buf = io.BytesIO()
         t.write_png(buf)
@@ -243,7 +243,7 @@ class TestWritePngFromTileCache:
         fake_img = Image.new("RGBA", (10, 10), (255, 0, 0, 200))
         mock_cache = MagicMock()
         mock_cache.composite.return_value = fake_img
-        t._tile_cache = mock_cache
+        t.tile_cache = mock_cache
 
         buf = io.BytesIO()
         t.write_png(buf)
@@ -278,8 +278,8 @@ class TestWritePngFromManifest:
         t = SatelliteTexture(image=None, min_lat=0, max_lat=1, min_lon=0, max_lon=1)
         t._tiles_dir = tmp_path
         t._tiles_manifest = manifest
-        t._dim_width = 64
-        t._dim_height = 32
+        t.dim_width = 64
+        t.dim_height = 32
 
         buf = io.BytesIO()
         t.write_png(buf)
@@ -330,7 +330,7 @@ class TestFromZipLazy:
             t = SatelliteTexture.from_zip_lazy(
                 zip_path, entry, min_lat=0, max_lat=1, min_lon=0, max_lon=1
             )
-            assert t._source_zip == zip_path
+            assert t.source_zip == zip_path
             assert t._source_entry == entry
         finally:
             zip_path.unlink(missing_ok=True)
@@ -362,8 +362,8 @@ class TestFromZipLazy:
         t = SatelliteTexture.from_zip_lazy(
             bad_zip, "satellite.png", min_lat=0, max_lat=1, min_lon=0, max_lon=1
         )
-        assert t._dim_width is None
-        assert t._dim_height is None
+        assert t.dim_width is None
+        assert t.dim_height is None
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +399,8 @@ class TestLoadImage:
                 zip_path, entry, min_lat=0, max_lat=1, min_lon=0, max_lon=1
             )
             t.load_image()
-            assert t._dim_width == 64
-            assert t._dim_height == 48
+            assert t.dim_width == 64
+            assert t.dim_height == 48
         finally:
             zip_path.unlink(missing_ok=True)
 
