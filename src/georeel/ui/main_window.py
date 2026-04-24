@@ -1856,31 +1856,8 @@ class MainWindow(QMainWindow):
 
         keyframes_json = [keyframe_to_dict(kf) for kf in keyframes]
 
-        # Stage 7 — Frame Renderer (via server)
-        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
-        try:
-            render_job_id = client.start_render_frames(
-                workspace_id=self._server_workspace_id,
-                scene_job_id=scene_job_id,
-                keyframes=keyframes_json,
-                settings=render_settings,
-                blender_exe=blender_exe,
-            )
-        except ServerError as exc:
-            QMessageBox.critical(self, "Render error", str(exc))
-            self._status_show("Pipeline stopped: render failed to start.")
-            return
-
-        render_dlg = RenderProgressDialog(client, render_job_id, parent=self)
-        if render_dlg.exec() != QDialog.DialogCode.Accepted:
-            self._pipeline.cleanup()
-            self._status_show("Pipeline stopped: rendering cancelled or failed.")
-            return
-        self._pipeline.rendered_frames_dir = render_dlg.frames_dir()
-        self._status_show(f"Frames rendered: {self._pipeline.rendered_frames_dir}")
-
-        # Pre-compute locality names timeline (must happen before compositor so
-        # names are baked into terrain frames before photos are overlaid)
+        # Pre-compute locality names timeline before rendering so 3D map pins are
+        # included in the rendered frames (not just the preview).
         locality_settings = self._locality_names_widget.get_settings()
         if locality_settings.get("locality_names/enabled", False):
             import json as _json
@@ -1898,7 +1875,7 @@ class MainWindow(QMainWindow):
                     from georeel.core.nominatim_client import build_locality_timeline
                     timeline = build_locality_timeline(
                         self._pipeline.trackpoints,
-                        len(self._pipeline.camera_keyframes or []),
+                        len(keyframes),
                         locality_settings,
                     )
                     self._locality_names_widget.set_cached_timeline(timeline or None)
@@ -1908,6 +1885,29 @@ class MainWindow(QMainWindow):
             locality_settings["locality_names/timeline_json"] = _json.dumps(
                 [{"frame_start": e.frame_start, "name": e.name} for e in timeline]
             )
+
+        # Stage 7 — Frame Renderer (via server)
+        blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
+        try:
+            render_job_id = client.start_render_frames(
+                workspace_id=self._server_workspace_id,
+                scene_job_id=scene_job_id,
+                keyframes=keyframes_json,
+                settings={**render_settings, **locality_settings},
+                blender_exe=blender_exe,
+            )
+        except ServerError as exc:
+            QMessageBox.critical(self, "Render error", str(exc))
+            self._status_show("Pipeline stopped: render failed to start.")
+            return
+
+        render_dlg = RenderProgressDialog(client, render_job_id, parent=self)
+        if render_dlg.exec() != QDialog.DialogCode.Accepted:
+            self._pipeline.cleanup()
+            self._status_show("Pipeline stopped: rendering cancelled or failed.")
+            return
+        self._pipeline.rendered_frames_dir = render_dlg.frames_dir()
+        self._status_show(f"Frames rendered: {self._pipeline.rendered_frames_dir}")
 
         # Stage 8 — Photo Overlay Compositor (via server)
         # Locality settings are merged in so the compositor can bake names into

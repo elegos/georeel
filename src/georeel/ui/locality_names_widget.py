@@ -38,6 +38,8 @@ _KEY_SERVICE          = "locality_names/service"
 _KEY_CUSTOM_URL       = "locality_names/custom_url"
 _KEY_CHECK_EVERY_S    = "locality_names/check_every_s"
 _KEY_DETAIL_LEVEL     = "locality_names/detail_level"
+_KEY_SHOW_PLAIN_TEXT  = "locality_names/show_plain_text"
+_KEY_SHOW_3D_BANNER   = "locality_names/show_3d_banner"
 _KEY_POSITION         = "locality_names/position"
 _KEY_DURATION         = "locality_names/duration"
 _KEY_DURATION_FOREVER = "locality_names/duration_forever"
@@ -264,6 +266,7 @@ class LocalityNamesWidget(QWidget):
         form2 = QFormLayout()
         form2.setSpacing(8)
         outer.addLayout(form2)
+        self._form2 = form2
 
         self._check_every_spin = QDoubleSpinBox()
         self._check_every_spin.setRange(1.0, 3600.0)
@@ -294,6 +297,26 @@ class LocalityNamesWidget(QWidget):
         self._detail_combo.currentIndexChanged.connect(_on_detail_changed)
         form2.addRow("Detail level:", self._detail_combo)
 
+        # ── Display modes (independent toggles) ───────────────────────
+        self._plain_text_chk = QCheckBox("Plain text overlay")
+        self._plain_text_chk.setToolTip(
+            "Composite a 2D text label onto each frame at the chosen position."
+        )
+        self._plain_text_chk.setChecked(self._qsv(_KEY_SHOW_PLAIN_TEXT, True))
+
+        self._banner_3d_chk = QCheckBox("3D map pins")
+        self._banner_3d_chk.setToolTip(
+            "Render a Blender billboard pin in the 3D scene, oriented toward\n"
+            "the camera and fading in/out at locality transitions."
+        )
+        self._banner_3d_chk.setChecked(self._qsv(_KEY_SHOW_3D_BANNER, False))
+
+        modes_row = QVBoxLayout()
+        modes_row.setContentsMargins(0, 0, 0, 0)
+        modes_row.addWidget(self._plain_text_chk)
+        modes_row.addWidget(self._banner_3d_chk)
+        form2.addRow("Display:", modes_row)
+
         # ── Position ──────────────────────────────────────────────────
         self._position_combo = QComboBox()
         saved_pos = self._qsv(_KEY_POSITION, "bottom-right")
@@ -301,13 +324,24 @@ class LocalityNamesWidget(QWidget):
             self._position_combo.addItem(label, value)
             if value == saved_pos:
                 self._position_combo.setCurrentIndex(self._position_combo.count() - 1)
-        self._position_combo.setToolTip("Where on the frame to render the locality name.")
+        self._position_combo.setToolTip("Where on the frame to render the plain text overlay.")
 
         def _on_position_changed(_: int) -> None:
             self._settings.setValue(_KEY_POSITION, self._position_combo.currentData())
 
         self._position_combo.currentIndexChanged.connect(_on_position_changed)
         form2.addRow("Position:", self._position_combo)
+        form2.setRowVisible(self._position_combo, self._plain_text_chk.isChecked())
+
+        def _on_plain_text_toggled(checked: bool) -> None:
+            self._settings.setValue(_KEY_SHOW_PLAIN_TEXT, checked)
+            form2.setRowVisible(self._position_combo, checked)
+
+        def _on_3d_banner_toggled(checked: bool) -> None:
+            self._settings.setValue(_KEY_SHOW_3D_BANNER, checked)
+
+        self._plain_text_chk.toggled.connect(_on_plain_text_toggled)
+        self._banner_3d_chk.toggled.connect(_on_3d_banner_toggled)
 
         # ── Duration ──────────────────────────────────────────────────
         duration_row = QHBoxLayout()
@@ -593,6 +627,11 @@ class LocalityNamesWidget(QWidget):
                 self._detail_combo.setCurrentIndex(i)
                 break
 
+        plain_text_on = _sv(_KEY_SHOW_PLAIN_TEXT, True, bool)
+        self._plain_text_chk.setChecked(plain_text_on)
+        self._banner_3d_chk.setChecked(_sv(_KEY_SHOW_3D_BANNER, False, bool))
+        self._form2.setRowVisible(self._position_combo, plain_text_on)
+
         saved_pos = _sv(_KEY_POSITION, "bottom-right")
         for i in range(self._position_combo.count()):
             if self._position_combo.itemData(i) == saved_pos:
@@ -611,14 +650,16 @@ class LocalityNamesWidget(QWidget):
     def get_settings(self) -> dict[str, Any]:
         """Return current locality names settings as a flat dict."""
         return {
-            _KEY_ENABLED:       self._group.isChecked(),
-            _KEY_SERVICE:       "custom" if self._custom_radio.isChecked() else "osm",
-            _KEY_CUSTOM_URL:    self._custom_url_edit.text(),
-            _KEY_CHECK_EVERY_S: self._check_every_spin.value(),
-            _KEY_DETAIL_LEVEL:  self._detail_combo.currentData(),
-            _KEY_POSITION:          self._position_combo.currentData(),
-            _KEY_DURATION:          self._duration_spin.value(),
-            _KEY_DURATION_FOREVER:  self._duration_forever_chk.isChecked(),
-            _KEY_TEXT_COLOR:        self._text_color,
-            _KEY_SHADOW:        self._shadow_chk.isChecked(),
+            _KEY_ENABLED:          self._group.isChecked(),
+            _KEY_SERVICE:          "custom" if self._custom_radio.isChecked() else "osm",
+            _KEY_CUSTOM_URL:       self._custom_url_edit.text(),
+            _KEY_CHECK_EVERY_S:    self._check_every_spin.value(),
+            _KEY_DETAIL_LEVEL:     self._detail_combo.currentData(),
+            _KEY_SHOW_PLAIN_TEXT:  self._plain_text_chk.isChecked(),
+            _KEY_SHOW_3D_BANNER:   self._banner_3d_chk.isChecked(),
+            _KEY_POSITION:         self._position_combo.currentData(),
+            _KEY_DURATION:         self._duration_spin.value(),
+            _KEY_DURATION_FOREVER: self._duration_forever_chk.isChecked(),
+            _KEY_TEXT_COLOR:       self._text_color,
+            _KEY_SHADOW:           self._shadow_chk.isChecked(),
         }

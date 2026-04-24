@@ -1,16 +1,13 @@
 """Photo overlay compositor endpoint."""
 
 import asyncio
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from georeel.core import temp_manager
-from georeel.core.photo_compositor import composite_photos
 from georeel.core.pipeline import Pipeline
-from georeel.core.video_assembler import composite_locality_frames
+from georeel.core.video_assembler import run_composite_stage
 from georeel.server.jobs import get_registry, make_cancel_check, make_progress_cb
 from georeel.server.models.camera_keyframe import CameraKeyframeSchema
 from georeel.server.models.match_result import MatchResultSchema
@@ -76,28 +73,18 @@ async def _run(job_id: str, body: CompositorRunRequest) -> None:
         settings = dict(body.settings)
         fps_raw = settings.get("render/fps", 30)
         fps = int(fps_raw) if isinstance(fps_raw, (int, float, str)) else 30
-        src_dir = frames_dir
-        locality_temp: Path | None = None
-        try:
-            if (bool(settings.get("locality_names/enabled", False))
-                    and settings.get("locality_names/timeline_json")):
-                locality_temp = temp_manager.make_temp_dir("georeel_locality_")
-                composite_locality_frames(src_dir, locality_temp, settings, fps)
-                src_dir = str(locality_temp)
 
-            pipeline = Pipeline()
-            pipeline.rendered_frames_dir = src_dir
-            pipeline.match_results = [mr.to_core() for mr in body.match_results]
-            pipeline.camera_keyframes = [kf.to_core() for kf in body.keyframes]
-            return composite_photos(
-                pipeline,
-                settings=settings,
-                progress_cb=progress_cb,
-                cancel_check=cancel_check,
-            )
-        finally:
-            if locality_temp is not None:
-                shutil.rmtree(locality_temp, ignore_errors=True)
+        pipeline = Pipeline()
+        pipeline.match_results = [mr.to_core() for mr in body.match_results]
+        pipeline.camera_keyframes = [kf.to_core() for kf in body.keyframes]
+        return run_composite_stage(
+            frames_dir,
+            pipeline,
+            settings,
+            fps,
+            progress_cb=progress_cb,
+            cancel_check=cancel_check,
+        )
 
     try:
         comp_dir = await asyncio.to_thread(_blocking)

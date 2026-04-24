@@ -14,14 +14,11 @@ Reuses render_frames.py and assemble_video without modification.
 
 from typing import Any, Callable
 
-import shutil
-
 from .camera_keyframe import CameraKeyframe
 from .frame_renderer import FrameRenderError, render_frames
-from .photo_compositor import CompositorError, composite_photos
+from .photo_compositor import CompositorError
 from .pipeline import Pipeline
-from . import temp_manager
-from .video_assembler import VideoAssembleError, assemble_video, composite_locality_frames
+from .video_assembler import VideoAssembleError, assemble_video, run_composite_stage
 
 _PREVIEW_FRACTION = 0.02  # render the first 2 % of total frames (minimum 2)
 _PREVIEW_MIN_CONTENT_S = 3.0  # seconds of post-fade content always visible in preview
@@ -136,34 +133,23 @@ def render_preview_video(
         return ""
 
     # ------------------------------------------------------------------ #
-    # Stage 8a: bake locality names into terrain frames                   #
+    # Stage 8: composite photos then locality text                         #
+    # Shared with the final-render path via run_composite_stage so both    #
+    # pipelines always apply the same logic in the same order.             #
+    # z-order (bottom → top): video → locality name → photos              #
     # ------------------------------------------------------------------ #
-    locality_temp = None
-    if (bool(preview_settings.get("locality_names/enabled", False))
-            and preview_settings.get("locality_names/timeline_json")):
-        fps_val = preview_settings.get("render/fps", 30)
-        fps = int(fps_val) if isinstance(fps_val, (int, float, str)) else 30
-        locality_temp = temp_manager.make_temp_dir("georeel_locality_")
-        composite_locality_frames(frames_dir, locality_temp, preview_settings, fps)
-        frames_dir = str(locality_temp)
-
-    # ------------------------------------------------------------------ #
-    # Stage 8b: composite photo overlays                                   #
-    # ------------------------------------------------------------------ #
-    preview_pipeline.rendered_frames_dir = frames_dir
+    fps_val = preview_settings.get("render/fps", 30)
+    fps = int(fps_val) if isinstance(fps_val, (int, float, str)) else 30
     try:
-        frames_dir = composite_photos(
+        frames_dir = run_composite_stage(
+            frames_dir,
             preview_pipeline,
             preview_settings,
+            fps,
             cancel_check=cancel_check,
         )
     except CompositorError as e:
-        if locality_temp is not None:
-            shutil.rmtree(locality_temp, ignore_errors=True)
-        raise PreviewVideoError(f"Photo compositing failed: {e}") from e
-    finally:
-        if locality_temp is not None:
-            shutil.rmtree(locality_temp, ignore_errors=True)
+        raise PreviewVideoError(f"Compositing failed: {e}") from e
 
     if cancel_check and cancel_check():
         return ""

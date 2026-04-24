@@ -140,13 +140,6 @@ class TestSweepFiles:
         assert removed == 1
         assert not f.exists()
 
-    def test_removes_settings_json(self, tmp_path):
-        f = tmp_path / "session_georeel_settings.json"
-        f.write_text("{}")
-        removed = tm._sweep_files(tmp_path)
-        assert removed == 1
-        assert not f.exists()
-
     def test_ignores_other_files(self, tmp_path):
         f = tmp_path / "unrelated_file.txt"
         f.write_text("hello")

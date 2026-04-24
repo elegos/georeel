@@ -98,6 +98,176 @@ def _select_keyframe_indices(keyframes_data: list, stride: int) -> list[int]:
     return sorted(selected)
 
 
+def _inject_locality_banners(banners_path: str, cam_obj, scene) -> None:  # noqa: ANN001
+    """Create world-space locality name banners below the tracking point.
+
+    Each banner is placed at a fixed world position computed at spawn time to sit
+    below the camera's look-at point in screen space.  It stays there for its
+    entire lifetime (does not follow the camera).
+
+    Shape: a thin slab in the XZ plane (width=X, height=Z, depth=Y).
+    TRACK_TO keeps the front face pointing at the camera as the camera moves.
+    A LOC_DIFF scale driver keeps the apparent angular size constant.
+
+    Animated alpha (ShaderNodeValue keyframes) drives the fade-in / fade-out.
+    """
+    import bpy  # noqa: PLC0415
+
+    if hasattr(scene, "eevee") and hasattr(scene.eevee, "use_bloom"):
+        scene.eevee.use_bloom = False
+
+    try:
+        with open(banners_path) as fh:
+            banners = json.load(fh)
+    except Exception as exc:
+        print(f"[georeel] Could not load banners JSON: {exc}", file=sys.stderr)
+        return
+
+    for i, b in enumerate(banners):
+        label     = b.get("name", f"Banner_{i}")
+        bx, by, bz = float(b["x"]), float(b["y"]), float(b["z"])
+        width_m   = float(b["width_m"])
+        height_m  = float(b["height_m"])
+        fs        = int(b["frame_start"])
+        fe        = int(b["frame_end"])
+        ff        = int(b["fade_frames"])
+        tex_path  = str(b["texture"])
+        scale_f   = float(b.get("scale_factor", 0.08))
+
+        # Normalised aspect ratio (mesh width = 1.0, height = aspect)
+        aspect = height_m / max(width_m, 1e-6)
+        d      = 0.06   # slab depth (Y)
+
+        # ── Mesh: slab in XZ plane ───────────────────────────────────────── #
+        # Front face (+Y) has CCW winding → normal = +Y.
+        # TRACK_NEGATIVE_Y points that normal at the camera.
+        # Width in X, height in Z; origin at slab centre-bottom (Z=0).
+        hw = 0.5
+        verts = [
+            # Front face (y=+d/2), CCW from +Y: BL BR TR TL
+            (-hw,  d/2,      0.0),   # 0
+            ( hw,  d/2,      0.0),   # 1
+            ( hw,  d/2,   aspect),   # 2
+            (-hw,  d/2,   aspect),   # 3
+            # Back face (y=-d/2)
+            (-hw, -d/2,      0.0),   # 4
+            ( hw, -d/2,      0.0),   # 5
+            ( hw, -d/2,   aspect),   # 6
+            (-hw, -d/2,   aspect),   # 7
+        ]
+        faces = [
+            (0, 1, 2, 3),   # 0  front ← textured
+            (7, 6, 5, 4),   # 1  back
+            (3, 2, 6, 7),   # 2  top
+            (0, 4, 5, 1),   # 3  bottom
+            (0, 3, 7, 4),   # 4  left
+            (2, 1, 5, 6),   # 5  right
+        ]
+
+        mesh = bpy.data.meshes.new(f"BannerMesh_{i:04d}")
+        mesh.from_pydata(verts, [], faces)
+        mesh.update()
+
+        obj = bpy.data.objects.new(f"LocalityBanner_{i:04d}", mesh)
+        obj.location = (bx, by, bz)
+        scene.collection.objects.link(obj)
+
+        # ── Material: object-coordinate texture projection ───────────────── #
+        # U = local_X + 0.5  (X ∈ [-0.5, 0.5] → [0, 1])
+        # V = clamp(local_Z / aspect)  (Z ∈ [0, aspect] → [0, 1])
+        mat = bpy.data.materials.new(f"BannerMat_{i:04d}")
+        mat.use_nodes = True
+        # Transparent alpha blending: EEVEE Next (4.2+) uses surface_render_method;
+        # legacy EEVEE uses blend_method.  Try both so the script works across versions.
+        try:
+            mat.surface_render_method = "BLENDED"  # type: ignore[attr-defined]  # Blender 4.2+
+        except AttributeError:
+            mat.blend_method = "BLEND"  # type: ignore[attr-defined]  # Blender < 4.2
+        try:
+            mat.show_transparent_back = False
+        except AttributeError:
+            pass
+        nt = mat.node_tree
+        nt.nodes.clear()
+
+        out_node   = nt.nodes.new("ShaderNodeOutputMaterial"); out_node.location   = (900, 0)
+        mix_node   = nt.nodes.new("ShaderNodeMixShader");      mix_node.location   = (700, 0)
+        transp     = nt.nodes.new("ShaderNodeBsdfTransparent"); transp.location    = (500, -120)
+        emit       = nt.nodes.new("ShaderNodeEmission");       emit.location       = (500, 100)
+        emit.inputs["Strength"].default_value = 1.0
+        tex_node   = nt.nodes.new("ShaderNodeTexImage");       tex_node.location   = (200, 100)
+        alpha_node = nt.nodes.new("ShaderNodeValue");          alpha_node.location = (200, -100)
+        alpha_node.name = "BannerAlpha"
+        mul_node   = nt.nodes.new("ShaderNodeMath");           mul_node.location   = (400, -60)
+        mul_node.operation = "MULTIPLY"
+
+        coord_node = nt.nodes.new("ShaderNodeTexCoord");       coord_node.location = (-600, 100)
+        sep_node   = nt.nodes.new("ShaderNodeSeparateXYZ");    sep_node.location   = (-400, 100)
+        add_u      = nt.nodes.new("ShaderNodeMath");           add_u.location      = (-200, 200)
+        add_u.operation = "ADD"
+        add_u.inputs[1].default_value = 0.5            # U = local_X + 0.5
+        div_v      = nt.nodes.new("ShaderNodeMath");           div_v.location      = (-200, 0)
+        div_v.operation = "DIVIDE"
+        div_v.inputs[1].default_value = max(aspect, 1e-6)     # V = local_Z / aspect
+        clamp_v    = nt.nodes.new("ShaderNodeClamp");          clamp_v.location    = (-50, 0)
+        clamp_v.inputs["Min"].default_value = 0.02
+        clamp_v.inputs["Max"].default_value = 0.98
+        comb_node  = nt.nodes.new("ShaderNodeCombineXYZ");     comb_node.location  = (50, 100)
+
+        bpy_img = bpy.data.images.load(tex_path)
+        tex_node.image = bpy_img
+
+        # X → U, Z → V
+        nt.links.new(coord_node.outputs["Object"],   sep_node.inputs["Vector"])
+        nt.links.new(sep_node.outputs["X"],          add_u.inputs[0])
+        nt.links.new(sep_node.outputs["Z"],          div_v.inputs[0])
+        nt.links.new(div_v.outputs[0],               clamp_v.inputs["Value"])
+        nt.links.new(add_u.outputs[0],               comb_node.inputs["X"])
+        nt.links.new(clamp_v.outputs["Result"],      comb_node.inputs["Y"])
+        nt.links.new(comb_node.outputs["Vector"],    tex_node.inputs["Vector"])
+        nt.links.new(tex_node.outputs["Color"],      emit.inputs["Color"])
+        nt.links.new(tex_node.outputs["Alpha"],      mul_node.inputs[0])
+        nt.links.new(alpha_node.outputs[0],          mul_node.inputs[1])
+        nt.links.new(mul_node.outputs[0],            mix_node.inputs[0])
+        nt.links.new(transp.outputs["BSDF"],         mix_node.inputs[1])
+        nt.links.new(emit.outputs["Emission"],       mix_node.inputs[2])
+        nt.links.new(mix_node.outputs["Shader"],     out_node.inputs["Surface"])
+        mesh.materials.append(mat)
+
+        # ── Animate BannerAlpha ───────────────────────────────────────────── #
+        fade_peak = min(fs + ff, fe)
+        fade_out  = max(fe - ff, fade_peak)
+        for frm, val in ((fs, 0.0), (fade_peak, 1.0), (fade_out, 1.0), (fe, 0.0)):
+            alpha_node.outputs[0].default_value = val
+            alpha_node.outputs[0].keyframe_insert("default_value", frame=frm)
+
+        if nt.animation_data and nt.animation_data.action:
+            for fc in nt.animation_data.action.fcurves:
+                fc.extrapolation = "CONSTANT"
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "LINEAR"
+
+        # ── Scale driver: constant angular size (scale = dist × scale_f) ─── #
+        for axis_i in range(3):
+            fc = obj.driver_add("scale", axis_i)
+            drv = fc.driver
+            drv.type = "SCRIPTED"
+            drv.expression = f"dist * {scale_f}"
+            var = drv.variables.new()
+            var.name = "dist"
+            var.type = "LOC_DIFF"
+            var.targets[0].id = cam_obj
+            var.targets[1].id = obj
+
+        # ── TRACK_TO: front face always points at the camera ─────────────── #
+        con = obj.constraints.new("TRACK_TO")
+        con.target     = cam_obj
+        con.track_axis = "TRACK_NEGATIVE_Y"
+        con.up_axis    = "UP_Z"
+
+        print(f"[georeel] Banner '{label}' frames {fs}–{fe}")
+
+
 def main() -> None:
     import bpy
     from mathutils import Matrix, Quaternion, Vector
@@ -117,6 +287,7 @@ def main() -> None:
     tex_scale         = float(argv[8]) if len(argv) > 8 else 1.0
     png_compression   = int(argv[9])   if len(argv) > 9 else 1       # zlib level 0–9
     compression_port  = int(argv[10])  if len(argv) > 10 else 0      # 0 = no server
+    banners_path      = (argv[11] or None) if len(argv) > 11 else None  # "" → None
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
@@ -342,6 +513,12 @@ def main() -> None:
     # process parses those lines for progress updates.                     #
     # "######" in the filepath → 6-digit zero-padded frame number.        #
     # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+    # Locality banner objects (3D banner mode only)                       #
+    # ------------------------------------------------------------------ #
+    if banners_path:
+        _inject_locality_banners(banners_path, cam_obj, scene)
 
     scene.frame_start = frame_start_arg if frame_start_arg is not None else 1
     scene.frame_end   = frame_end_arg   if frame_end_arg   is not None else total

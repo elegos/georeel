@@ -2,6 +2,9 @@
 Stage 9 — Video Assembler.
 
 Encodes the composited frame sequence into the final output video using FFmpeg.
+Also owns Stage 8 (composite_locality_frames) and the shared run_composite_stage
+helper that is used by both the preview and final-render paths so the two pipelines
+always apply compositing in exactly the same order with the same logic.
 """
 
 import json
@@ -11,12 +14,14 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .encoder_registry import EncoderConfig, get_encoder
 from . import temp_manager
+
+if TYPE_CHECKING:
+    from .pipeline import Pipeline
 
 
 class VideoAssembleError(Exception):
@@ -57,11 +62,13 @@ def assemble_video(
     if out.suffix.lower() != expected_ext:
         out = out.with_suffix(expected_ext)
 
-    # Write settings JSON to a temp file so it can be attached for MKV
+    # Ensure output directory exists (workspace dir may be newly created)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write settings JSON beside the output so it can be attached for MKV.
+    # Keeping it in the workspace dir avoids the temp_manager stale-file sweep.
     settings_json = _serialise_settings(settings)
-    _fd, _tmp = tempfile.mkstemp(suffix="_georeel_settings.json")
-    os.close(_fd)
-    tmp_settings = Path(_tmp)
+    tmp_settings = out.parent / "_georeel_settings_attach.json"
     tmp_settings.write_text(settings_json, encoding="utf-8")
 
     # Title is composited onto frames by PIL before ffmpeg runs so there is
@@ -438,12 +445,13 @@ def composite_locality_frames(
     settings: dict[str, Any],
     fps: int,
     progress_cb: Callable[[int, int], None] | None = None,
+    skip_frames: set[int] | None = None,
 ) -> None:
-    """Composite locality name overlays onto rendered terrain frames.
+    """Composite locality name overlays onto frames.
 
-    Called before the photo compositor so that names blend naturally with
-    photo fade-in/out transitions — the photo compositor will replace pause
-    frames entirely, so no suppression of pause frames is needed here.
+    Frames whose number appears in *skip_frames* are hard-linked unchanged
+    (used by run_composite_stage to skip photo/transition frames so photos
+    always fully occlude locality names).
 
     Hard-links frames that need no overlay.
     """
@@ -551,6 +559,13 @@ def composite_locality_frames(
             idx = 0
         dst = dst_dir / fp.name
 
+        if skip_frames and idx in skip_frames:
+            try:
+                os.link(fp, dst)
+            except OSError:
+                shutil.copy2(fp, dst)
+            return
+
         active = _resolve_overlay(idx, timeline, duration_frames, fade_frames)
         if not active:
             try:
@@ -582,6 +597,61 @@ def composite_locality_frames(
             fut.result()
             if progress_cb:
                 progress_cb(done, total)
+
+
+def run_composite_stage(
+    frames_dir: str,
+    pipeline: "Pipeline",
+    settings: dict[str, Any],
+    fps: int,
+    progress_cb: Callable[[int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
+    """Stage 8: composite photos then locality text (shared by preview and final render).
+
+    Correct z-order (bottom → top): video → locality name → photos.
+
+    Photos are applied first onto clean terrain frames. Locality text is then
+    composited only onto non-photo frames so photo frames are never modified.
+    Both the preview pipeline (preview_video.py) and the server compositor route
+    (server/routes/compositor.py) call this function to guarantee identical
+    behaviour with the same settings.
+
+    Returns the path to the output directory containing composited PNGs.
+    """
+    from .photo_compositor import composite_photos, get_photo_frame_numbers
+
+    # All frames that carry photo content after block absorption — locality text
+    # must not touch these.  Using get_photo_frame_numbers (rather than just the
+    # kf.is_pause flags) ensures absorbed terrain frames between adjacent photo
+    # blocks are also excluded, since those frames get crossfade content in the
+    # compositor output.
+    pause_frames = get_photo_frame_numbers(
+        pipeline.camera_keyframes or [], settings, fps
+    )
+
+    # Phase A: photo overlays on clean terrain frames
+    pipeline.rendered_frames_dir = frames_dir
+    comp_dir = composite_photos(
+        pipeline,
+        settings,
+        progress_cb=progress_cb,
+        cancel_check=cancel_check,
+    )
+
+    # Phase B: locality plain-text on non-photo terrain frames only
+    if (bool(settings.get("locality_names/enabled", False))
+            and settings.get("locality_names/timeline_json")
+            and bool(settings.get("locality_names/show_plain_text", True))):
+        locality_dir = temp_manager.make_temp_dir("georeel_locality_")
+        pipeline.temp_dirs.append(locality_dir)
+        composite_locality_frames(
+            comp_dir, locality_dir, settings, fps,
+            skip_frames=pause_frames,
+        )
+        return str(locality_dir)
+
+    return comp_dir
 
 
 def _composite_title_frames(

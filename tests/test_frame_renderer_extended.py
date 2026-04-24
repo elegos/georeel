@@ -142,6 +142,7 @@ class TestRenderSingle:
                 frame_start=0,
                 frame_end=9,
                 tile_filter=None,
+                banners_path=None,
                 progress_cb=None,
                 cancel_check=None,
             )
@@ -167,6 +168,7 @@ class TestRenderSingle:
                     frame_start=0,
                     frame_end=9,
                     tile_filter=None,
+                    banners_path=None,
                     progress_cb=None,
                     cancel_check=None,
                 )
@@ -192,6 +194,7 @@ class TestRenderSingle:
                 frame_start=0,
                 frame_end=9,
                 tile_filter=None,
+                banners_path=None,
                 progress_cb=lambda cur, tot: calls.append((cur, tot)),
                 cancel_check=None,
             )
@@ -219,6 +222,7 @@ class TestRenderSingle:
                     frame_start=0,
                     frame_end=9,
                     tile_filter=None,
+                    banners_path=None,
                     progress_cb=None,
                     cancel_check=lambda: True,
                 )
@@ -248,6 +252,7 @@ class TestRenderSingle:
                 frame_start=0,
                 frame_end=9,
                 tile_filter="0_0,0_1",
+                banners_path=None,
                 progress_cb=None,
                 cancel_check=None,
             )
@@ -277,6 +282,7 @@ class TestRenderSingle:
                 frame_start=0,
                 frame_end=4,
                 tile_filter=None,
+                banners_path=None,
                 progress_cb=None,
                 cancel_check=None,
             )

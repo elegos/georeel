@@ -31,6 +31,22 @@ from .camera_keyframe import CameraKeyframe
 from .pipeline import Pipeline
 from . import temp_manager
 
+# ------------------------------------------------------------------
+# Font helpers (shared with video_assembler)
+# ------------------------------------------------------------------
+
+def _resolve_fontfile(font_name: str) -> str | None:
+    """Return absolute font file path for *font_name* via fc-match, or None."""
+    try:
+        r = subprocess.run(
+            ["fc-match", "--format=%{file}", font_name],
+            capture_output=True, text=True, timeout=5,
+        )
+        path = r.stdout.strip()
+        return path if path else None
+    except Exception:
+        return None
+
 _log = logging.getLogger(__name__)
 _BLENDER_SCRIPT = Path(__file__).parent / "blender_scripts" / "render_frames.py"
 
@@ -114,6 +130,209 @@ class _CompressionServer:
         self._pool.shutdown(wait=True)
         for err in self._errors:
             print(f"[georeel] PNG compression warning: {err}")
+
+
+# ------------------------------------------------------------------
+# 3-D banner helpers
+# ------------------------------------------------------------------
+
+_BANNER_W, _BANNER_H = 1024, 256
+# Serif fonts tried in priority order for banner text rendering
+_BANNER_FONT_NAMES = (
+    "Noto Serif", "DejaVu Serif", "Liberation Serif", "FreeSerif", "serif",
+)
+
+
+def _find_banner_font() -> str | None:
+    """Return the first serif font file path that PIL can actually open."""
+    from PIL import ImageFont
+    for name in _BANNER_FONT_NAMES:
+        path = _resolve_fontfile(name)
+        if not path:
+            continue
+        try:
+            ImageFont.truetype(path, 12)
+            return path
+        except (OSError, TypeError):
+            continue
+    return None
+
+
+def _render_banner_texture(
+    name: str,
+    settings: dict[str, Any],
+    out_path: Path,
+) -> None:
+    """Write a 1024×256 RGBA PNG banner texture for *name*.
+
+    Background = inverted (complementary) of the text colour so contrast is
+    always maximal regardless of the user's colour choice.
+
+    Font loading is resilient: tries several common serif fonts via fc-match,
+    verifies each with PIL before the size-fitting loop, and falls back to
+    Pillow's built-in font (with size parameter when Pillow ≥ 10) so text is
+    always readable.
+    """
+    from PIL import Image, ImageColor, ImageDraw, ImageFont
+
+    W, H = _BANNER_W, _BANNER_H
+    color_hex = str(settings.get("locality_names/text_color", "#ffffff"))
+    shadow    = bool(settings.get("locality_names/shadow", True))
+
+    try:
+        raw_rgb = ImageColor.getrgb(color_hex)[:3]
+    except Exception:
+        raw_rgb = (255, 255, 255)
+
+    text_rgb: tuple[int, int, int] = raw_rgb  # type: ignore[assignment]
+    bg_rgb:   tuple[int, int, int] = (255 - text_rgb[0], 255 - text_rgb[1], 255 - text_rgb[2])
+
+    pad    = H // 8        # matches rounded-rect corner radius
+    max_tw = W - pad * 2
+    max_th = H - pad * 2
+
+    # ── Font: largest size that fits, with robust fallback chain ─────────── #
+    font_path = _find_banner_font()   # verified: PIL can open this file
+    probe     = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    font_size = int(H * 0.80)
+    font: Any = None
+
+    if font_path:
+        while font_size >= 12:
+            try:
+                candidate: Any = ImageFont.truetype(font_path, font_size)
+            except (OSError, TypeError):
+                break
+            bb = probe.textbbox((0, 0), name, font=candidate)
+            if (bb[2] - bb[0]) <= max_tw and (bb[3] - bb[1]) <= max_th:
+                font = candidate
+                break
+            font_size -= 2
+
+    if font is None:
+        # Pillow ≥ 10 supports a size= argument; older builds give a tiny bitmap
+        try:
+            font = ImageFont.load_default(size=min(max_th, int(H * 0.55)))  # type: ignore[call-arg]
+        except TypeError:
+            font = ImageFont.load_default()
+        font_size = min(max_th, int(H * 0.55))
+
+    # ── Render ───────────────────────────────────────────────────────────── #
+    img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([(4, 4), (W - 4, H - 4)], radius=pad, fill=(*bg_rgb, 255))
+
+    bbox = draw.textbbox((0, 0), name, font=font)
+    tx = (W - (bbox[2] - bbox[0])) // 2 - bbox[0]
+    ty = (H - (bbox[3] - bbox[1])) // 2 - bbox[1]
+    if shadow:
+        shadow_off = max(2, round(font_size * 0.04))
+        shadow_rgb = ((text_rgb[0] + bg_rgb[0]) // 2,
+                      (text_rgb[1] + bg_rgb[1]) // 2,
+                      (text_rgb[2] + bg_rgb[2]) // 2)
+        draw.text((tx + shadow_off, ty + shadow_off), name, font=font,
+                  fill=(*shadow_rgb, 160))
+    draw.text((tx, ty), name, font=font, fill=(*text_rgb, 255))
+
+    img.save(str(out_path), format="PNG")
+
+
+def _write_locality_banners(
+    keyframes: list[CameraKeyframe],
+    settings: dict[str, Any],
+    work_dir: Path,
+) -> Path | None:
+    """Write banner textures + locality_banners.json to *work_dir*; return JSON path or None."""
+    timeline_json = settings.get("locality_names/timeline_json")
+    if not timeline_json:
+        return None
+    try:
+        timeline: list[dict[str, Any]] = json.loads(str(timeline_json))
+    except Exception:
+        return None
+    if not timeline:
+        return None
+
+    fps_raw = settings.get("render/fps", 30)
+    fps = int(fps_raw) if isinstance(fps_raw, (int, float, str)) else 30
+    duration_s       = float(settings.get("locality_names/duration",           5.0))
+    duration_forever = bool(settings.get("locality_names/duration_forever",    False))
+    duration_frames  = max(1, round(duration_s * fps))
+    fade_frames      = max(1, round(1.0 * fps))  # fixed 1s fade
+    height_offset    = float(settings.get("locality_names/banner_height_offset", 200.0))
+    # Constant-angular-size factor: banner_world_size = camera_distance × scale_factor
+    scale_factor     = float(settings.get("locality_names/banner_scale_factor",   0.08))
+    total_frames     = len(keyframes)
+
+    tex_dir = work_dir / "banner_textures"
+    tex_dir.mkdir(exist_ok=True)
+
+    banners: list[dict[str, Any]] = []
+    for i, entry in enumerate(timeline):
+        fs0  = int(entry.get("frame_start", 0))
+        name = str(entry.get("name", ""))
+
+        if duration_forever:
+            fe0 = (int(timeline[i + 1]["frame_start"]) - 1
+                   if i + 1 < len(timeline) else total_frames - 1)
+        else:
+            next_start = (int(timeline[i + 1]["frame_start"])
+                          if i + 1 < len(timeline) else total_frames)
+            fe0 = min(fs0 + duration_frames - 1, next_start - 1, total_frames - 1)
+
+        fs0 = max(0, min(fs0, total_frames - 1))
+        fe0 = max(fs0, min(fe0, total_frames - 1))
+
+        kf  = keyframes[min(fs0, len(keyframes) - 1)]
+        tex = tex_dir / f"banner_{i:04d}.png"
+        _render_banner_texture(name, settings, tex)
+
+        # Place banner below the tracking point in screen space.
+        # Compute the camera's screen-down direction at spawn time, then offset
+        # the look-at point by 25 % of the cam→look distance in that direction.
+        lx, ly, lz = kf.look_at_x, kf.look_at_y, kf.look_at_z
+        dfx = lx - kf.x
+        dfy = ly - kf.y
+        dfz = lz - kf.z
+        dist = math.sqrt(dfx*dfx + dfy*dfy + dfz*dfz)
+        if dist > 1e-6:
+            fx, fy, fz = dfx/dist, dfy/dist, dfz/dist
+            # Camera up = world_up (0,0,1) projected perpendicular to forward
+            dot_f_up = fz
+            ux, uy, uz = -fx*dot_f_up, -fy*dot_f_up, 1.0 - fz*dot_f_up
+            ulen = math.sqrt(ux*ux + uy*uy + uz*uz)
+            if ulen > 1e-6:
+                ux, uy, uz = ux/ulen, uy/ulen, uz/ulen
+                offset = dist * 0.05
+                bx = lx - ux * offset
+                by = ly - uy * offset
+                bz = lz - uz * offset
+                bz = max(bz, lz + height_offset * 0.02)  # stay above terrain
+            else:
+                bx, by, bz = lx, ly, lz + height_offset * 0.02
+        else:
+            bx, by, bz = lx, ly, lz + height_offset * 0.02
+
+        banners.append({
+            "texture":      str(tex),
+            "name":         name,
+            "x":            bx,
+            "y":            by,
+            "z":            bz,
+            "width_m":      height_offset * 0.5,
+            "height_m":     height_offset * 0.125,
+            "scale_factor": scale_factor,
+            "frame_start":  fs0 + 1,   # 1-indexed for Blender
+            "frame_end":    fe0 + 1,
+            "fade_frames":  fade_frames,
+        })
+
+    if not banners:
+        return None
+
+    banners_path = work_dir / "locality_banners.json"
+    banners_path.write_text(json.dumps(banners))
+    return banners_path
 
 
 # ------------------------------------------------------------------
@@ -215,6 +434,16 @@ def render_frames(
 
     total = len(pipeline.camera_keyframes)
 
+    banners_path: Path | None = None
+    if (bool(settings.get("locality_names/show_3d_banner", False))
+            and bool(settings.get("locality_names/enabled", False))
+            and settings.get("locality_names/timeline_json")):
+        banners_path = _write_locality_banners(pipeline.camera_keyframes, settings, work_dir)
+        if banners_path:
+            _log.info("[render] 3D locality banners written to %s", banners_path)
+        else:
+            _log.info("[render] 3D banner mode enabled but no banners generated (empty timeline?)")
+
     if n_segments > 1:
         return _render_segmented(
             pipeline=pipeline,
@@ -227,6 +456,7 @@ def render_frames(
             quality=quality,
             total=total,
             n_segments=n_segments,
+            banners_path=banners_path,
             progress_cb=progress_cb,
             cancel_check=cancel_check,
         )
@@ -243,6 +473,7 @@ def render_frames(
         frame_start=1,
         frame_end=total,
         tile_filter=None,
+        banners_path=banners_path,
         progress_cb=progress_cb,
         cancel_check=cancel_check,
         settings=settings,
@@ -265,6 +496,7 @@ def _render_single(
     frame_start: int,
     frame_end: int,
     tile_filter: str | None,
+    banners_path: Path | None,
     progress_cb: Callable[[int, int], None] | None,
     cancel_check: Callable[[], bool] | None,
     settings: dict[str, Any] | None = None,
@@ -305,6 +537,7 @@ def _render_single(
         str(tex_scale),                                       # argv[8]
         "0" if comp_server else str(png_compression),        # argv[9]: 0 = Blender writes raw
         str(comp_server.port if comp_server else 0),         # argv[10]: compression server port
+        str(banners_path) if banners_path else "",           # argv[11]: locality banners JSON
     ]
 
     try:
@@ -367,6 +600,7 @@ def _render_segmented(
     quality: str,
     total: int,
     n_segments: int,
+    banners_path: Path | None,
     progress_cb: Callable[[int, int], None] | None,
     cancel_check: Callable[[], bool] | None,
 ) -> str:
@@ -445,6 +679,7 @@ def _render_segmented(
             frame_start=seg_start,
             frame_end=seg_end,
             tile_filter=tile_filter,
+            banners_path=banners_path,
             progress_cb=progress_cb,
             cancel_check=cancel_check,
             settings=settings,

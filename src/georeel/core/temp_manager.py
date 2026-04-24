@@ -37,7 +37,6 @@ _DIR_PREFIX = "georeel_"
 # All live in the same directory as the temp dirs.
 _FILE_GLOBS = [
     "georeel_preview_*.mp4",
-    "*_georeel_settings.json",
 ]
 
 # Module-level custom base directory.  None → use the OS default (gettempdir).

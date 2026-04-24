@@ -17,6 +17,7 @@ class _Args:
     port: int
     log_level: str
     temp_dir: str | None
+    reload: bool
 
 
 def _parse_args(argv: list[str] | None = None) -> _Args:
@@ -48,12 +49,19 @@ def _parse_args(argv: list[str] | None = None) -> _Args:
         dest="temp_dir",
         help="Base directory for server temp files (default: system /tmp)",
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        default=False,
+        help="Auto-reload on code changes (development only)",
+    )
     ns = parser.parse_args(argv)
     return _Args(
         host=str(ns.host),
         port=int(ns.port),
         log_level=str(ns.log_level),
         temp_dir=str(ns.temp_dir) if ns.temp_dir else None,
+        reload=bool(ns.reload),
     )
 
 
@@ -75,7 +83,13 @@ def main(argv: list[str] | None = None) -> None:
 
     from georeel.server.app import app  # noqa: PLC0415  (import after logging setup)
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        reload=args.reload,
+    )
 
 
 if __name__ == "__main__":

@@ -401,6 +401,31 @@ def _build_blocks(keyframes: list[CameraKeyframe]) -> list[dict[str, Any]]:
     return blocks
 
 
+def get_photo_frame_numbers(
+    keyframes: list[CameraKeyframe],
+    settings: dict[str, Any],
+    fps: int,
+) -> set[int]:
+    """Return frame numbers that carry photo content (including absorbed crossfade frames).
+
+    Runs the same block-building + gap-absorption logic as composite_photos so
+    the returned set is always consistent with what the compositor actually
+    writes to disk.  Use this to build the skip-set for locality-text compositing
+    so text is never drawn on top of a photo or its crossfade transition.
+    """
+    fade_dur = float(settings.get("render/photo_fade_duration", 0.5))
+    fade_frames = max(1, round(fade_dur * fps))
+    max_gap = max(1, fade_frames * 2)
+    blocks = _build_blocks(keyframes)
+    blocks, _ = _absorb_photo_gaps(blocks, max_gap)
+    return {
+        frame
+        for block in blocks
+        if block["is_pause"]
+        for frame in block["frames"]
+    }
+
+
 def _absorb_photo_gaps(blocks: list[dict[str, Any]], max_gap: int) -> tuple[list[dict[str, Any]], int]:
     """Absorb short fly-through gaps between consecutive photo pause blocks.
 
