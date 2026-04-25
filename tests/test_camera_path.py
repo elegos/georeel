@@ -14,6 +14,10 @@ from georeel.core.camera_path import (
     _compute_forward_dirs_spline,
     _make_pause_block,
     _smooth_orientation_spikes,
+    _build_speed_profile,
+    _compute_path_curvature,
+    _build_intro_overview,
+    _INTRO_DESCENT_S,
 )
 from georeel.core.bounding_box import BoundingBox
 from georeel.core.elevation_grid import ElevationGrid
@@ -422,3 +426,209 @@ class TestSmoothOrientationSpikes:
         out = _smooth_orientation_spikes(angles, mad_factor=0.5)
         # Either unchanged or interpolated — must not raise and must be same length
         assert len(out) == len(angles)
+
+
+# ── _build_speed_profile ─────────────────────────────────────────
+
+class TestBuildSpeedProfile:
+    def test_returns_arrays_of_n_fine_length(self):
+        s, m = _build_speed_profile(1000.0, [], ramp_m=100.0, factor=1.5, n_fine=500)
+        assert len(s) == 500
+        assert len(m) == 500
+
+    def test_multiplier_at_start_is_one(self):
+        s, m = _build_speed_profile(1000.0, [], ramp_m=200.0, factor=1.5)
+        assert m[0] == pytest.approx(1.0, abs=1e-6)
+
+    def test_multiplier_at_end_is_one(self):
+        s, m = _build_speed_profile(1000.0, [], ramp_m=200.0, factor=1.5)
+        assert m[-1] == pytest.approx(1.0, abs=1e-6)
+
+    def test_midpoint_reaches_factor_without_photos(self):
+        # With no photos and a short ramp relative to total length, the mid
+        # section should be at full factor.
+        s, m = _build_speed_profile(10_000.0, [], ramp_m=100.0, factor=1.5)
+        mid = len(m) // 2
+        assert m[mid] == pytest.approx(1.5, abs=1e-3)
+
+    def test_photo_at_midpoint_reduces_speed_there(self):
+        # Photo at 500 m should pull the multiplier back toward 1.0 at that point.
+        s, m = _build_speed_profile(1000.0, [500.0], ramp_m=50.0, factor=2.0)
+        mid = int(np.argmin(np.abs(s - 500.0)))
+        assert m[mid] == pytest.approx(1.0, abs=1e-4)
+
+    def test_multiplier_clipped_to_factor(self):
+        s, m = _build_speed_profile(1000.0, [], ramp_m=100.0, factor=1.33)
+        assert float(np.max(m)) <= 1.33 + 1e-9
+
+    def test_multiplier_never_below_one(self):
+        s, m = _build_speed_profile(1000.0, [200.0, 800.0], ramp_m=150.0, factor=1.5)
+        assert float(np.min(m)) >= 1.0 - 1e-9
+
+    def test_arc_positions_span_full_length(self):
+        s, _ = _build_speed_profile(5000.0, [], ramp_m=100.0, factor=1.5)
+        assert s[0] == pytest.approx(0.0)
+        assert s[-1] == pytest.approx(5000.0)
+
+
+# ── _compute_path_curvature ──────────────────────────────────────
+
+class TestComputePathCurvature:
+    def test_straight_line_has_zero_curvature(self):
+        xs = np.linspace(0.0, 100.0, 20)
+        ys = np.zeros(20)
+        c = _compute_path_curvature(xs, ys)
+        assert len(c) == 20
+        npt.assert_allclose(c, 0.0, atol=1e-9)
+
+    def test_output_length_matches_input(self):
+        for n in (3, 10, 50):
+            xs = np.linspace(0.0, float(n), n)
+            ys = np.zeros(n)
+            c = _compute_path_curvature(xs, ys)
+            assert len(c) == n
+
+    def test_sharp_turn_has_high_curvature(self):
+        # Right-angle turn: 10 m east then 10 m north — heading change of 90°
+        xs = np.array([0.0, 5.0, 10.0, 10.0, 10.0])
+        ys = np.array([0.0, 0.0,  0.0,  5.0, 10.0])
+        c = _compute_path_curvature(xs, ys)
+        # Curvature at the turn apex (index 2) should be high
+        assert float(np.max(c)) > 0.01
+
+    def test_circle_has_nonzero_curvature_everywhere(self):
+        # Points on a circle all have the same curvature
+        theta = np.linspace(0, 2 * math.pi, 50, endpoint=False)
+        r = 100.0
+        xs = r * np.cos(theta)
+        ys = r * np.sin(theta)
+        c = _compute_path_curvature(xs, ys)
+        # Every value should be positive and approximately equal
+        assert float(np.min(c)) > 0.0
+        assert float(np.std(c) / np.mean(c)) < 0.5  # reasonably uniform
+
+    def test_short_array_returns_zeros(self):
+        xs = np.array([0.0, 1.0])
+        ys = np.array([0.0, 0.0])
+        c = _compute_path_curvature(xs, ys)
+        assert len(c) == 2
+
+    def test_single_point_returns_zero(self):
+        c = _compute_path_curvature(np.array([0.0]), np.array([0.0]))
+        assert len(c) == 1
+        assert c[0] == pytest.approx(0.0)
+
+
+# ── _build_intro_overview ─────────────────────────────────────────
+
+def _make_fly_keyframes(n: int = 10) -> list[CameraKeyframe]:
+    """Helper: n non-pause keyframes along a straight east-west path."""
+    return [
+        CameraKeyframe(
+            frame=i + 1,
+            x=float(i * 100),
+            y=500.0,
+            z=600.0,
+            look_at_x=float(i * 100),
+            look_at_y=500.0,
+            look_at_z=100.0,
+        )
+        for i in range(n)
+    ]
+
+
+class TestBuildIntroOverview:
+    def _grid(self):
+        data = np.full((4, 4), 100.0, dtype=np.float32)
+        return ElevationGrid(data=data, min_lat=0.0, max_lat=1.0, min_lon=0.0, max_lon=1.0)
+
+    def _bbox(self):
+        return BoundingBox(min_lat=0.0, max_lat=1.0, min_lon=0.0, max_lon=1.0)
+
+    def test_returns_correct_frame_count(self):
+        kfs = _make_fly_keyframes(10)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        n_static  = max(1, round(2.0 * 30))
+        n_descent = max(2, round(_INTRO_DESCENT_S * 30))
+        assert len(intro) == n_static + n_descent
+
+    def test_empty_keyframes_returns_empty(self):
+        intro = _build_intro_overview(
+            [], self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        assert intro == []
+
+    def test_all_pauses_returns_empty(self):
+        pause_kfs = [
+            CameraKeyframe(frame=1, x=0.0, y=0.0, z=0.0,
+                           look_at_x=0.0, look_at_y=0.0, look_at_z=0.0, is_pause=True)
+        ]
+        intro = _build_intro_overview(
+            pause_kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        assert intro == []
+
+    def test_last_frame_matches_first_fly_keyframe(self):
+        kfs = _make_fly_keyframes(10)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        last = intro[-1]
+        first_fly = kfs[0]
+        assert last.x == pytest.approx(first_fly.x, abs=1e-6)
+        assert last.y == pytest.approx(first_fly.y, abs=1e-6)
+        assert last.z == pytest.approx(first_fly.z, abs=1e-6)
+        assert last.look_at_x == pytest.approx(first_fly.look_at_x, abs=1e-6)
+        assert last.look_at_y == pytest.approx(first_fly.look_at_y, abs=1e-6)
+        assert last.look_at_z == pytest.approx(first_fly.look_at_z, abs=1e-6)
+
+    def test_static_phase_frames_are_identical(self):
+        kfs = _make_fly_keyframes(10)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        n_static = max(1, round(2.0 * 30))
+        ref = intro[0]
+        for kf in intro[:n_static]:
+            assert kf.x == pytest.approx(ref.x, abs=1e-9)
+            assert kf.y == pytest.approx(ref.y, abs=1e-9)
+            assert kf.z == pytest.approx(ref.z, abs=1e-9)
+            assert kf.look_at_x == pytest.approx(ref.look_at_x, abs=1e-9)
+            assert kf.look_at_y == pytest.approx(ref.look_at_y, abs=1e-9)
+            assert kf.look_at_z == pytest.approx(ref.look_at_z, abs=1e-9)
+
+    def test_first_frame_has_higher_z_than_fly(self):
+        kfs = _make_fly_keyframes(10)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        # The intro starts much higher (overview altitude) than the flythrough camera
+        assert intro[0].z > kfs[0].z
+
+    def test_first_look_at_points_south_of_track_center(self):
+        # The intro look-at starts near the track centre; the camera is placed
+        # slightly south so the forward vector points northward (north-up).
+        kfs = _make_fly_keyframes(10)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
+        )
+        fly_mean_y = float(np.mean([kf.look_at_y for kf in kfs]))
+        # Camera Y should be slightly less than track centre Y (south offset)
+        assert intro[0].y <= fly_mean_y
+
+    def test_none_of_intro_frames_are_pauses(self):
+        kfs = _make_fly_keyframes(5)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=10, duration_s=1.0
+        )
+        assert not any(kf.is_pause for kf in intro)
+
+    def test_all_intro_frames_have_is_intro_true(self):
+        kfs = _make_fly_keyframes(5)
+        intro = _build_intro_overview(
+            kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=10, duration_s=1.0
+        )
+        assert len(intro) > 0
+        assert all(kf.is_intro for kf in intro)

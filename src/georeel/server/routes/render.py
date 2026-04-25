@@ -17,7 +17,8 @@ router = APIRouter(prefix="/render", tags=["render"])
 
 class RenderFramesRequest(BaseModel):
     workspace_id: str
-    scene_job_id: str
+    scene_job_id: str | None = None
+    blend_path: str | None = None
     keyframes: list[CameraKeyframeSchema]
     settings: dict[str, object] = {}
     blender_exe: str | None = None
@@ -32,14 +33,15 @@ async def frames(body: RenderFramesRequest) -> JobStarted:
     """Start an async frame render job and return its job_id immediately."""
     if get_manager().get(body.workspace_id) is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    scene_job = get_registry().get(body.scene_job_id)
-    if scene_job is None:
-        raise HTTPException(status_code=404, detail="Scene job not found")
-    if scene_job.status != "done":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Scene job not done (status: {scene_job.status})",
-        )
+    if body.blend_path is None:
+        scene_job = get_registry().get(body.scene_job_id or "")
+        if scene_job is None:
+            raise HTTPException(status_code=404, detail="Scene job not found")
+        if scene_job.status != "done":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Scene job not done (status: {scene_job.status})",
+            )
     job = get_registry().create()
     get_manager().register_job(body.workspace_id, job.job_id)
     asyncio.create_task(_run(job.job_id, body))
@@ -53,17 +55,20 @@ async def _run(job_id: str, body: RenderFramesRequest) -> None:
     job.status = "running"
     job.message = "Rendering frames…"
 
-    scene_job = get_registry().get(body.scene_job_id)
-    if scene_job is None:
-        job.status = "error"
-        job.error = "Scene job no longer available"
-        return
-
-    blend_path = scene_job.result
-    if not isinstance(blend_path, str):
-        job.status = "error"
-        job.error = "Scene job result has unexpected type"
-        return
+    if body.blend_path is not None:
+        blend_path: str = body.blend_path
+    else:
+        scene_job = get_registry().get(body.scene_job_id or "")
+        if scene_job is None:
+            job.status = "error"
+            job.error = "Scene job no longer available"
+            return
+        result = scene_job.result
+        if not isinstance(result, str):
+            job.status = "error"
+            job.error = "Scene job result has unexpected type"
+            return
+        blend_path = result
 
     total = len(body.keyframes)
     progress_cb = make_progress_cb(job, "Frame", min_pct=1, max_pct=99)

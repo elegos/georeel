@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import final
 
 from georeel.core import temp_manager
@@ -72,7 +74,8 @@ class ServerManager:
         port = _free_port()
         url = f"http://{self._host}:{port}"
         _log.info("Starting georeel-server on %s", url)
-        cmd = ["georeel-server", "--host", self._host, "--port", str(port),
+        georeel_server = str(Path(sys.executable).parent / "georeel-server")
+        cmd = [georeel_server, "--host", self._host, "--port", str(port),
                "--log-level", "debug"]
         base_dir = temp_manager.get_base_dir()
         if base_dir is not None:

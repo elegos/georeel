@@ -54,6 +54,11 @@ _LOOK_AHEAD_M = 100.0
 # removed; lower → smoother but risks suppressing genuine fast turns.
 _ORIENTATION_SPIKE_MAD_FACTOR = 6.0
 
+# Duration of the slerped descent that follows the static hold in the intro
+# overview.  Not user-configurable; the user-facing setting controls only the
+# static hold duration.
+_INTRO_DESCENT_S = 3.0
+
 
 class CameraPathError(Exception):
     pass
@@ -92,6 +97,23 @@ def build_camera_path(
     tangent_weight = settings.get("render/tangent_weight", "linear")
     pause_mode = settings.get("render/photo_pause_mode", "hold")
     pause_duration = float(settings.get("render/photo_pause_duration", 3.0))
+
+    # New feature settings
+    intro_enabled = bool(settings.get("render/intro_overview_enabled", False)) and str(
+        settings.get("render/intro_overview_enabled", False)
+    ) != "false"
+    intro_duration_s = float(settings.get("render/intro_overview_duration_s", 6.0))
+    dynamic_speed_enabled = bool(
+        settings.get("render/dynamic_speed_enabled", False)
+    ) and str(settings.get("render/dynamic_speed_enabled", False)) != "false"
+    dynamic_speed_factor = float(settings.get("render/dynamic_speed_factor", 1.33))
+    dynamic_speed_ramp_s = float(settings.get("render/dynamic_speed_ramp_s", 4.0))
+    auto_zoom_enabled = bool(settings.get("render/auto_zoom_enabled", False)) and str(
+        settings.get("render/auto_zoom_enabled", False)
+    ) != "false"
+    auto_zoom_curvature_deg_per_m = float(
+        settings.get("render/auto_zoom_curvature_deg_per_m", 0.5)
+    )
 
     # Scene coordinate system matches the elevation grid's extent (which may be
     # expanded beyond the track bbox by the frustum margin added in stage 3+4).
@@ -145,8 +167,18 @@ def build_camera_path(
         )
     del lats, lons
 
-    pts = np.array([_tp_to_xy(tp, bbox, lat_m, lon_m) for tp in pipeline.trackpoints])
-    pts = _remove_duplicates(pts)
+    # Build XY array before dedup so we can compute per-trackpoint arc-lengths
+    # for photo position mapping (Feature 2: dynamic speed).
+    orig_pts = np.array(
+        [_tp_to_xy(tp, bbox, lat_m, lon_m) for tp in pipeline.trackpoints]
+    )
+    _orig_diffs = np.diff(orig_pts, axis=0)
+    _orig_seg_lens = np.sqrt((_orig_diffs**2).sum(axis=1))
+    trackpt_cumlen = np.concatenate([[0.0], np.cumsum(_orig_seg_lens)])
+    del _orig_diffs, _orig_seg_lens
+
+    pts = _remove_duplicates(orig_pts)
+    del orig_pts
 
     if len(pts) < 4:
         raise CameraPathError(
@@ -190,30 +222,65 @@ def build_camera_path(
             pl_total_length / 1_000,
         )
 
-    dist_per_frame = speed_mps / fps
-    n_frames_raw = max(2, int(pl_total_length / dist_per_frame))
-
     # Hard cap: no more than 2 hours of video at the chosen fps.
-    # Beyond this the memory cost of Python keyframe objects becomes extreme
-    # (each CameraKeyframe is ~350 bytes; 100 M objects = ~35 GB).
     _MAX_VIDEO_S = 7_200  # 2 hours
     n_frames_max = fps * _MAX_VIDEO_S
-    if n_frames_raw > n_frames_max:
-        _log.warning(
-            "[camera_path] Clamping n_frames from %d to %d (%.1f h cap). "
-            "The track length (%.0f km) is likely inflated by bad GPS data.",
-            n_frames_raw,
-            n_frames_max,
-            _MAX_VIDEO_S / 3600,
-            pl_total_length / 1_000,
+
+    if dynamic_speed_enabled:
+        # Collect in-track photo arc-length positions for the speed profile.
+        photo_arc_lengths: list[float] = []
+        for r in pipeline.match_results:
+            if r.ok and r.trackpoint_index is not None and r.position == "track":
+                idx = min(r.trackpoint_index, len(trackpt_cumlen) - 1)
+                photo_arc_lengths.append(float(trackpt_cumlen[idx]))
+
+        ramp_m = dynamic_speed_ramp_s * speed_mps
+        s_fine, mult_fine = _build_speed_profile(
+            pl_total_length, photo_arc_lengths, ramp_m, dynamic_speed_factor
         )
-    n_frames = min(n_frames_raw, n_frames_max)
+        # Integrate: dt = ds / (speed_mps * multiplier)
+        ds_step = float(s_fine[1] - s_fine[0])
+        mid_mult = (mult_fine[:-1] + mult_fine[1:]) / 2.0
+        dt_segments = ds_step / (speed_mps * mid_mult)
+        cumtime = np.concatenate([[0.0], np.cumsum(dt_segments)])
+        total_time = float(cumtime[-1])
+        del dt_segments, mid_mult
+
+        n_frames_raw = max(2, round(total_time * fps))
+        if n_frames_raw > n_frames_max:
+            _log.warning(
+                "[camera_path] Dynamic-speed n_frames clamped from %d to %d.",
+                n_frames_raw,
+                n_frames_max,
+            )
+        n_frames = min(n_frames_raw, n_frames_max)
+
+        # Non-uniform arc-length samples at equal animation time intervals
+        frame_times = np.linspace(0.0, total_time, n_frames)
+        sample_dists_pl = np.interp(frame_times, cumtime, s_fine)
+        del frame_times, cumtime, s_fine, mult_fine
+    else:
+        dist_per_frame = speed_mps / fps
+        n_frames_raw = max(2, int(pl_total_length / dist_per_frame))
+
+        if n_frames_raw > n_frames_max:
+            _log.warning(
+                "[camera_path] Clamping n_frames from %d to %d (%.1f h cap). "
+                "The track length (%.0f km) is likely inflated by bad GPS data.",
+                n_frames_raw,
+                n_frames_max,
+                _MAX_VIDEO_S / 3600,
+                pl_total_length / 1_000,
+            )
+        n_frames = min(n_frames_raw, n_frames_max)
+        sample_dists_pl = np.linspace(0, pl_total_length, n_frames)
+
+    del trackpt_cumlen
 
     if orient_mode == "tangent":
         # Tangent mode derives heading from step vectors between xs/ys — no spline
         # needed.  Resample directly on the PL path: look-at at frame F is at
         # PL arc distance F * pl_total / n_frames, perfectly matching the ribbon.
-        sample_dists_pl = np.linspace(0, pl_total_length, n_frames)
         xs = np.interp(sample_dists_pl, cumlen_pl, pts[:, 0])
         ys = np.interp(sample_dists_pl, cumlen_pl, pts[:, 1])
         del pts, sample_dists_pl, cumlen_pl
@@ -233,9 +300,8 @@ def build_camera_path(
         cumlen_bs = np.concatenate([[0.0], np.cumsum(np.sqrt(dx_fine**2 + dy_fine**2))])
         total_length_bs = float(cumlen_bs[-1])
         del dx_fine, dy_fine, xs_fine, ys_fine
-        sample_dists_bs = np.linspace(0, total_length_bs, n_frames)
-        sample_t = np.interp(sample_dists_bs, cumlen_bs, t_fine)
-        del t_fine, cumlen_bs, sample_dists_bs
+        sample_t = np.interp(sample_dists_pl, cumlen_bs, t_fine)
+        del t_fine, cumlen_bs, sample_dists_pl
         _ev = splev(sample_t, tck)
         xs = np.asarray(_ev[0], dtype=float)
         ys = np.asarray(_ev[1], dtype=float)
@@ -252,6 +318,16 @@ def build_camera_path(
     terrain_zs = _height_at_batch(xs, ys, grid, bbox, lat_m, lon_m, height_mode)
 
     _step(3, "terrain heights done")
+
+    # ------------------------------------------------------------------ #
+    # 4b. Path curvature (for Feature 3: auto zoom)                       #
+    # ------------------------------------------------------------------ #
+
+    curvature_rad_per_m: np.ndarray = (
+        _compute_path_curvature(xs, ys)
+        if auto_zoom_enabled
+        else np.empty(0)
+    )
 
     # ------------------------------------------------------------------ #
     # 5. Forward directions (horizontal heading at each frame)            #
@@ -305,15 +381,7 @@ def build_camera_path(
     # Look-at = the marker itself, so pitch == -tilt exactly.            #
     # ------------------------------------------------------------------ #
 
-    horiz_back = height_offset * math.cos(tilt_rad)
-    height_above = height_offset * math.sin(tilt_rad)
-
     # Smooth the heading in angle space *before* computing the camera offset.
-    # Component-wise Gaussian averaging of unit vectors produces near-zero
-    # magnitudes at ~180° reversals (e.g. averaging (1,0) and (-1,0) gives
-    # (0,0)), which causes undefined headings and the visible direction spikes
-    # on tight curves.  Converting to an unwrapped angle signal first keeps it
-    # continuous, so the Gaussian filter is always well-defined.
     sigma_dir = max(1.0, fps * 2)
     sigma = max(1.0, fps / 2)
 
@@ -330,10 +398,33 @@ def build_camera_path(
     nys = np.sin(angles_smooth)
     del angles_smooth
 
-    cam_xs_raw = xs - nxs * horiz_back
-    cam_ys_raw = ys - nys * horiz_back
-    cam_zs_raw = terrain_zs + height_above
-    del nxs, nys
+    # Auto-zoom: per-frame height offset (Feature 3)
+    if auto_zoom_enabled:
+        auto_zoom_threshold_rad = math.radians(auto_zoom_curvature_deg_per_m)
+        curv_smooth = gaussian_filter1d(
+            curvature_rad_per_m, max(1.0, fps * 2.0), mode="nearest"
+        )
+        t_zoom = np.clip(curv_smooth / auto_zoom_threshold_rad, 0.0, 1.0)
+        # Smoothstep: slow ramp in/out
+        t_zoom = t_zoom * t_zoom * (3.0 - 2.0 * t_zoom)
+        # height_scale: 1.0 (no zoom) → 0.5 (half distance) at full curvature
+        height_scale = 1.0 - 0.5 * t_zoom
+        # Second smooth pass to prevent abrupt zoom transitions
+        height_scale = gaussian_filter1d(height_scale, max(1.0, fps * 2.0), mode="nearest")
+        height_scale = np.clip(height_scale, 0.5, 1.0)
+        effective_h = height_offset * height_scale
+        del curv_smooth, t_zoom, height_scale, curvature_rad_per_m
+        horiz_back_arr = effective_h * math.cos(tilt_rad)
+        height_above_arr = effective_h * math.sin(tilt_rad)
+        del effective_h
+    else:
+        horiz_back_arr = np.full(n_frames, height_offset * math.cos(tilt_rad))
+        height_above_arr = np.full(n_frames, height_offset * math.sin(tilt_rad))
+
+    cam_xs_raw = xs - nxs * horiz_back_arr
+    cam_ys_raw = ys - nys * horiz_back_arr
+    cam_zs_raw = terrain_zs + height_above_arr
+    del nxs, nys, horiz_back_arr, height_above_arr
 
     _log.info(
         "[camera_path] smoothing 4 position arrays in parallel  (RSS %.0f MB)",
@@ -355,8 +446,6 @@ def build_camera_path(
 
     # Frame numbers start at 1 to match Blender's default timeline origin and
     # the Build modifier's frame_start=1 in build_scene.py.
-    # Convert to plain Python arrays first so the list comprehension does
-    # cheap indexed lookups rather than per-element numpy scalar boxing.
     _log.info(
         "[camera_path] building %d keyframe objects  (RSS %.0f MB)", n_frames, _rss_mb()
     )
@@ -412,7 +501,232 @@ def build_camera_path(
 
     _step(7, f"done  total_keyframes={len(keyframes)}")
 
+    # ------------------------------------------------------------------ #
+    # 8. Prepend intro overview (Feature 1)                                #
+    # ------------------------------------------------------------------ #
+
+    if intro_enabled:
+        intro_kfs = _build_intro_overview(
+            keyframes, grid, bbox, lat_m, lon_m, height_mode, fps, intro_duration_s
+        )
+        if intro_kfs:
+            keyframes = intro_kfs + keyframes
+            for i, kf in enumerate(keyframes):
+                kf.frame = i + 1
+            _log.info(
+                "[camera_path] prepended %d intro overview frames", len(intro_kfs)
+            )
+
     return keyframes
+
+
+# ------------------------------------------------------------------
+# Feature 1: Intro overview
+# ------------------------------------------------------------------
+
+
+def _build_intro_overview(
+    main_keyframes: list[CameraKeyframe],
+    grid: ElevationGrid,
+    bbox: BoundingBox,
+    lat_m: float,
+    lon_m: float,
+    height_mode: str,
+    fps: int,
+    duration_s: float,
+) -> list[CameraKeyframe]:
+    """Build intro keyframes: two distinct phases.
+
+    Phase 1 — Static hold (duration_s seconds):
+        Camera sits at high altitude above the track centre, pointing straight
+        down north-up.  All frames are *identical* so there is zero movement
+        or rotation during the hold.
+
+    Phase 2 — Slerped descent (_INTRO_DESCENT_S seconds):
+        Camera smoothly descends from the hold position to the first flythrough
+        keyframe.  Position follows a smoothstep curve; orientation is slerped
+        independently so the rotation starts from the very first descent frame
+        and ends exactly at the first flythrough orientation.  The last frame
+        is snapped to the exact position/look_at of fly_kfs[0] to avoid any
+        floating-point drift.
+
+    The two-phase design avoids the "rotation-in-place" artifact that a single
+    smoothstep-from-top transition produces: the orientation change only starts
+    when the camera actually begins its descent.
+    """
+    fly_kfs = [kf for kf in main_keyframes if not kf.is_pause]
+    if not fly_kfs:
+        return []
+
+    n_static  = max(1, round(duration_s      * fps))
+    n_descent = max(2, round(_INTRO_DESCENT_S * fps))
+
+    lax = np.array([kf.look_at_x for kf in fly_kfs])
+    lay = np.array([kf.look_at_y for kf in fly_kfs])
+    track_cx = float(np.mean(lax))
+    track_cy = float(np.mean(lay))
+    track_extent = max(
+        float(np.max(lax) - np.min(lax)), float(np.max(lay) - np.min(lay)), 100.0
+    )
+
+    terrain_center_z = _height_at(
+        track_cx, track_cy, grid, bbox, lat_m, lon_m, height_mode
+    )
+    intro_alt = terrain_center_z + track_extent * 2.0
+
+    # 1% southward offset keeps forward direction slightly northward so
+    # _zero_roll_quat produces a consistent north-up camera at altitude.
+    south_offset = track_extent * 0.01
+    start_x  = track_cx
+    start_y  = track_cy - south_offset
+    start_z  = intro_alt
+    start_lx = track_cx
+    start_ly = track_cy
+    start_lz = terrain_center_z
+
+    end = fly_kfs[0]
+
+    # ── Phase 1: static hold ────────────────────────────────────────────── #
+    intro_kfs: list[CameraKeyframe] = []
+    for _ in range(n_static):
+        intro_kfs.append(CameraKeyframe(
+            frame=0,
+            x=start_x, y=start_y, z=start_z,
+            look_at_x=start_lx, look_at_y=start_ly, look_at_z=start_lz,
+            is_intro=True,
+        ))
+
+    # ── Phase 2: slerped descent ────────────────────────────────────────── #
+    # Slerp the forward direction so rotation starts at frame 1 of the descent
+    # and is independent of camera altitude.  Interpolating the look_at point
+    # directly would cause the angular rate to depend on altitude (from 20 km
+    # up a 100 m horizontal shift changes the heading by < 0.3°, so the camera
+    # would appear frozen then "catch up" abruptly).
+    fwd_start = np.array(
+        [start_lx - start_x, start_ly - start_y, start_lz - start_z], dtype=float
+    )
+    fwd_start /= float(np.linalg.norm(fwd_start))
+    fwd_end_arr = np.array(
+        [end.look_at_x - end.x, end.look_at_y - end.y, end.look_at_z - end.z], dtype=float
+    )
+    fwd_end_arr /= float(np.linalg.norm(fwd_end_arr))
+
+    cos_theta = float(np.clip(np.dot(fwd_start, fwd_end_arr), -1.0, 1.0))
+    _near_parallel = abs(cos_theta) > 0.9999
+    _theta: float     = 0.0
+    _sin_theta: float = 1.0
+    if not _near_parallel:
+        _theta     = math.acos(cos_theta)
+        _sin_theta = math.sin(_theta)
+
+    for i in range(n_descent):
+        # Snap last frame to exact flythrough values — no floating-point drift.
+        if i == n_descent - 1:
+            intro_kfs.append(CameraKeyframe(
+                frame=0,
+                x=end.x, y=end.y, z=end.z,
+                look_at_x=end.look_at_x,
+                look_at_y=end.look_at_y,
+                look_at_z=end.look_at_z,
+                is_intro=True,
+            ))
+            break
+
+        t_lin = i / (n_descent - 1)
+        t = 1.0 - (1.0 - t_lin) * (1.0 - t_lin)
+
+        px = start_x + t * (end.x - start_x)
+        py = start_y + t * (end.y - start_y)
+        pz = start_z + t * (end.z - start_z)
+
+        if _near_parallel:
+            fwd_t = (1.0 - t) * fwd_start + t * fwd_end_arr
+        else:
+            fwd_t = (
+                (math.sin((1.0 - t) * _theta) / _sin_theta) * fwd_start
+                + (math.sin(t * _theta) / _sin_theta) * fwd_end_arr
+            )
+        fn = float(np.linalg.norm(fwd_t))
+        if fn > 1e-9:
+            fwd_t = fwd_t / fn
+
+        intro_kfs.append(CameraKeyframe(
+            frame=0,
+            x=px, y=py, z=pz,
+            look_at_x=px + float(fwd_t[0]) * _LOOK_AHEAD_M,
+            look_at_y=py + float(fwd_t[1]) * _LOOK_AHEAD_M,
+            look_at_z=pz + float(fwd_t[2]) * _LOOK_AHEAD_M,
+            is_intro=True,
+        ))
+
+    return intro_kfs
+
+
+# ------------------------------------------------------------------
+# Feature 2: Dynamic speed profile
+# ------------------------------------------------------------------
+
+
+def _build_speed_profile(
+    pl_total_length: float,
+    photo_arc_lengths_m: list[float],
+    ramp_m: float,
+    factor: float,
+    n_fine: int = 10_000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (arc_positions, speed_multipliers) for the dynamic speed profile.
+
+    Multiplier equals 1.0 at each anchor (photo positions, track start, end)
+    and rises to *factor* in sections far from all anchors.  Transitions use
+    a smoothstep curve so the speed ramp is gradual (no abrupt jumps).
+    """
+    s = np.linspace(0.0, pl_total_length, n_fine)
+    multiplier = np.full(n_fine, factor, dtype=float)
+
+    # Track start and end are treated as anchors (camera slows down there too).
+    anchors = [0.0, pl_total_length] + list(photo_arc_lengths_m)
+    ramp_m_safe = max(ramp_m, 1.0)
+    for anchor in anchors:
+        dist = np.abs(s - anchor)
+        t = np.clip(dist / ramp_m_safe, 0.0, 1.0)
+        smooth_t = t * t * (3.0 - 2.0 * t)  # smoothstep
+        m = 1.0 + (factor - 1.0) * smooth_t
+        multiplier = np.minimum(multiplier, m)
+
+    return s, multiplier
+
+
+# ------------------------------------------------------------------
+# Feature 3: Path curvature
+# ------------------------------------------------------------------
+
+
+def _compute_path_curvature(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """Return absolute curvature in radians/metre at each frame position.
+
+    Curvature is estimated as the rate of heading change per unit arc-length,
+    computed from the discrete frame positions.  The result is padded to match
+    the length of *xs* / *ys*.
+    """
+    n = len(xs)
+    if n < 3:
+        return np.zeros(n)
+
+    dx = np.diff(xs)
+    dy = np.diff(ys)
+    ds = np.hypot(dx, dy)  # arc-length of each frame-to-frame segment
+
+    heading = np.arctan2(dy, dx)
+    d_heading = np.abs(np.diff(np.unwrap(heading)))  # length n-2
+
+    # Midpoint arc-length between adjacent segments
+    ds_avg = (ds[:-1] + ds[1:]) / 2.0
+    curvature_mid = d_heading / np.where(ds_avg > 1e-6, ds_avg, 1e-6)  # length n-2
+
+    # Pad to length n: first and last frames get their nearest neighbour's value.
+    return np.concatenate(
+        [curvature_mid[:1], curvature_mid, curvature_mid[-1:]]
+    )
 
 
 # ------------------------------------------------------------------

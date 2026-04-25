@@ -262,7 +262,8 @@ def _write_locality_banners(
     height_offset    = float(settings.get("locality_names/banner_height_offset", 200.0))
     # Constant-angular-size factor: banner_world_size = camera_distance × scale_factor
     scale_factor     = float(settings.get("locality_names/banner_scale_factor",   0.08))
-    total_frames     = len(keyframes)
+    n_intro      = sum(1 for kf in keyframes if kf.is_intro)
+    total_frames = len(keyframes) - n_intro  # flythrough frames only
 
     tex_dir = work_dir / "banner_textures"
     tex_dir.mkdir(exist_ok=True)
@@ -283,7 +284,7 @@ def _write_locality_banners(
         fs0 = max(0, min(fs0, total_frames - 1))
         fe0 = max(fs0, min(fe0, total_frames - 1))
 
-        kf  = keyframes[min(fs0, len(keyframes) - 1)]
+        kf  = keyframes[min(n_intro + fs0, len(keyframes) - 1)]
         tex = tex_dir / f"banner_{i:04d}.png"
         _render_banner_texture(name, settings, tex)
 
@@ -322,8 +323,8 @@ def _write_locality_banners(
             "width_m":      height_offset * 0.5,
             "height_m":     height_offset * 0.125,
             "scale_factor": scale_factor,
-            "frame_start":  fs0 + 1,   # 1-indexed for Blender
-            "frame_end":    fe0 + 1,
+            "frame_start":  n_intro + fs0 + 1,   # 1-indexed for Blender, offset past intro
+            "frame_end":    n_intro + fe0 + 1,
             "fade_frames":  fade_frames,
         })
 
@@ -412,6 +413,13 @@ def render_frames(
     if not pipeline.camera_keyframes:
         raise FrameRenderError("Camera keyframes are required (run camera path generator first).")
 
+    keyframes = pipeline.camera_keyframes
+    frame_limit_raw = settings.get("render/frame_limit")
+    if frame_limit_raw is not None:
+        frame_limit = int(frame_limit_raw)
+        if 0 < frame_limit < len(keyframes):
+            keyframes = keyframes[:frame_limit]
+
     exe = find_blender(blender_exe)
     if exe is None:
         raise FrameRenderError(
@@ -430,15 +438,15 @@ def render_frames(
     out_dir  = work_dir / "frames"
     out_dir.mkdir()
 
-    _write_keyframes(pipeline.camera_keyframes, kf_path)
+    _write_keyframes(keyframes, kf_path)
 
-    total = len(pipeline.camera_keyframes)
+    total = len(keyframes)
 
     banners_path: Path | None = None
     if (bool(settings.get("locality_names/show_3d_banner", False))
             and bool(settings.get("locality_names/enabled", False))
             and settings.get("locality_names/timeline_json")):
-        banners_path = _write_locality_banners(pipeline.camera_keyframes, settings, work_dir)
+        banners_path = _write_locality_banners(keyframes, settings, work_dir)
         if banners_path:
             _log.info("[render] 3D locality banners written to %s", banners_path)
         else:
@@ -447,6 +455,7 @@ def render_frames(
     if n_segments > 1:
         return _render_segmented(
             pipeline=pipeline,
+            keyframes=keyframes,
             settings=settings,
             exe=exe,
             kf_path=kf_path,
@@ -538,6 +547,7 @@ def _render_single(
         "0" if comp_server else str(png_compression),        # argv[9]: 0 = Blender writes raw
         str(comp_server.port if comp_server else 0),         # argv[10]: compression server port
         str(banners_path) if banners_path else "",           # argv[11]: locality banners JSON
+        str(float(settings.get("render/intro_track_lift_m", 5.0)) if settings else 5.0),    # argv[12]
     ]
 
     try:
@@ -591,6 +601,7 @@ def _render_single(
 
 def _render_segmented(
     pipeline: Pipeline,
+    keyframes: list[CameraKeyframe],
     settings: dict[str, Any],
     exe: str,
     kf_path: Path,
@@ -639,8 +650,6 @@ def _render_segmented(
             use_tile_filter = False
 
     margin_m = float(settings.get("render/frustum_margin_km", 50.0)) * 1000.0
-    keyframes = pipeline.camera_keyframes
-    assert keyframes is not None  # guaranteed by caller
     seg_size  = math.ceil(total / n_segments)
 
     for seg_idx in range(n_segments):
@@ -708,6 +717,7 @@ def _write_keyframes(keyframes: list[CameraKeyframe], path: Path) -> None:
             "look_at_z":  kf.look_at_z,
             "is_pause":   kf.is_pause,
             "photo_path": kf.photo_path,
+            "is_intro":   kf.is_intro,
         }
         for kf in keyframes
     ]

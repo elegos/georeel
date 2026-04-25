@@ -255,17 +255,21 @@ class ServerClient:
     def start_render_frames(
         self,
         workspace_id: str,
-        scene_job_id: str,
         keyframes: list[dict[str, Any]],
         settings: dict[str, Any],
+        scene_job_id: str | None = None,
+        blend_path: str | None = None,
         blender_exe: str | None = None,
     ) -> str:
         body: dict[str, Any] = {
             "workspace_id": workspace_id,
-            "scene_job_id": scene_job_id,
             "keyframes": keyframes,
             "settings": settings,
         }
+        if scene_job_id is not None:
+            body["scene_job_id"] = scene_job_id
+        if blend_path is not None:
+            body["blend_path"] = blend_path
         if blender_exe:
             body["blender_exe"] = blender_exe
         return str(self._post("/api/v1/render/frames", json=body)["job_id"])
@@ -456,6 +460,7 @@ def keyframe_to_dict(kf: CameraKeyframe) -> dict[str, Any]:
         "look_at_z": kf.look_at_z,
         "is_pause": kf.is_pause,
         "photo_path": kf.photo_path,
+        "is_intro": kf.is_intro,
     }
 
 

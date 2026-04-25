@@ -41,6 +41,9 @@ KEY_HEIGHT_MODE = "render/camera_height_mode"  # "dem_fixed" | "dem_smooth"
 KEY_HEIGHT_OFFSET = (
     "render/camera_height_offset"  # slant distance to track point (metres)
 )
+KEY_INTRO_TRACK_LIFT = (
+    "render/intro_track_lift_m"  # how high the overview ribbon is lifted above terrain in the intro
+)
 KEY_ORIENTATION = "render/camera_orientation"  # "tangent" | "lookat"
 KEY_TILT_DEG = "render/camera_tilt_deg"  # degrees below horizontal (int)
 KEY_PHOTO_PAUSE_MODE = "render/photo_pause_mode"  # "hold" | "ease"
@@ -92,6 +95,13 @@ KEY_GPX_MAX_GAP_S = "gpx/max_gap_s"  # float s — gaps longer than this are fil
 KEY_GPX_MAX_JUMP_KM = "gpx/max_jump_km"  # float km — no-timestamp fallback distance
 KEY_CACHE_USE_CUSTOM_DIR = "cache/use_custom_dir"  # bool — use custom temp dir
 KEY_CACHE_BASE_DIR = "cache/base_dir"  # str  — path to custom temp dir
+KEY_INTRO_OVERVIEW_ENABLED = "render/intro_overview_enabled"  # bool
+KEY_INTRO_OVERVIEW_DURATION_S = "render/intro_overview_duration_s"  # float seconds
+KEY_DYNAMIC_SPEED_ENABLED = "render/dynamic_speed_enabled"  # bool
+KEY_DYNAMIC_SPEED_FACTOR = "render/dynamic_speed_factor"  # float multiplier at peak
+KEY_DYNAMIC_SPEED_RAMP_S = "render/dynamic_speed_ramp_s"  # float ramp duration seconds
+KEY_AUTO_ZOOM_ENABLED = "render/auto_zoom_enabled"  # bool
+KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M = "render/auto_zoom_curvature_deg_per_m"  # float °/m
 
 _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
     "landscape": [
@@ -118,6 +128,7 @@ DEFAULTS = {
     KEY_PATH_SMOOTHING: "spline",
     KEY_HEIGHT_MODE: "dem_fixed",
     KEY_HEIGHT_OFFSET: 2000,
+    KEY_INTRO_TRACK_LIFT: 5,
     KEY_ORIENTATION: "tangent",
     KEY_TILT_DEG: 45,
     KEY_PHOTO_PAUSE_MODE: "hold",
@@ -160,6 +171,13 @@ DEFAULTS = {
     KEY_GPX_MAX_JUMP_KM: 50.0,
     KEY_CACHE_USE_CUSTOM_DIR: False,
     KEY_CACHE_BASE_DIR: "",
+    KEY_INTRO_OVERVIEW_ENABLED: False,
+    KEY_INTRO_OVERVIEW_DURATION_S: 3.0,
+    KEY_DYNAMIC_SPEED_ENABLED: False,
+    KEY_DYNAMIC_SPEED_FACTOR: 1.33,
+    KEY_DYNAMIC_SPEED_RAMP_S: 4.0,
+    KEY_AUTO_ZOOM_ENABLED: False,
+    KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M: 0.5,
 }
 
 
@@ -237,6 +255,49 @@ class RenderSettingsDialog(QDialog):
     def _build_camera_tab(self) -> QWidget:
         tab, layout = _make_tab()
 
+        # Intro overview
+        intro_group = QGroupBox("Intro overview")
+        intro_form = QFormLayout(intro_group)
+        self._intro_overview_check = QCheckBox("Enable intro overview")
+        self._intro_overview_check.setToolTip(
+            "Prepend a cinematic intro to the video: the camera starts zoomed-out\n"
+            "and top-down over the entire track (north at top), ribbon fully drawn,\n"
+            "then smoothly flies down and rotates into the configured fly-through\n"
+            "start position over the chosen duration."
+        )
+        self._intro_overview_check.setChecked(
+            bool(
+                self._settings.value(
+                    KEY_INTRO_OVERVIEW_ENABLED, DEFAULTS[KEY_INTRO_OVERVIEW_ENABLED]
+                )
+            )
+            and self._settings.value(
+                KEY_INTRO_OVERVIEW_ENABLED, DEFAULTS[KEY_INTRO_OVERVIEW_ENABLED]
+            )
+            != "false"
+        )
+        intro_form.addRow(self._intro_overview_check)
+        self._intro_duration_spin = QDoubleSpinBox()
+        self._intro_duration_spin.setRange(1.0, 30.0)
+        self._intro_duration_spin.setSingleStep(0.5)
+        self._intro_duration_spin.setDecimals(1)
+        self._intro_duration_spin.setSuffix(" s")
+        self._intro_duration_spin.setToolTip(
+            "Duration of the intro overview animation — from the zoomed-out top-down\n"
+            "view to the fly-through start position. Default: 6 s."
+        )
+        self._intro_duration_spin.setValue(
+            float(
+                str(
+                    self._settings.value(
+                        KEY_INTRO_OVERVIEW_DURATION_S,
+                        DEFAULTS[KEY_INTRO_OVERVIEW_DURATION_S],
+                    )
+                )
+            )
+        )
+        intro_form.addRow("Duration:", self._intro_duration_spin)
+
         # Path smoothing
         path_group = QGroupBox("Path smoothing")
         path_form = QFormLayout(path_group)
@@ -256,6 +317,67 @@ class RenderSettingsDialog(QDialog):
             str(self._settings.value(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING])),
         )
         path_form.addRow("Method:", self._path_combo)
+
+        # Dynamic speed
+        dyn_group = QGroupBox("Dynamic speed")
+        dyn_form = QFormLayout(dyn_group)
+        self._dynamic_speed_check = QCheckBox("Speed up dead sections")
+        self._dynamic_speed_check.setToolTip(
+            "Automatically accelerate the fly-through in sections with no photo\n"
+            "waypoints nearby, and decelerate again as the camera approaches the\n"
+            "next photo or the end of the track. The speed ramps up and down using\n"
+            "a smooth plateau curve (slow → fast → slow), so transitions are gradual."
+        )
+        self._dynamic_speed_check.setChecked(
+            bool(
+                self._settings.value(
+                    KEY_DYNAMIC_SPEED_ENABLED, DEFAULTS[KEY_DYNAMIC_SPEED_ENABLED]
+                )
+            )
+            and self._settings.value(
+                KEY_DYNAMIC_SPEED_ENABLED, DEFAULTS[KEY_DYNAMIC_SPEED_ENABLED]
+            )
+            != "false"
+        )
+        dyn_form.addRow(self._dynamic_speed_check)
+        self._dynamic_speed_factor_spin = QDoubleSpinBox()
+        self._dynamic_speed_factor_spin.setRange(1.1, 2.0)
+        self._dynamic_speed_factor_spin.setSingleStep(0.05)
+        self._dynamic_speed_factor_spin.setDecimals(2)
+        self._dynamic_speed_factor_spin.setSuffix("×")
+        self._dynamic_speed_factor_spin.setToolTip(
+            "Peak speed multiplier applied in dead sections (far from any photo).\n"
+            "1.33× = one-third faster; 2.0× = double speed. Default: 1.33×."
+        )
+        self._dynamic_speed_factor_spin.setValue(
+            float(
+                str(
+                    self._settings.value(
+                        KEY_DYNAMIC_SPEED_FACTOR, DEFAULTS[KEY_DYNAMIC_SPEED_FACTOR]
+                    )
+                )
+            )
+        )
+        dyn_form.addRow("Peak factor:", self._dynamic_speed_factor_spin)
+        self._dynamic_speed_ramp_spin = QDoubleSpinBox()
+        self._dynamic_speed_ramp_spin.setRange(1.0, 30.0)
+        self._dynamic_speed_ramp_spin.setSingleStep(0.5)
+        self._dynamic_speed_ramp_spin.setDecimals(1)
+        self._dynamic_speed_ramp_spin.setSuffix(" s")
+        self._dynamic_speed_ramp_spin.setToolTip(
+            "Time over which the camera ramps up to peak speed (and back down).\n"
+            "Converted to metres using the base camera speed. Default: 4 s."
+        )
+        self._dynamic_speed_ramp_spin.setValue(
+            float(
+                str(
+                    self._settings.value(
+                        KEY_DYNAMIC_SPEED_RAMP_S, DEFAULTS[KEY_DYNAMIC_SPEED_RAMP_S]
+                    )
+                )
+            )
+        )
+        dyn_form.addRow("Ramp duration:", self._dynamic_speed_ramp_spin)
 
         # Height
         height_group = QGroupBox("Height")
@@ -289,6 +411,67 @@ class RenderSettingsDialog(QDialog):
             )
         )
         height_form.addRow("Distance to track:", self._height_spin)
+        self._preview_height_spin = QSpinBox()
+        self._preview_height_spin.setRange(5, 5000)
+        self._preview_height_spin.setSingleStep(10)
+        self._preview_height_spin.setSuffix(" m")
+        self._preview_height_spin.setToolTip(
+            "How many metres the overview ribbon is lifted above the terrain\n"
+            "during the intro top-down sequence. Increase if the ribbon is\n"
+            "hard to see against the terrain texture."
+        )
+        self._preview_height_spin.setValue(
+            int(
+                str(
+                    self._settings.value(
+                        KEY_INTRO_TRACK_LIFT, DEFAULTS[KEY_INTRO_TRACK_LIFT]
+                    )
+                )
+            )
+        )
+        height_form.addRow("Intro ribbon lift:", self._preview_height_spin)
+        self._auto_zoom_check = QCheckBox("Auto-zoom on dense path")
+        self._auto_zoom_check.setToolTip(
+            "When the camera traverses a high-curvature section of the track\n"
+            "(tight corners, switchbacks), automatically reduce the camera distance\n"
+            "to 50% of the configured value so the detail is more visible.\n"
+            "The zoom is smoothly ramped in and out."
+        )
+        self._auto_zoom_check.setChecked(
+            bool(
+                self._settings.value(
+                    KEY_AUTO_ZOOM_ENABLED, DEFAULTS[KEY_AUTO_ZOOM_ENABLED]
+                )
+            )
+            and self._settings.value(
+                KEY_AUTO_ZOOM_ENABLED, DEFAULTS[KEY_AUTO_ZOOM_ENABLED]
+            )
+            != "false"
+        )
+        height_form.addRow(self._auto_zoom_check)
+        self._auto_zoom_curvature_spin = QDoubleSpinBox()
+        self._auto_zoom_curvature_spin.setRange(0.1, 10.0)
+        self._auto_zoom_curvature_spin.setSingleStep(0.1)
+        self._auto_zoom_curvature_spin.setDecimals(1)
+        self._auto_zoom_curvature_spin.setSuffix(" °/m")
+        self._auto_zoom_curvature_spin.setToolTip(
+            "Path curvature threshold at which auto-zoom kicks in, expressed as\n"
+            "heading change in degrees per metre of travel.\n"
+            "Lower values = zoom in on gentler curves; higher = only very tight bends.\n"
+            "Typical values: 0.3 °/m (broad curves) – 1.0 °/m (hairpin bends only).\n"
+            "Default: 0.5 °/m."
+        )
+        self._auto_zoom_curvature_spin.setValue(
+            float(
+                str(
+                    self._settings.value(
+                        KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M,
+                        DEFAULTS[KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M],
+                    )
+                )
+            )
+        )
+        height_form.addRow("Curvature threshold:", self._auto_zoom_curvature_spin)
 
         # Orientation
         orient_group = QGroupBox("Orientation")
@@ -417,7 +600,9 @@ class RenderSettingsDialog(QDialog):
         )
         pause_form.addRow("Duration per photo:", self._pause_spin)
 
+        layout.addWidget(intro_group)
         layout.addWidget(path_group)
+        layout.addWidget(dyn_group)
         layout.addWidget(height_group)
         layout.addWidget(orient_group)
         layout.addWidget(pause_group)
@@ -1118,6 +1303,7 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_PATH_SMOOTHING, self._path_combo.currentData())
         self._settings.setValue(KEY_HEIGHT_MODE, self._height_combo.currentData())
         self._settings.setValue(KEY_HEIGHT_OFFSET, self._height_spin.value())
+        self._settings.setValue(KEY_INTRO_TRACK_LIFT, self._preview_height_spin.value())
         self._settings.setValue(KEY_ORIENTATION, self._orient_combo.currentData())
         self._settings.setValue(KEY_TILT_DEG, self._tilt_spin.value())
         self._settings.setValue(KEY_FRUSTUM_MARGIN_KM, self._frustum_spin.value())
@@ -1166,6 +1352,25 @@ class RenderSettingsDialog(QDialog):
         self._settings.setValue(KEY_MARKER_CUSTOM_COLOR, self._marker_custom_color)
         self._settings.setValue(KEY_PIN_COLOR, self._pin_color_name)
         self._settings.setValue(KEY_PIN_CUSTOM_COLOR, self._pin_custom_color)
+        self._settings.setValue(
+            KEY_INTRO_OVERVIEW_ENABLED, self._intro_overview_check.isChecked()
+        )
+        self._settings.setValue(
+            KEY_INTRO_OVERVIEW_DURATION_S, self._intro_duration_spin.value()
+        )
+        self._settings.setValue(
+            KEY_DYNAMIC_SPEED_ENABLED, self._dynamic_speed_check.isChecked()
+        )
+        self._settings.setValue(
+            KEY_DYNAMIC_SPEED_FACTOR, self._dynamic_speed_factor_spin.value()
+        )
+        self._settings.setValue(
+            KEY_DYNAMIC_SPEED_RAMP_S, self._dynamic_speed_ramp_spin.value()
+        )
+        self._settings.setValue(KEY_AUTO_ZOOM_ENABLED, self._auto_zoom_check.isChecked())
+        self._settings.setValue(
+            KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M, self._auto_zoom_curvature_spin.value()
+        )
         self.accept()
 
 

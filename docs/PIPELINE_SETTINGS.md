@@ -9,7 +9,7 @@ Pipeline Settings is a tabbed dialog that controls every configurable parameter 
 | Tab | What it controls |
 |---|---|
 | [Playback](#playback) | Output frame rate |
-| [Camera](#camera) | Camera height, orientation, look-ahead, photo pause behaviour |
+| [Camera](#camera) | Intro overview, dynamic speed, camera height, auto-zoom, orientation, look-ahead, photo pause behaviour |
 | [Rendering](#rendering) | Render engine, resolution, quality, PNG compression, segmented rendering |
 | [Photos](#photos) | Photo matching, timezone offset, transition style and duration |
 | [Map](#map) | Satellite imagery provider, zoom level, API key |
@@ -39,6 +39,36 @@ Frames per second of the output video.
 
 ## Camera
 
+### Intro overview — Enable
+**Key:** `render/intro_overview_enabled` | **Default:** `false`
+
+When enabled, prepends a cinematic intro to the output video structured in two phases:
+
+1. **Static hold** (`duration_s` seconds): Camera sits at high altitude above the track centre, pointing straight down with north at the top, and the full track ribbon visible. No movement or rotation occurs during this phase.
+2. **Descent** (fixed 3 s): Camera smoothly flies down and rotates from the hold position into the fly-through start position and orientation, using a slerped forward direction and quadratic ease-out easing.
+
+### Intro overview — Static hold duration
+**Key:** `render/intro_overview_duration_s` | **Default:** `3.0` s | **Range:** 1–30 s
+
+Duration of the top-down static hold phase. Does **not** include the 3-second descent transition that follows it. Longer values give the viewer more time to read the full track; shorter values are snappier. Total intro length = `duration_s + 3`.
+
+### Dynamic speed — Enable
+**Key:** `render/dynamic_speed_enabled` | **Default:** `false`
+
+When enabled, the camera automatically accelerates in sections with no photo waypoints nearby ("dead" sections) and decelerates again as it approaches the next photo or the end of the track. The speed ramps up and down using a smooth plateau curve (slow → fast → slow), so transitions are gradual.
+
+This feature reduces the total video duration for tracks with long stretches between photos.
+
+### Dynamic speed — Peak factor
+**Key:** `render/dynamic_speed_factor` | **Default:** `1.33` | **Range:** 1.1–2.0
+
+Speed multiplier applied at peak velocity in dead sections. `1.33` = one-third faster; `2.0` = double speed.
+
+### Dynamic speed — Ramp duration
+**Key:** `render/dynamic_speed_ramp_s` | **Default:** `4.0` s | **Range:** 1–30 s
+
+Time over which the camera ramps up to peak speed (and back down). Converted to metres using the base camera speed setting. Longer ramps produce smoother, less perceptible speed changes.
+
 ### Path smoothing — Method
 **Key:** `render/path_smoothing` | **Default:** `spline`
 
@@ -61,6 +91,22 @@ How raw GPS trackpoints are converted into a smooth camera path.
 **Key:** `render/camera_height_offset` | **Default:** `2000` m | **Range:** 5–5000 m
 
 Slant distance between the camera and the track point directly below it. Typical values: 500–1500 m for hiking, 1000–3000 m for cycling or driving.
+
+### Height — Auto-zoom on dense path
+**Key:** `render/auto_zoom_enabled` | **Default:** `false`
+
+When enabled, the camera automatically reduces its distance to 50% of the configured value when traversing high-curvature sections of the track (tight corners, switchbacks). The zoom is smoothly ramped in and out using a Gaussian envelope so there are no abrupt distance changes.
+
+### Height — Curvature threshold
+**Key:** `render/auto_zoom_curvature_deg_per_m` | **Default:** `0.5` °/m | **Range:** 0.1–10.0 °/m
+
+Path curvature at which auto-zoom kicks in, expressed as degrees of heading change per metre of travel. Lower values trigger the zoom on gentler curves; higher values restrict it to very tight bends only.
+
+| Value | Effect |
+|---|---|
+| 0.3 °/m | Zooms in on broad curves (radius ~190 m) |
+| 0.5 °/m | Default — moderate switchbacks (radius ~115 m) |
+| 1.0 °/m | Only very tight hairpin bends (radius ~57 m) |
 
 ### Orientation — Method
 **Key:** `render/camera_orientation` | **Default:** `tangent`

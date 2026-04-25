@@ -58,7 +58,7 @@ class ScenePrepWorker(QThread):
         cached_satellite_texture: SatelliteTexture | None,
         api_key: str,
         custom_url: str,
-        client: ServerClient,
+        client: ServerClient | None,
         cleaned_trackpoints: list[Trackpoint] | None = None,
     ):
         super().__init__()
@@ -77,6 +77,9 @@ class ScenePrepWorker(QThread):
 
     @override
     def run(self) -> None:
+        if self._client is None:
+            self.error.emit("Server not available.")
+            return
         pipeline = Pipeline()
 
         # Stage 1 — GPX

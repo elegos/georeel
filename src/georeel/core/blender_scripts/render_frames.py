@@ -74,17 +74,20 @@ _SAMPLES = {
 }
 
 
-def _select_keyframe_indices(keyframes_data: list, stride: int) -> list[int]:
+def _select_keyframe_indices(keyframes_data: list, stride: int, n_intro: int = 0) -> list[int]:
     """Return sorted indices into keyframes_data to use as Blender keyframes.
 
-    Always includes first/last frame and pause-segment boundaries so that
-    CONSTANT interpolation can be applied precisely at photo waypoints.
+    Intro frames (0..n_intro-1) are all included so the smoothstep overview
+    curve is exact with no interpolation.  Flythrough frames use the given
+    stride; pause-segment boundaries are always included.
     """
     n = len(keyframes_data)
     selected: set[int] = set()
     selected.add(0)
     selected.add(n - 1)
-    for i in range(0, n, stride):
+    for i in range(min(n_intro, n)):
+        selected.add(i)
+    for i in range(max(n_intro, 0), n, stride):
         selected.add(i)
     in_pause = False
     for i, kf in enumerate(keyframes_data):
@@ -96,6 +99,309 @@ def _select_keyframe_indices(keyframes_data: list, stride: int) -> list[int]:
             selected.add(i)
             in_pause = False
     return sorted(selected)
+
+
+def _setup_intro_overview(scene, keyframes_data: list, track_lift_m: float = 50.0) -> int:
+    """Prepare scene for intro-overview frames prepended to the flythrough.
+
+    Shifts all existing scene animation forward by n_intro frames, creates a
+    static full-track ribbon that fades out during the overview, and hides
+    waypoint markers while the intro plays.
+
+    Returns n_intro (0 when no intro frames are present).
+    """
+    import bpy  # noqa: PLC0415
+
+    n_intro = sum(1 for kf in keyframes_data if kf.get("is_intro", False))
+    if n_intro == 0:
+        return 0
+
+    # ── 1+2. Shift all existing scene animation forward by n_intro frames ── #
+    for obj in scene.objects:
+        if not (obj.animation_data and obj.animation_data.action):
+            continue
+        for fc in obj.animation_data.action.fcurves:
+            # frame_start F-curves store absolute scene frame numbers as Y values
+            is_frame_ref = "frame_start" in fc.data_path
+            for kp in fc.keyframe_points:
+                kp.co.x           += n_intro
+                kp.handle_left.x  += n_intro
+                kp.handle_right.x += n_intro
+                if is_frame_ref:
+                    kp.co.y           += n_intro
+                    kp.handle_left.y  += n_intro
+                    kp.handle_right.y += n_intro
+            fc.update()
+
+    # ── 3a. Static full-track ribbon visible during the overview ──────────── #
+    track_obj = scene.objects.get("Track")
+    if track_obj is not None:
+        ov_mesh = track_obj.data.copy()
+        ov_obj  = bpy.data.objects.new("TrackOverview", ov_mesh)
+        # Link to the same collections as Track, plus always to the scene
+        # master collection so it is never excluded from any view layer.
+        linked_cols: set = set()
+        for col in track_obj.users_collection:
+            col.objects.link(ov_obj)
+            linked_cols.add(id(col))
+        if id(scene.collection) not in linked_cols:
+            scene.collection.objects.link(ov_obj)
+        ov_obj.matrix_world = track_obj.matrix_world.copy()
+
+        for v in ov_mesh.vertices:
+            v.co.z += track_lift_m
+
+        print(f"[georeel] TrackOverview created: {len(ov_mesh.polygons)} faces, "
+              f"hide_render={ov_obj.hide_render}")
+
+        # Fading emission material matching the track ribbon colour
+        mat = bpy.data.materials.new("TrackOverviewMat")
+        mat.use_nodes = True
+        try:
+            mat.surface_render_method = "BLENDED"   # EEVEE Next (Blender 4.2+)
+        except AttributeError:
+            try:
+                mat.blend_method = "BLEND"           # legacy EEVEE
+            except AttributeError:
+                pass
+        nt = mat.node_tree
+        nt.nodes.clear()
+
+        out_node = nt.nodes.new("ShaderNodeOutputMaterial"); out_node.location = (700,    0)
+        mix_node = nt.nodes.new("ShaderNodeMixShader");      mix_node.location = (500,    0)
+        transp   = nt.nodes.new("ShaderNodeBsdfTransparent"); transp.location  = (300, -100)
+        emit     = nt.nodes.new("ShaderNodeEmission");        emit.location    = (300,  100)
+        emit.inputs["Strength"].default_value = 10.0
+        vcol     = nt.nodes.new("ShaderNodeVertexColor");     vcol.location    = (100,  100)
+        vcol.layer_name = "TrackColor"
+        fac_node = nt.nodes.new("ShaderNodeValue");           fac_node.location = (100, -100)
+        fac_node.name = "OverviewAlpha"
+
+        nt.links.new(vcol.outputs["Color"],      emit.inputs["Color"])
+        nt.links.new(fac_node.outputs[0],        mix_node.inputs[0])
+        nt.links.new(transp.outputs["BSDF"],     mix_node.inputs[1])
+        nt.links.new(emit.outputs["Emission"],   mix_node.inputs[2])
+        nt.links.new(mix_node.outputs["Shader"], out_node.inputs["Surface"])
+
+        ov_obj.data.materials.clear()
+        ov_obj.data.materials.append(mat)
+
+        # Detect the static-hold phase length: consecutive intro frames that
+        # share the same position as the very first intro frame.  This matches
+        # the two-phase intro design (static hold → slerped descent) so the
+        # ribbon stays fully opaque during the hold and fades only during the
+        # descent.  Falls back to 55% of n_intro for older single-phase intros.
+        first_intro = next((kf for kf in keyframes_data if kf.get("is_intro", False)), None)
+        n_static = 0
+        if first_intro is not None:
+            x0, y0, z0 = first_intro["x"], first_intro["y"], first_intro["z"]
+            for kf in keyframes_data:
+                if not kf.get("is_intro", False):
+                    break
+                if abs(kf["x"] - x0) + abs(kf["y"] - y0) + abs(kf["z"] - z0) < 1e-3:
+                    n_static += 1
+                else:
+                    break
+        fade_start = n_static if n_static > 0 else max(1, round(n_intro * 0.55))
+        for frm, val in ((1, 1.0), (fade_start, 1.0), (n_intro, 0.0)):
+            fac_node.outputs[0].default_value = val
+            fac_node.outputs[0].keyframe_insert("default_value", frame=frm)
+
+        if nt.animation_data and nt.animation_data.action:
+            for fc in nt.animation_data.action.fcurves:
+                fc.extrapolation = "CONSTANT"
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "LINEAR"
+
+        # Hide overview ribbon once the intro ends
+        ov_obj.hide_render   = False
+        ov_obj.hide_viewport = False
+        ov_obj.keyframe_insert("hide_render",   frame=1)
+        ov_obj.keyframe_insert("hide_viewport", frame=1)
+        ov_obj.keyframe_insert("hide_render",   frame=n_intro)
+        ov_obj.keyframe_insert("hide_viewport", frame=n_intro)
+        ov_obj.hide_render   = True
+        ov_obj.hide_viewport = True
+        ov_obj.keyframe_insert("hide_render",   frame=n_intro + 1)
+        ov_obj.keyframe_insert("hide_viewport", frame=n_intro + 1)
+
+        if ov_obj.animation_data and ov_obj.animation_data.action:
+            for fc in ov_obj.animation_data.action.fcurves:
+                fc.extrapolation = "CONSTANT"
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "CONSTANT"
+
+    # ── 3b. Hide waypoint markers during the intro ────────────────────────── #
+    for marker_name in ("TrackMarker", "TrackMarkerHole"):
+        marker_obj = scene.objects.get(marker_name)
+        if marker_obj is None:
+            continue
+        marker_obj.hide_render   = True
+        marker_obj.hide_viewport = True
+        marker_obj.keyframe_insert("hide_render",   frame=1)
+        marker_obj.keyframe_insert("hide_viewport", frame=1)
+        marker_obj.hide_render   = False
+        marker_obj.hide_viewport = False
+        marker_obj.keyframe_insert("hide_render",   frame=n_intro + 1)
+        marker_obj.keyframe_insert("hide_viewport", frame=n_intro + 1)
+        if marker_obj.animation_data and marker_obj.animation_data.action:
+            for fc in marker_obj.animation_data.action.fcurves:
+                fc.extrapolation = "CONSTANT"
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "CONSTANT"
+
+    return n_intro
+
+
+def _retime_ribbon_and_marker(scene, keyframes_data: list) -> None:
+    """Re-time ribbon Build modifier and track marker to match camera arc-length.
+
+    Fixes two bugs:
+    1. Dynamic-speed desync: ribbon/marker use constant speed but camera varies.
+    2. Ribbon bleeds into intro: without photo pauses the Build modifier has no
+       animation, so the shift in _setup_intro_overview is a no-op and the
+       ribbon starts revealing from frame 1 during the intro overview.
+
+    By re-creating Build modifier animation that starts at the first flythrough
+    frame, CONSTANT extrapolation automatically holds 0 faces during intro and
+    pre-photo frames.  Camera look_at positions drive timing for exact sync.
+    """
+    import math
+    import bpy
+
+    track_obj = scene.objects.get("Track")
+    if track_obj is None:
+        return
+    build_mod = next((m for m in track_obj.modifiers if m.type == "BUILD"), None)
+    if build_mod is None:
+        return
+
+    mesh = track_obj.data
+    n_faces = len(mesh.polygons)
+    if n_faces < 2:
+        return
+
+    from mathutils import Vector as _V
+    mat_w = track_obj.matrix_world
+    fc_x: list[float] = []
+    fc_y: list[float] = []
+    fc_z: list[float] = []
+    for poly in mesh.polygons:
+        cx, cy, cz = poly.center
+        p = mat_w @ _V((cx, cy, cz))
+        fc_x.append(p.x)
+        fc_y.append(p.y)
+        fc_z.append(p.z)
+
+    # Build per-flythrough-frame list (scene_frame, look_at_xy, is_pause)
+    fly_frames: list[tuple[int, float, float, bool]] = []
+    for idx, kf in enumerate(keyframes_data):
+        if kf.get("is_intro", False):
+            continue
+        fly_frames.append((
+            idx + 1,
+            kf["look_at_x"], kf["look_at_y"],
+            kf.get("is_pause", False),
+        ))
+    if not fly_frames:
+        return
+
+    n_fly = len(fly_frames)
+    # Window: how many ribbon faces to scan forward per frame (with safety margin)
+    window = max(50, int(n_faces / n_fly * 20) + 1)
+
+    # Map each flythrough frame to the nearest ribbon face (monotone forward scan)
+    face_ptr = 0
+    frame_face: list[tuple[int, int]] = []  # (scene_frame, face_idx)
+    for sf, lx, ly, is_pause in fly_frames:
+        if is_pause and frame_face:
+            frame_face.append((sf, frame_face[-1][1]))
+            continue
+        best_j = face_ptr
+        best_d2 = (fc_x[face_ptr] - lx) ** 2 + (fc_y[face_ptr] - ly) ** 2
+        for j in range(face_ptr + 1, min(face_ptr + window, n_faces)):
+            d2 = (fc_x[j] - lx) ** 2 + (fc_y[j] - ly) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best_j = j
+            elif d2 > best_d2 * 25:
+                break
+        face_ptr = best_j
+        frame_face.append((sf, best_j))
+
+    # --- Re-keyframe Build modifier frame_start ---------------------------
+    # Formula: frame_start(f) = f − frame_duration × face_idx(f) / n_faces
+    # This ensures n_visible = face_idx(f) at frame f.
+    # CONSTANT extrapolation before first flythrough KF → 0 faces during intro.
+    frame_duration = float(build_mod.frame_duration)
+    dp = 'modifiers["Unfold"].frame_start'
+
+    if track_obj.animation_data and track_obj.animation_data.action:
+        for fc in list(track_obj.animation_data.action.fcurves):
+            if "frame_start" in fc.data_path and "Unfold" in fc.data_path:
+                track_obj.animation_data.action.fcurves.remove(fc)
+    if track_obj.animation_data is None:
+        track_obj.animation_data_create()
+    if track_obj.animation_data.action is None:
+        track_obj.animation_data.action = bpy.data.actions.new("TrackAction")
+
+    _STRIDE = 10
+    for i, (sf, fi) in enumerate(frame_face):
+        fs = sf - frame_duration * fi / n_faces
+        is_edge = i == 0 or i == n_fly - 1
+        is_stride = i % _STRIDE == 0
+        is_jump = i > 0 and abs(frame_face[i][1] - frame_face[i - 1][1]) > 1
+        if is_edge or is_stride or is_jump:
+            build_mod.frame_start = fs
+            track_obj.keyframe_insert(data_path=dp, frame=sf)
+
+    if track_obj.animation_data and track_obj.animation_data.action:
+        for fc in track_obj.animation_data.action.fcurves:
+            if "frame_start" in fc.data_path and "Unfold" in fc.data_path:
+                fc.extrapolation = "CONSTANT"
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "LINEAR"
+
+    # --- Re-keyframe TrackMarker only (TrackMarkerHole is a child; it inherits) ---
+    # TrackMarkerHole is parented to TrackMarker with a fixed local offset —
+    # we must NOT give it world-space location keyframes.
+    # The marker in build_scene.py sits 4 m above the ribbon (z_offset=4.0 vs
+    # ribbon's z_offset=2.0), so lift face-center Z by +2 to match that gap.
+    _MARKER_Z_EXTRA = 2.0
+
+    mobj = scene.objects.get("TrackMarker")
+    if mobj is not None:
+        if mobj.animation_data and mobj.animation_data.action:
+            for fc in list(mobj.animation_data.action.fcurves):
+                if fc.data_path == "location":
+                    mobj.animation_data.action.fcurves.remove(fc)
+        if mobj.animation_data is None:
+            mobj.animation_data_create()
+        if mobj.animation_data.action is None:
+            mobj.animation_data.action = bpy.data.actions.new("TrackMarkerAction")
+
+        prev_fi = -1
+        for i, (sf, fi) in enumerate(frame_face):
+            is_edge = i == 0 or i == n_fly - 1
+            is_stride = i % _STRIDE == 0
+            is_face_change = fi != prev_fi
+            if is_edge or is_stride or is_face_change:
+                mobj.location = _V((fc_x[fi], fc_y[fi], fc_z[fi] + _MARKER_Z_EXTRA))
+                mobj.keyframe_insert("location", frame=sf)
+                prev_fi = fi
+
+        if mobj.animation_data and mobj.animation_data.action:
+            for fc in mobj.animation_data.action.fcurves:
+                if fc.data_path == "location":
+                    fc.extrapolation = "CONSTANT"
+                    for kp in fc.keyframe_points:
+                        kp.interpolation = "LINEAR"
+
+    # Diagnostic: print first few frame→face mappings to help debug sync issues
+    _diag = frame_face[:8]
+    print(f"[georeel] Ribbon + marker retimed: {n_fly} fly-frames → {n_faces} faces  "
+          f"frame_duration={frame_duration:.0f}  "
+          f"first_ff={_diag}")
 
 
 def _inject_locality_banners(banners_path: str, cam_obj, scene) -> None:  # noqa: ANN001
@@ -288,6 +594,7 @@ def main() -> None:
     png_compression   = int(argv[9])   if len(argv) > 9 else 1       # zlib level 0–9
     compression_port  = int(argv[10])  if len(argv) > 10 else 0      # 0 = no server
     banners_path      = (argv[11] or None) if len(argv) > 11 else None  # "" → None
+    intro_track_lift  = float(argv[12])    if len(argv) > 12 else 5.0   # metres
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
@@ -454,6 +761,11 @@ def main() -> None:
     scene.camera = cam_obj
 
     # ------------------------------------------------------------------ #
+    # Intro overview: shift existing animation and create static ribbon    #
+    # ------------------------------------------------------------------ #
+    n_intro = _setup_intro_overview(scene, keyframes_data, intro_track_lift)
+
+    # ------------------------------------------------------------------ #
     # Insert subsampled camera animation keyframes                         #
     #                                                                     #
     # We use 1-based frame numbers (idx + 1) so the camera animation      #
@@ -470,7 +782,7 @@ def main() -> None:
     # ------------------------------------------------------------------ #
 
     _STRIDE = 10
-    indices = _select_keyframe_indices(keyframes_data, _STRIDE)
+    indices = _select_keyframe_indices(keyframes_data, _STRIDE, n_intro)
 
     # Map from Blender frame (1-indexed) → interpolation type
     frame_interp: dict[int, str] = {}
@@ -502,6 +814,11 @@ def main() -> None:
             fcurve.extrapolation = "CONSTANT"
             for kp in fcurve.keyframe_points:
                 kp.interpolation = frame_interp.get(round(kp.co.x), 'LINEAR')
+
+    # ------------------------------------------------------------------ #
+    # Sync ribbon and marker to camera arc-length                          #
+    # ------------------------------------------------------------------ #
+    _retime_ribbon_and_marker(scene, keyframes_data)
 
     # ------------------------------------------------------------------ #
     # Render the full animation in a single pass                           #

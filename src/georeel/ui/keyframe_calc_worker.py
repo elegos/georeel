@@ -46,7 +46,7 @@ class KeyframeCalcWorker(QThread):
         tz_offset_hours: float,
         render_settings: dict[str, Any],
         cached_elevation_grid: ElevationGrid | None,
-        client: ServerClient,
+        client: ServerClient | None,
     ):
         super().__init__()
         self._gpx_path = gpx_path
@@ -58,6 +58,9 @@ class KeyframeCalcWorker(QThread):
 
     @override
     def run(self) -> None:
+        if self._client is None:
+            self.error.emit("Server not available.")
+            return
         pipeline = Pipeline()
 
         # Stage 1 — GPX (via server)

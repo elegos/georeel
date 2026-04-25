@@ -79,7 +79,7 @@ from .output_file_selector import OutputFileSelector
 from .photo_list_area import PhotoListArea
 from .preview_map_dialog import PreviewMapDialog
 from .preview_video_dialog import open_preview_video
-from .preview_video_progress_dialog import PreviewVideoProgressDialog
+from .preview_pipeline_dialog import PreviewPipelineDialog
 from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
     KEY_CACHE_BASE_DIR,
@@ -193,7 +193,7 @@ class _LoadWorker(QObject):
         max_speed_mps: float,
         max_gap_s: float,
         max_jump_m: float,
-        client: "ServerClient",
+        client: "ServerClient | None",
     ):
         super().__init__()
         self._path = path
@@ -213,19 +213,22 @@ class _LoadWorker(QObject):
             gpx_failed = False
             if state.gpx_path:
                 self.progress.emit(f"Loading project: {name} — parsing GPX…")
-                try:
-                    trackpoints, _ = self._client.parse_gpx(state.gpx_path)
-                    if self._repair_mode != REPAIR_NONE:
-                        trackpoints, _ = self._client.clean_gpx(
-                            trackpoints,
-                            mode=self._repair_mode,
-                            max_speed_mps=self._max_speed_mps,
-                            max_gap_s=self._max_gap_s,
-                            max_jump_m=self._max_jump_m,
-                        )
-                    gpx_stats = compute_stats(trackpoints)
-                except Exception:
+                if self._client is None:
                     gpx_failed = True
+                else:
+                    try:
+                        trackpoints, _ = self._client.parse_gpx(state.gpx_path)
+                        if self._repair_mode != REPAIR_NONE:
+                            trackpoints, _ = self._client.clean_gpx(
+                                trackpoints,
+                                mode=self._repair_mode,
+                                max_speed_mps=self._max_speed_mps,
+                                max_gap_s=self._max_gap_s,
+                                max_jump_m=self._max_jump_m,
+                            )
+                        gpx_stats = compute_stats(trackpoints)
+                    except Exception:
+                        gpx_failed = True
 
             exif_cache: dict[str, Any] = {}
             photos = state.photos
@@ -400,14 +403,13 @@ class MainWindow(QMainWindow):
         # Must start AFTER _cleanup_stale_temp() so the workspace directory
         # (georeel_ws_* prefix) is not swept by the stale-dir cleanup.
         self._server_manager = ServerManager()
+        self._server_client: ServerClient | None = None
+        self._server_workspace_id: str = ""
         try:
-            self._server_client: ServerClient = self._server_manager.start()
-            self._server_workspace_id: str = self._server_client.create_workspace()
+            self._server_client = self._server_manager.start()
+            self._server_workspace_id = self._server_client.create_workspace()
         except Exception as _e:
             _log.warning("Could not start georeel-server: %s", _e)
-            # Fallback: create a minimal stub so the UI still launches.
-            # _start() will fail gracefully when the server is unavailable.
-            self._server_workspace_id = ""
 
     # ------------------------------------------------------------------
     # Temp-dir management
@@ -1219,25 +1221,29 @@ class MainWindow(QMainWindow):
         self._preview_map_btn.setEnabled(True)
         self._preview_video_btn.setEnabled(True)
         self._open_blender_btn.setEnabled(True)
-        try:
-            trackpoints, _ = self._server_client.parse_gpx(path)
-            repair_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE))
-            if repair_mode != REPAIR_NONE:
-                trackpoints, _ = self._server_client.clean_gpx(
-                    trackpoints,
-                    mode=repair_mode,
-                    max_speed_mps=float(
-                        str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
-                    ) / 3.6,
-                    max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-                    max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
-                    * 1_000,
-                )
-            self._gpx_stats.update_stats(trackpoints)
-            self._track_length_m = compute_stats(trackpoints).total_distance_m
-        except Exception:
+        if self._server_client is None:
             self._gpx_stats.clear()
             self._track_length_m = None
+        else:
+            try:
+                trackpoints, _ = self._server_client.parse_gpx(path)
+                repair_mode = str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE))
+                if repair_mode != REPAIR_NONE:
+                    trackpoints, _ = self._server_client.clean_gpx(
+                        trackpoints,
+                        mode=repair_mode,
+                        max_speed_mps=float(
+                            str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+                        ) / 3.6,
+                        max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
+                        max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
+                        * 1_000,
+                    )
+                self._gpx_stats.update_stats(trackpoints)
+                self._track_length_m = compute_stats(trackpoints).total_distance_m
+            except Exception:
+                self._gpx_stats.clear()
+                self._track_length_m = None
         self._update_duration_label()
 
     def _on_photos_changed(self):
@@ -1324,6 +1330,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No GPX", "Please load a GPX file first.")
             return
 
+        if not self._server_workspace_id or self._server_client is None:
+            QMessageBox.critical(
+                self,
+                "Server unavailable",
+                "The GeoReel server is not running.\n"
+                "Please start it with: georeel-server",
+            )
+            return
+
         # Scene not ready: trigger auto-build first, then come back via worker signal
         if self._scene_stale or self._pipeline.scene is None:
             if self._scene_prep_worker and self._scene_prep_worker.isRunning():
@@ -1358,7 +1373,7 @@ class MainWindow(QMainWindow):
 
         blender_exe = cast(str | None, self._settings.value("blender/executable_path") or None)
 
-        # Build locality timeline for preview (same logic as full pipeline)
+        # Build locality timeline (same logic as full pipeline)
         locality_settings = self._locality_names_widget.get_settings()
         if locality_settings.get("locality_names/enabled", False):
             import json as _json
@@ -1370,9 +1385,11 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
                 try:
                     from georeel.core.nominatim_client import build_locality_timeline
+                    _all_kfs = self._pipeline.camera_keyframes or []
+                    _n_flythrough = sum(1 for _k in _all_kfs if not _k.is_intro)
                     timeline_preview = build_locality_timeline(
                         self._pipeline.trackpoints,
-                        len(self._pipeline.camera_keyframes or []),
+                        _n_flythrough,
                         locality_settings,
                     )
                     self._locality_names_widget.set_cached_timeline(timeline_preview or None)
@@ -1383,15 +1400,37 @@ class MainWindow(QMainWindow):
                 [{"frame_start": e.frame_start, "name": e.name} for e in timeline_preview]
             )
 
-        self._status_show("Rendering preview video…")
-        preview_settings = {
+        # Compute how many frames to render for the preview (first N frames).
+        from georeel.core.preview_video import build_preview_keyframes
+        all_kfs = self._pipeline.camera_keyframes or []
+        combined_settings: dict[str, Any] = {
             **render_settings,
             **self._clip_effects_widget.get_settings(),
             **locality_settings,
         }
-        dlg = PreviewVideoProgressDialog(
-            self._pipeline,
-            preview_settings,
+        frame_limit = len(build_preview_keyframes(all_kfs, combined_settings))
+        keyframes_json = [keyframe_to_dict(kf) for kf in all_kfs]
+        match_json = [match_result_to_dict(mr) for mr in (self._pipeline.match_results or [])]
+
+        preview_settings: dict[str, Any] = {
+            **combined_settings,
+            "render/frame_limit": frame_limit,
+            "output/container": "mp4",
+            "clip_effects/fade_out_enabled": False,
+        }
+        is_full_video = frame_limit >= len(all_kfs)
+        if not is_full_video:
+            preview_settings["clip_effects/music_fade_out_enabled"] = False
+
+        self._status_show("Rendering preview video…")
+        dlg = PreviewPipelineDialog(
+            client=self._server_client,
+            workspace_id=self._server_workspace_id,
+            blend_path=self._pipeline.scene or "",
+            keyframes=keyframes_json,
+            match_results=match_json,
+            settings=preview_settings,
+            frame_limit=frame_limit,
             blender_exe=blender_exe,
             parent=self,
         )
@@ -1535,7 +1574,7 @@ class MainWindow(QMainWindow):
         self._pipeline.cleanup()
         self._pipeline = Pipeline()
 
-        if not self._server_workspace_id:
+        if not self._server_workspace_id or self._server_client is None:
             QMessageBox.critical(
                 self,
                 "Server unavailable",
@@ -1822,6 +1861,8 @@ class MainWindow(QMainWindow):
         elevation_grid: "ElevationGrid",
     ) -> None:
         """Run stages 6–9 via the server, assuming stages 1–5 are complete."""
+        if self._server_client is None:
+            return
         client = self._server_client
 
         # Stage 6 — Camera Path (via server)
@@ -1850,8 +1891,9 @@ class MainWindow(QMainWindow):
         self._status_show(
             f"Camera path: {len(keyframes)} frames ({duration_s:.1f} s at {fps} fps)"
         )
+        _n_fly = sum(1 for _k in keyframes if not _k.is_intro)
         self._locality_names_widget.set_pipeline_context(
-            self._pipeline.trackpoints or [], len(keyframes), int(fps)
+            self._pipeline.trackpoints or [], _n_fly, int(fps)
         )
 
         keyframes_json = [keyframe_to_dict(kf) for kf in keyframes]
@@ -1873,9 +1915,10 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
                 try:
                     from georeel.core.nominatim_client import build_locality_timeline
+                    _n_flythrough = sum(1 for _k in keyframes if not _k.is_intro)
                     timeline = build_locality_timeline(
                         self._pipeline.trackpoints,
-                        len(keyframes),
+                        _n_flythrough,
                         locality_settings,
                     )
                     self._locality_names_widget.set_cached_timeline(timeline or None)
@@ -2348,7 +2391,7 @@ class MainWindow(QMainWindow):
     def _stop_server(self) -> None:
         """Clean up server workspace and stop a subprocess we own."""
         try:
-            if self._server_workspace_id:
+            if self._server_workspace_id and self._server_client is not None:
                 self._server_client.delete_workspace(self._server_workspace_id)
         except Exception:
             pass

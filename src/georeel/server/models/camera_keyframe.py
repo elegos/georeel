@@ -13,6 +13,7 @@ class CameraKeyframeSchema(BaseModel):
     look_at_z: float
     is_pause: bool = False
     photo_path: str | None = None
+    is_intro: bool = False
 
     def to_core(self) -> CameraKeyframe:
         return CameraKeyframe(
@@ -25,6 +26,7 @@ class CameraKeyframeSchema(BaseModel):
             look_at_z=self.look_at_z,
             is_pause=self.is_pause,
             photo_path=self.photo_path,
+            is_intro=self.is_intro,
         )
 
     @classmethod
@@ -39,4 +41,5 @@ class CameraKeyframeSchema(BaseModel):
             look_at_z=kf.look_at_z,
             is_pause=kf.is_pause,
             photo_path=kf.photo_path,
+            is_intro=kf.is_intro,
         )
