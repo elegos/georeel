@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0]
+
+### Added
+
+- **Intro overview animation** — a new optional cinematic intro prepended to the video: the
+  camera starts from a top-down bird's-eye view of the entire route, holds for a configurable
+  static period, then smoothly descends and snaps to the fly-through starting point.  A 1-second
+  *clearance hold* after the descent lets the overview ribbon finish fading before the journey
+  begins.  Configurable total hold duration (default 6 s); the descent uses Blender's native SINE
+  EASE_IN_OUT for a true ease-in-ease-out profile.
+- **Dynamic speed** — the fly-through camera automatically accelerates through "dead sections"
+  (segments far from any photo waypoint) and ramps back to normal speed as the next stop
+  approaches.  Configurable peak speed multiplier (default 1.33×) and ramp duration (default 4 s).
+- **Auto-zoom** — camera field-of-view responds to track curvature: the lens narrows on straight
+  sections and widens into tight corners.  Configurable curvature threshold (°/m).
+- **3D locality map-pin banners** — when the *Locality names* overlay is enabled, a new *3D
+  banner* mode renders place names as world-space billboard objects inside Blender (TRACK_TO
+  constraint + LOC_DIFF scale driver + animated alpha), baked directly into the terrain frames
+  rather than composited on top.  Plain-text overlay and 3D banner modes are independent toggles.
+- **`PreviewPipelineDialog`** — a single cancellable progress dialog that drives all three preview
+  stages (frame render → photo composite → video assembly) through the server, replacing the
+  previous per-stage dialogs.
+- **`render_defaults.py`** — a new central module that holds all pipeline defaults (FPS,
+  resolution, DEM/satellite settings, camera constants, etc.).  All modules import constants from
+  it instead of defining them inline.
+- **`--reload` flag** for the `georeel-server` CLI, for development convenience.
+
+### Changed
+
+- Locality name compositing is now a **separate stage before photo compositing** in both the
+  preview and full-render pipelines.  Photo overlay frames are never modified by the locality text
+  compositor, and locality settings are computed *before* the render step so 3D pins are baked
+  into terrain frames.
+- Locality compositing settings JSON is written beside the output file rather than in the OS temp
+  directory, so the stale-file sweep cannot remove it while the render is in progress.
+- All pipeline constants consolidated into `render_defaults.py`; all modules import from it
+  instead of defining values inline.
+
+### Fixed
+
+- Intro overview animation: Blender keyframe injection now uses four sparse control points (hold
+  start, descent start, descent end / snap, clearance end) with Blender's native SINE EASE_IN_OUT
+  applied to the descent-start keyframe.  The previous approach injected one keyframe per frame
+  and baked the easing curve in Python, producing subtle artefacts at the boundary frames.
+- Intro overview animation: a quaternion hemisphere check is now applied before each keyframe
+  insertion so component-wise NLERP always takes the short arc.  Without this, the camera
+  could flip through the long arc mid-descent.
+- Intro overview animation: look-at distance is now linearly interpolated during the descent to
+  avoid a position discontinuity at the hold/descent boundary; easing was also changed from
+  ease-out to ease-in to match the natural feel of the descent.
+- Intro overview animation: the TrackOverview ribbon now fades during the descent and reaches full
+  transparency exactly when the camera arrives at the track start.  The clearance hold is played
+  with no ribbon visible, giving a clean transition into the fly-through.
+
 ## [1.4.0] - 2026-04-21
 
 ### Added
@@ -304,6 +358,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First version.
 
+[1.5.0]: https://github.com/elegos/georeel/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/elegos/georeel/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/elegos/georeel/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/elegos/georeel/compare/v1.2.0...v1.2.1
