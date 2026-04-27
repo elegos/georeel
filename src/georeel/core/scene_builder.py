@@ -16,6 +16,7 @@ from .blender_runtime import find_blender
 from .elevation_grid import ElevationGrid
 from .pil_lock import PIL_LOCK
 from .pipeline import Pipeline
+from .render_defaults import DEFAULTS, KEY_CAMERA_SPEED, KEY_FPS, KEY_PHOTO_PAUSE_DURATION
 from .satellite import SatelliteTexture
 from .sun_position import sun_angles, sun_direction_vector
 
@@ -84,8 +85,8 @@ def build_scene(
         tiles_dir=tiles_dir, tiles_manifest=tiles_manifest
     )
     settings = settings or {}
-    fps = float(settings.get("render/fps", 30))
-    speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
+    fps = float(settings.get(KEY_FPS, DEFAULTS[KEY_FPS]))
+    speed_mps = float(settings.get(KEY_CAMERA_SPEED, DEFAULTS[KEY_CAMERA_SPEED]))
     # Ribbon spacing must be at least speed_mps/fps so the Build modifier can
     # reveal exactly one face per camera frame — the camera, ribbon, and marker
     # all advance the same metres-per-frame regardless of the chosen speed.
@@ -459,9 +460,9 @@ def _compute_pause_schedule(
                location) are merged into a single entry whose duration covers
                all photos in the cluster
     """
-    fps = float(settings.get("render/fps", 30))
-    speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
-    pause_dur = float(settings.get("render/photo_pause_duration", 3.0))
+    fps = float(settings.get(KEY_FPS, DEFAULTS[KEY_FPS]))
+    speed_mps = float(settings.get(KEY_CAMERA_SPEED, DEFAULTS[KEY_CAMERA_SPEED]))
+    pause_dur = float(settings.get(KEY_PHOTO_PAUSE_DURATION, DEFAULTS[KEY_PHOTO_PAUSE_DURATION]))
     pause_frames = max(1, round(pause_dur * fps))
     # Dynamic ribbon spacing (mirrors the value chosen in build_scene()):
     # widened so the Build modifier always reveals exactly 1 face per camera frame,

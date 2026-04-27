@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from georeel.core.gpx_cleaner import CleanStats, REPAIR_NONE, detect_and_repair
+from georeel.core.gpx_cleaner import CleanStats, REPAIR_NONE, _DEFAULT_MAX_GAP_S, _DEFAULT_MAX_JUMP_M, _DEFAULT_MAX_SPEED_MPS, detect_and_repair
 from georeel.core.gpx_parser import GpxParseError, parse_gpx
 from georeel.core.gpx_stats import compute_stats
 from georeel.server.models.bounding_box import BoundingBoxSchema
@@ -39,9 +39,9 @@ class CleanStatsSchema(BaseModel):
 class GpxCleanRequest(BaseModel):
     trackpoints: list[TrackpointSchema]
     mode: str = "none"
-    max_speed_mps: float = 83.3
-    max_gap_s: float = 30.0
-    max_jump_m: float = 50_000.0
+    max_speed_mps: float = _DEFAULT_MAX_SPEED_MPS
+    max_gap_s: float = _DEFAULT_MAX_GAP_S
+    max_jump_m: float = _DEFAULT_MAX_JUMP_M
     osrm_profile: str = "driving"
 
 

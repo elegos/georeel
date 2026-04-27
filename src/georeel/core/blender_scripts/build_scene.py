@@ -35,9 +35,10 @@ def main() -> None:
 
     meta_path, data_path, manifest_path, output_path, track_path, pins_path, pin_color = argv[:7]
 
-    height_offset = float(argv[7]) if len(argv) > 7  else 200.0
-    fps           = float(argv[8]) if len(argv) > 8  else 30.0
-    speed_mps     = float(argv[9]) if len(argv) > 9  else 80.0
+    # Fallbacks must match render_defaults.DEFAULTS values (this script cannot import georeel).
+    height_offset = float(argv[7]) if len(argv) > 7  else 2000.0  # KEY_HEIGHT_OFFSET
+    fps           = float(argv[8]) if len(argv) > 8  else 30.0    # KEY_FPS    # KEY_FPS
+    speed_mps     = float(argv[9]) if len(argv) > 9  else 80.0    # KEY_CAMERA_SPEED
     pauses_path       = argv[10]        if len(argv) > 10 else None
     marker_color      = argv[11]        if len(argv) > 11 else "#ADD8E6"
     shifting_pin      = argv[12] == "1" if len(argv) > 12 else False
@@ -785,8 +786,8 @@ def _speed_color(
 
 
 def _build_marker(bpy, track_data: list[dict],
-                  height_offset: float = 200.0,
-                  fps: float = 30.0, speed_mps: float = 80.0,
+                  height_offset: float = 2000.0,  # KEY_HEIGHT_OFFSET default
+                  fps: float = 30.0, speed_mps: float = 80.0,  # KEY_FPS / KEY_CAMERA_SPEED defaults
                   z_offset: float = 4.0,
                   pause_schedule: dict | None = None,
                   marker_color: str = "#ADD8E6",
@@ -808,7 +809,7 @@ def _build_marker(bpy, track_data: list[dict],
 
     # ribbon_spacing_m is set by scene_builder._write_track and stored in the
     # pause schedule so marker timing matches the ribbon face rate exactly.
-    ribbon_spacing_m  = (pause_schedule or {}).get("ribbon_spacing_m", 5.0)
+    ribbon_spacing_m  = (pause_schedule or {}).get("ribbon_spacing_m", 5.0)  # fallback = _RIBBON_SAMPLE_SPACING_M
     frames_per_point  = max(1.0, ribbon_spacing_m * fps / speed_mps)
     pauses            = (pause_schedule or {}).get("pauses", [])
     pre_total         = (pause_schedule or {}).get("pre_total_frames", 0)
@@ -1001,7 +1002,7 @@ def _build_marker(bpy, track_data: list[dict],
 
 def _build_ribbon(bpy, track_data: list[dict],
                   half_width: float = 5.0, z_offset: float = 2.0,
-                  fps: float = 30.0, speed_mps: float = 80.0,
+                  fps: float = 30.0, speed_mps: float = 80.0,  # KEY_FPS / KEY_CAMERA_SPEED defaults
                   pause_schedule: dict | None = None,
                   color_mode: str = "slope",
                   min_speed_mps: float = 0.0,
@@ -1092,7 +1093,7 @@ def _build_ribbon(bpy, track_data: list[dict],
     # ribbon_spacing_m is set by scene_builder._write_track; reading from the
     # schedule keeps the Build modifier rate identical to the marker keyframe rate.
     sched      = pause_schedule or {}
-    ribbon_spacing_m = sched.get("ribbon_spacing_m", 5.0)
+    ribbon_spacing_m = sched.get("ribbon_spacing_m", 5.0)  # fallback = _RIBBON_SAMPLE_SPACING_M
     frames_per_face = max(1.0, ribbon_spacing_m * fps / speed_mps)
     pre_total  = sched.get("pre_total_frames", 0)
     fly_total  = sched.get("fly_total_frames", int((n - 1) * frames_per_face))

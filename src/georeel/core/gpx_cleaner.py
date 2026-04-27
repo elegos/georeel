@@ -38,6 +38,7 @@ import math
 from dataclasses import dataclass
 from datetime import timedelta
 
+from .gpx_stats import _R_EARTH_M
 from .osrm_client import route_waypoints
 from .trackpoint import Trackpoint
 
@@ -57,9 +58,12 @@ class CleanStats:
     street_fallbacks: int = 0    # OSRM unavailable → fell back to ground
 
 
-# ── Earth radius ──────────────────────────────────────────────────────────────
+# ── GPX cleaner defaults (match render_defaults.KEY_GPX_* values) ─────────────
 
-_R_EARTH = 6_371_000.0  # metres
+_DEFAULT_MAX_SPEED_KMH = 300        # matches DEFAULTS[KEY_GPX_MAX_SPEED_KMH]
+_DEFAULT_MAX_SPEED_MPS = _DEFAULT_MAX_SPEED_KMH / 3.6
+_DEFAULT_MAX_GAP_S     = 30.0       # matches DEFAULTS[KEY_GPX_MAX_GAP_S]
+_DEFAULT_MAX_JUMP_M    = 50_000.0   # matches DEFAULTS[KEY_GPX_MAX_JUMP_KM] * 1000
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -68,9 +72,9 @@ def detect_and_repair(
     points: list[Trackpoint],
     mode: str = REPAIR_NONE,
     *,
-    max_speed_mps: float = 83.3,   # 300 km/h — above this is almost certainly bad data
-    max_gap_s: float = 30.0,       # gaps longer than this get synthetic points
-    max_jump_m: float = 50_000.0,  # fallback for timestamp-less tracks (50 km)
+    max_speed_mps: float = _DEFAULT_MAX_SPEED_MPS,
+    max_gap_s: float = _DEFAULT_MAX_GAP_S,
+    max_jump_m: float = _DEFAULT_MAX_JUMP_M,
     osrm_profile: str = "driving",
 ) -> tuple[list[Trackpoint], CleanStats]:
     """Return a cleaned trackpoint list and statistics about what changed.
@@ -225,7 +229,7 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         math.sin(dphi / 2) ** 2
         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
     )
-    return _R_EARTH * 2 * math.asin(math.sqrt(min(a, 1.0)))
+    return _R_EARTH_M * 2 * math.asin(math.sqrt(min(a, 1.0)))
 
 
 def _path_spike_indices(

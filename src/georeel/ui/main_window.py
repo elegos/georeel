@@ -82,6 +82,7 @@ from .preview_video_dialog import open_preview_video
 from .preview_pipeline_dialog import PreviewPipelineDialog
 from .render_progress_dialog import RenderProgressDialog
 from .render_settings_dialog import (
+    DEFAULTS,
     KEY_CACHE_BASE_DIR,
     KEY_CACHE_USE_CUSTOM_DIR,
     KEY_CAMERA_SPEED,
@@ -256,7 +257,7 @@ class _InjectWorker(QObject):
     failed = Signal(str)
 
     def __init__(
-        self, exe: str, blend_path: str, keyframes: list[CameraKeyframe], resolution: str, fps: int = 30
+        self, exe: str, blend_path: str, keyframes: list[CameraKeyframe], resolution: str, fps: int = int(DEFAULTS["render/fps"])
     ):
         super().__init__()
         self._exe = exe
@@ -606,7 +607,7 @@ class MainWindow(QMainWindow):
         self._gpx_speed_spin.setSingleStep(10)
         self._gpx_speed_spin.setSuffix(" km/h")
         self._gpx_speed_spin.setValue(
-            int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+            int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, DEFAULTS[KEY_GPX_MAX_SPEED_KMH])))
         )
         self._gpx_speed_spin.setToolTip(
             "Points implying a speed above this are treated as bad GPS readings "
@@ -619,7 +620,7 @@ class MainWindow(QMainWindow):
         self._gpx_gap_spin.setDecimals(1)
         self._gpx_gap_spin.setSuffix(" s gap")
         self._gpx_gap_spin.setValue(
-            float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+            float(str(self._settings.value(KEY_GPX_MAX_GAP_S, DEFAULTS[KEY_GPX_MAX_GAP_S])))
         )
         self._gpx_gap_spin.setToolTip(
             "Time gaps longer than this between two valid points are filled "
@@ -699,13 +700,13 @@ class MainWindow(QMainWindow):
 
         self._gpx_speed_spin.blockSignals(True)
         self._gpx_speed_spin.setValue(
-            int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+            int(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, DEFAULTS[KEY_GPX_MAX_SPEED_KMH])))
         )
         self._gpx_speed_spin.blockSignals(False)
 
         self._gpx_gap_spin.blockSignals(True)
         self._gpx_gap_spin.setValue(
-            float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+            float(str(self._settings.value(KEY_GPX_MAX_GAP_S, DEFAULTS[KEY_GPX_MAX_GAP_S])))
         )
         self._gpx_gap_spin.blockSignals(False)
 
@@ -1233,10 +1234,10 @@ class MainWindow(QMainWindow):
                         trackpoints,
                         mode=repair_mode,
                         max_speed_mps=float(
-                            str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))
+                            str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, DEFAULTS[KEY_GPX_MAX_SPEED_KMH]))
                         ) / 3.6,
-                        max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-                        max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
+                        max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, DEFAULTS[KEY_GPX_MAX_GAP_S]))),
+                        max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, DEFAULTS[KEY_GPX_MAX_JUMP_KM])))
                         * 1_000,
                     )
                 self._gpx_stats.update_stats(trackpoints)
@@ -1600,11 +1601,11 @@ class MainWindow(QMainWindow):
             osrm_profile = str(self._settings.value(KEY_GPX_OSRM_PROFILE, "driving"))
             self._status_show(f"Repairing GPX holes ({repair_mode} mode)…")
             max_speed_mps = (
-                float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300))) / 3.6
+                float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, DEFAULTS[KEY_GPX_MAX_SPEED_KMH]))) / 3.6
             )
-            max_gap_s = float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0)))
+            max_gap_s = float(str(self._settings.value(KEY_GPX_MAX_GAP_S, DEFAULTS[KEY_GPX_MAX_GAP_S])))
             max_jump_m = (
-                float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0))) * 1_000
+                float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, DEFAULTS[KEY_GPX_MAX_JUMP_KM]))) * 1_000
             )
             try:
                 trackpoints, _repair_stats = client.clean_gpx(
@@ -2219,10 +2220,10 @@ class MainWindow(QMainWindow):
         worker = _LoadWorker(
             path,
             repair_mode=str(self._settings.value(KEY_GPX_REPAIR_MODE, REPAIR_NONE)),
-            max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, 300)))
+            max_speed_mps=float(str(self._settings.value(KEY_GPX_MAX_SPEED_KMH, DEFAULTS[KEY_GPX_MAX_SPEED_KMH])))
             / 3.6,
-            max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, 30.0))),
-            max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, 50.0)))
+            max_gap_s=float(str(self._settings.value(KEY_GPX_MAX_GAP_S, DEFAULTS[KEY_GPX_MAX_GAP_S]))),
+            max_jump_m=float(str(self._settings.value(KEY_GPX_MAX_JUMP_KM, DEFAULTS[KEY_GPX_MAX_JUMP_KM])))
             * 1_000,
             client=self._server_client,
         )

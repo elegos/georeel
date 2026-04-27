@@ -227,7 +227,7 @@ def main() -> None:
 
     keyframes_path, output_path = argv[0], argv[1]
     resolution = argv[2] if len(argv) > 2 else "1080p"
-    fps        = int(argv[3]) if len(argv) > 3 else 30
+    fps        = int(argv[3]) if len(argv) > 3 else 30  # fallback = DEFAULTS[KEY_FPS]
 
     _RESOLUTIONS = {
         "720p":  (1280,  720), "1080p": (1920, 1080),

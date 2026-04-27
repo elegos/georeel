@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor
 
 from georeel.core.nominatim_client import LocalityEntry
+from georeel.core.render_defaults import DEFAULTS, KEY_FPS
 
 _T = TypeVar("_T")
 
@@ -145,7 +146,7 @@ class LocalityNamesWidget(QWidget):
         # Pipeline context — set by main_window after keyframes are computed.
         self._trackpoints: list[Any] = []
         self._total_frames: int = 0
-        self._fps: int = 30
+        self._fps: int = int(DEFAULTS[KEY_FPS])
         self._preview_worker: _LocalityPreviewWorker | None = None
         # Set when preview was clicked but keyframes haven't been computed yet.
         self._preview_pending_after_keyframes: bool = False
@@ -158,7 +159,7 @@ class LocalityNamesWidget(QWidget):
         self,
         trackpoints: list[Any],
         total_frames: int,
-        fps: int = 30,
+        fps: int = int(DEFAULTS[KEY_FPS]),
     ) -> None:
         """Called by main_window once trackpoints and frame count are known."""
         self._trackpoints  = trackpoints
@@ -483,7 +484,7 @@ class LocalityNamesWidget(QWidget):
 
     def _populate_timeline_table(self, entries: list[LocalityEntry]) -> None:
         """Fill the inline timeline table with *entries* (may be empty)."""
-        fps = self._fps or 30
+        fps = self._fps or int(DEFAULTS[KEY_FPS])
         forever = self._duration_forever_chk.isChecked()
         duration_frames = max(1, round(self._duration_spin.value() * fps))
         frames_known = self._total_frames > 0

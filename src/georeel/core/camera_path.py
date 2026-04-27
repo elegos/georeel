@@ -21,10 +21,11 @@ from scipy.interpolate import splev, splprep
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import fftconvolve
 
-from .bounding_box import BoundingBox
+from .bounding_box import BoundingBox, _M_PER_DEG_LAT
 from .camera_keyframe import CameraKeyframe
 from .elevation_grid import ElevationGrid
 from .pipeline import Pipeline
+from .render_defaults import DEFAULTS, KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M, KEY_AUTO_ZOOM_ENABLED, KEY_CAMERA_SPEED, KEY_DYNAMIC_SPEED_ENABLED, KEY_DYNAMIC_SPEED_FACTOR, KEY_DYNAMIC_SPEED_RAMP_S, KEY_FPS, KEY_HEIGHT_MODE, KEY_HEIGHT_OFFSET, KEY_INTRO_OVERVIEW_DURATION_S, KEY_INTRO_OVERVIEW_ENABLED, KEY_ORIENTATION, KEY_PATH_SMOOTHING, KEY_PHOTO_PAUSE_DURATION, KEY_PHOTO_PAUSE_MODE, KEY_TANGENT_LOOKAHEAD_S, KEY_TANGENT_WEIGHT, KEY_TILT_DEG
 from .trackpoint import Trackpoint
 
 _log = logging.getLogger(__name__)
@@ -86,33 +87,33 @@ def build_camera_path(
 
     grid = pipeline.elevation_grid
 
-    fps = int(settings.get("render/fps", 30))
-    speed_mps = float(settings.get("render/camera_speed_mps", 80.0))
-    path_method = settings.get("render/path_smoothing", "spline")
-    height_mode = settings.get("render/camera_height_mode", "dem_fixed")
-    height_offset = float(settings.get("render/camera_height_offset", 200))
-    orient_mode = settings.get("render/camera_orientation", "tangent")
-    tilt_deg = float(settings.get("render/camera_tilt_deg", 45))
-    lookahead_s = float(settings.get("render/tangent_lookahead_s", 60.0))
-    tangent_weight = settings.get("render/tangent_weight", "linear")
-    pause_mode = settings.get("render/photo_pause_mode", "hold")
-    pause_duration = float(settings.get("render/photo_pause_duration", 3.0))
+    fps = int(settings.get(KEY_FPS, DEFAULTS[KEY_FPS]))
+    speed_mps = float(settings.get(KEY_CAMERA_SPEED, DEFAULTS[KEY_CAMERA_SPEED]))
+    path_method = settings.get(KEY_PATH_SMOOTHING, DEFAULTS[KEY_PATH_SMOOTHING])
+    height_mode = settings.get(KEY_HEIGHT_MODE, DEFAULTS[KEY_HEIGHT_MODE])
+    height_offset = float(settings.get(KEY_HEIGHT_OFFSET, DEFAULTS[KEY_HEIGHT_OFFSET]))
+    orient_mode = settings.get(KEY_ORIENTATION, DEFAULTS[KEY_ORIENTATION])
+    tilt_deg = float(settings.get(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG]))
+    lookahead_s = float(settings.get(KEY_TANGENT_LOOKAHEAD_S, DEFAULTS[KEY_TANGENT_LOOKAHEAD_S]))
+    tangent_weight = settings.get(KEY_TANGENT_WEIGHT, DEFAULTS[KEY_TANGENT_WEIGHT])
+    pause_mode = settings.get(KEY_PHOTO_PAUSE_MODE, DEFAULTS[KEY_PHOTO_PAUSE_MODE])
+    pause_duration = float(settings.get(KEY_PHOTO_PAUSE_DURATION, DEFAULTS[KEY_PHOTO_PAUSE_DURATION]))
 
     # New feature settings
-    intro_enabled = bool(settings.get("render/intro_overview_enabled", False)) and str(
-        settings.get("render/intro_overview_enabled", False)
+    intro_enabled = bool(settings.get(KEY_INTRO_OVERVIEW_ENABLED, DEFAULTS[KEY_INTRO_OVERVIEW_ENABLED])) and str(
+        settings.get(KEY_INTRO_OVERVIEW_ENABLED, DEFAULTS[KEY_INTRO_OVERVIEW_ENABLED])
     ) != "false"
-    intro_duration_s = float(settings.get("render/intro_overview_duration_s", 6.0))
+    intro_duration_s = float(settings.get(KEY_INTRO_OVERVIEW_DURATION_S, DEFAULTS[KEY_INTRO_OVERVIEW_DURATION_S]))
     dynamic_speed_enabled = bool(
-        settings.get("render/dynamic_speed_enabled", False)
-    ) and str(settings.get("render/dynamic_speed_enabled", False)) != "false"
-    dynamic_speed_factor = float(settings.get("render/dynamic_speed_factor", 1.33))
-    dynamic_speed_ramp_s = float(settings.get("render/dynamic_speed_ramp_s", 4.0))
-    auto_zoom_enabled = bool(settings.get("render/auto_zoom_enabled", False)) and str(
-        settings.get("render/auto_zoom_enabled", False)
+        settings.get(KEY_DYNAMIC_SPEED_ENABLED, DEFAULTS[KEY_DYNAMIC_SPEED_ENABLED])
+    ) and str(settings.get(KEY_DYNAMIC_SPEED_ENABLED, DEFAULTS[KEY_DYNAMIC_SPEED_ENABLED])) != "false"
+    dynamic_speed_factor = float(settings.get(KEY_DYNAMIC_SPEED_FACTOR, DEFAULTS[KEY_DYNAMIC_SPEED_FACTOR]))
+    dynamic_speed_ramp_s = float(settings.get(KEY_DYNAMIC_SPEED_RAMP_S, DEFAULTS[KEY_DYNAMIC_SPEED_RAMP_S]))
+    auto_zoom_enabled = bool(settings.get(KEY_AUTO_ZOOM_ENABLED, DEFAULTS[KEY_AUTO_ZOOM_ENABLED])) and str(
+        settings.get(KEY_AUTO_ZOOM_ENABLED, DEFAULTS[KEY_AUTO_ZOOM_ENABLED])
     ) != "false"
     auto_zoom_curvature_deg_per_m = float(
-        settings.get("render/auto_zoom_curvature_deg_per_m", 0.5)
+        settings.get(KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M, DEFAULTS[KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M])
     )
 
     # Scene coordinate system matches the elevation grid's extent (which may be
@@ -121,8 +122,8 @@ def build_camera_path(
 
     # Physical dimensions of the scene bbox in metres
     mean_lat_rad = math.radians((bbox.min_lat + bbox.max_lat) / 2)
-    lat_m = (bbox.max_lat - bbox.min_lat) * 111_320.0
-    lon_m = (bbox.max_lon - bbox.min_lon) * 111_320.0 * math.cos(mean_lat_rad)
+    lat_m = (bbox.max_lat - bbox.min_lat) * _M_PER_DEG_LAT
+    lon_m = (bbox.max_lon - bbox.min_lon) * _M_PER_DEG_LAT * math.cos(mean_lat_rad)
 
     # ------------------------------------------------------------------ #
     # 1. Trackpoints → scene XY                                           #

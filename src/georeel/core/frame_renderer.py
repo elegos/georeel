@@ -28,6 +28,7 @@ from PIL import Image as _PILImage
 
 from .blender_runtime import find_blender
 from .camera_keyframe import CameraKeyframe
+from .render_defaults import DEFAULTS, KEY_INTRO_TRACK_LIFT, KEY_PNG_COMPRESSION
 from .pipeline import Pipeline
 from . import temp_manager
 
@@ -520,7 +521,7 @@ def _render_single(
     if engine == "viewport":
         png_compression = 0
     else:
-        png_compression = int(settings.get("render/png_compression", 1)) if settings else 1
+        png_compression = int(settings.get(KEY_PNG_COMPRESSION, DEFAULTS[KEY_PNG_COMPRESSION])) if settings else int(DEFAULTS[KEY_PNG_COMPRESSION])
 
     # When compression > 0, offload zlib to a background thread pool:
     # Blender writes frames uncompressed (fastest I/O), notifies the server
@@ -547,7 +548,7 @@ def _render_single(
         "0" if comp_server else str(png_compression),        # argv[9]: 0 = Blender writes raw
         str(comp_server.port if comp_server else 0),         # argv[10]: compression server port
         str(banners_path) if banners_path else "",           # argv[11]: locality banners JSON
-        str(float(settings.get("render/intro_track_lift_m", 5.0)) if settings else 5.0),    # argv[12]
+        str(float(settings.get(KEY_INTRO_TRACK_LIFT, DEFAULTS[KEY_INTRO_TRACK_LIFT])) if settings else float(DEFAULTS[KEY_INTRO_TRACK_LIFT])),    # argv[12]
     ]
 
     try:

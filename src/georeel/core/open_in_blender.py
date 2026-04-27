@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .camera_keyframe import CameraKeyframe
+from .render_defaults import DEFAULTS, KEY_FPS
 
 _INJECT_SCRIPT = Path(__file__).parent / "blender_scripts" / "inject_camera.py"
 _SETUP_VIEWPORT_SCRIPT = Path(__file__).parent / "blender_scripts" / "setup_viewport.py"
@@ -26,7 +27,7 @@ def inject_camera_and_open(
     blend_path: str,
     keyframes: list[CameraKeyframe],
     resolution: str = "1080p",
-    fps: int = 30,
+    fps: int = int(DEFAULTS[KEY_FPS]),
 ) -> None:
     """Write keyframes into a sibling .blend and open it in Blender.
 

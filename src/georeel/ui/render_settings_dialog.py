@@ -29,79 +29,70 @@ from georeel.core.encoder_registry import (
     encoders_for_codec,
     get_encoder,
 )
+from georeel.core.render_defaults import (  # noqa: F401  (re-exported for callers)
+    DEFAULTS,
+    KEY_ASPECT_RATIO,
+    KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M,
+    KEY_AUTO_ZOOM_ENABLED,
+    KEY_CACHE_BASE_DIR,
+    KEY_CACHE_USE_CUSTOM_DIR,
+    KEY_CAMERA_SPEED,
+    KEY_CODEC,
+    KEY_CONTAINER,
+    KEY_DYNAMIC_SPEED_ENABLED,
+    KEY_DYNAMIC_SPEED_FACTOR,
+    KEY_DYNAMIC_SPEED_RAMP_S,
+    KEY_ENGINE,
+    KEY_ENCODER,
+    KEY_FPS,
+    KEY_FRUSTUM_MARGIN_KM,
+    KEY_GPX_MAX_GAP_S,
+    KEY_GPX_MAX_JUMP_KM,
+    KEY_GPX_MAX_SPEED_KMH,
+    KEY_GPX_OSRM_PROFILE,
+    KEY_GPX_REPAIR_MODE,
+    KEY_HEIGHT_MODE,
+    KEY_HEIGHT_OFFSET,
+    KEY_IMAGERY_API_KEY,
+    KEY_IMAGERY_CUSTOM_URL,
+    KEY_IMAGERY_FETCH_MODE,
+    KEY_IMAGERY_PROVIDER,
+    KEY_IMAGERY_QUALITY,
+    KEY_INTRO_OVERVIEW_DURATION_S,
+    KEY_INTRO_OVERVIEW_ENABLED,
+    KEY_INTRO_TRACK_LIFT,
+    KEY_MARKER_COLOR,
+    KEY_MARKER_CUSTOM_COLOR,
+    KEY_MARKER_SHIFTING_PIN,
+    KEY_ORIENTATION,
+    KEY_OUTPUT_CQ,
+    KEY_OUTPUT_PRESET,
+    KEY_PATH_SMOOTHING,
+    KEY_PHOTO_FADE_DURATION,
+    KEY_PHOTO_FILL,
+    KEY_PHOTO_PAUSE_DURATION,
+    KEY_PHOTO_PAUSE_MODE,
+    KEY_PHOTO_TRANSITION,
+    KEY_PHOTO_TZ_OFFSET,
+    KEY_PIN_COLOR,
+    KEY_PIN_CUSTOM_COLOR,
+    KEY_PNG_COMPRESSION,
+    KEY_QUALITY,
+    KEY_RENDER_SEGMENTS,
+    KEY_RESOLUTION,
+    KEY_RIBBON_COLOR_MODE,
+    KEY_RIBBON_SELF_LIT,
+    KEY_TANGENT_LOOKAHEAD_S,
+    KEY_TANGENT_WEIGHT,
+    KEY_TILT_DEG,
+)
 from georeel.core.satellite.providers import PROVIDERS
 from georeel.ui.color_picker_dialog import ColorPickerDialog, get_color_hex
 
 # ------------------------------------------------------------------
-# QSettings keys and defaults
+# QSettings keys and defaults are defined in core/render_defaults.py
+# and re-exported above via the noqa: F401 import block.
 # ------------------------------------------------------------------
-
-KEY_PATH_SMOOTHING = "render/path_smoothing"  # "spline" | "dp_spline"
-KEY_HEIGHT_MODE = "render/camera_height_mode"  # "dem_fixed" | "dem_smooth"
-KEY_HEIGHT_OFFSET = (
-    "render/camera_height_offset"  # slant distance to track point (metres)
-)
-KEY_INTRO_TRACK_LIFT = (
-    "render/intro_track_lift_m"  # how high the overview ribbon is lifted above terrain in the intro
-)
-KEY_ORIENTATION = "render/camera_orientation"  # "tangent" | "lookat"
-KEY_TILT_DEG = "render/camera_tilt_deg"  # degrees below horizontal (int)
-KEY_PHOTO_PAUSE_MODE = "render/photo_pause_mode"  # "hold" | "ease"
-KEY_PHOTO_PAUSE_DURATION = "render/photo_pause_duration"  # seconds (float)
-KEY_FPS = "render/fps"  # int: 24 | 30 | 60
-KEY_CAMERA_SPEED = "render/camera_speed_mps"  # metres per second (float)
-KEY_ENGINE = "render/engine"  # "eevee" | "cycles" | "viewport"
-KEY_ASPECT_RATIO = "render/aspect_ratio"  # "landscape" | "portrait" | "square"
-KEY_RESOLUTION = "render/resolution"  # see _ASPECT_RESOLUTIONS values
-KEY_QUALITY = "render/quality"  # "low" | "medium" | "high"
-KEY_PHOTO_TZ_OFFSET = (
-    "render/photo_tz_offset_hours"  # float: UTC offset of camera clock
-)
-KEY_PHOTO_TRANSITION = "render/photo_transition"  # "fade" | "cut"
-KEY_PHOTO_FILL = "render/photo_fill"  # "blurred" | "black"
-KEY_PHOTO_FADE_DURATION = "render/photo_fade_duration"  # seconds (float)
-KEY_TANGENT_LOOKAHEAD_S = "render/tangent_lookahead_s"  # seconds (float)
-KEY_TANGENT_WEIGHT = "render/tangent_weight"  # "uniform" | "linear" | "exponential"
-KEY_PIN_COLOR = "pins/color"  # named color id or "custom"
-KEY_PIN_CUSTOM_COLOR = "pins/custom_color"  # "#rrggbb" when color=="custom"
-KEY_MARKER_COLOR = "marker/color"  # named color id or "custom"
-KEY_MARKER_CUSTOM_COLOR = "marker/custom_color"  # "#rrggbb" when color=="custom"
-KEY_MARKER_SHIFTING_PIN = (
-    "marker/shifting_pin"  # bool — fade to complementary on reconstructed segments
-)
-KEY_RIBBON_COLOR_MODE = "ribbon/color_mode"  # "slope" | "speed"
-KEY_RIBBON_SELF_LIT = (
-    "ribbon/self_lit"  # bool — emit at full saturation, unaffected by scene lighting
-)
-KEY_IMAGERY_PROVIDER = "imagery/provider"  # provider id
-KEY_IMAGERY_QUALITY = "imagery/quality"  # "standard" | "high" | "very_high"
-KEY_IMAGERY_API_KEY = "imagery/api_key"  # per-provider key (provider-prefixed)
-KEY_IMAGERY_CUSTOM_URL = "imagery/custom_url"
-KEY_IMAGERY_FETCH_MODE = "imagery/fetch_mode"  # "prefetch" | "on_demand"
-KEY_CONTAINER = "output/container"  # "mkv" | "mp4"
-KEY_CODEC = "output/codec"  # "h264" | "h265" | "av1"
-KEY_ENCODER = "output/encoder"  # FFmpeg encoder name
-KEY_OUTPUT_CQ = "output/cq"  # int
-KEY_OUTPUT_PRESET = "output/preset"  # string
-KEY_FRUSTUM_MARGIN_KM = (
-    "render/frustum_margin_km"  # float km — max terrain view distance
-)
-KEY_RENDER_SEGMENTS = "render/n_segments"  # int: render passes (1 = single pass)
-KEY_PNG_COMPRESSION = "render/png_compression"  # int 0–9: zlib level (0=none, 9=max)
-KEY_GPX_REPAIR_MODE = "gpx/repair_mode"  # "none" | "ground" | "street"
-KEY_GPX_OSRM_PROFILE = "gpx/osrm_profile"  # "driving" | "cycling" | "walking"
-KEY_GPX_MAX_SPEED_KMH = "gpx/max_speed_kmh"  # int km/h — above this is nullified
-KEY_GPX_MAX_GAP_S = "gpx/max_gap_s"  # float s — gaps longer than this are filled
-KEY_GPX_MAX_JUMP_KM = "gpx/max_jump_km"  # float km — no-timestamp fallback distance
-KEY_CACHE_USE_CUSTOM_DIR = "cache/use_custom_dir"  # bool — use custom temp dir
-KEY_CACHE_BASE_DIR = "cache/base_dir"  # str  — path to custom temp dir
-KEY_INTRO_OVERVIEW_ENABLED = "render/intro_overview_enabled"  # bool
-KEY_INTRO_OVERVIEW_DURATION_S = "render/intro_overview_duration_s"  # float seconds
-KEY_DYNAMIC_SPEED_ENABLED = "render/dynamic_speed_enabled"  # bool
-KEY_DYNAMIC_SPEED_FACTOR = "render/dynamic_speed_factor"  # float multiplier at peak
-KEY_DYNAMIC_SPEED_RAMP_S = "render/dynamic_speed_ramp_s"  # float ramp duration seconds
-KEY_AUTO_ZOOM_ENABLED = "render/auto_zoom_enabled"  # bool
-KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M = "render/auto_zoom_curvature_deg_per_m"  # float °/m
 
 _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
     "landscape": [
@@ -123,63 +114,6 @@ _ASPECT_RESOLUTIONS: dict[str, list[tuple[str, str]]] = {
         ("2160 × 2160", "square_2160"),
     ],
 }
-
-DEFAULTS = {
-    KEY_PATH_SMOOTHING: "spline",
-    KEY_HEIGHT_MODE: "dem_fixed",
-    KEY_HEIGHT_OFFSET: 2000,
-    KEY_INTRO_TRACK_LIFT: 5,
-    KEY_ORIENTATION: "tangent",
-    KEY_TILT_DEG: 45,
-    KEY_PHOTO_PAUSE_MODE: "hold",
-    KEY_PHOTO_PAUSE_DURATION: 3.0,
-    KEY_FPS: 30,
-    KEY_CAMERA_SPEED: 80.0,
-    KEY_ENGINE: "eevee",
-    KEY_ASPECT_RATIO: "landscape",
-    KEY_RESOLUTION: "1080p",
-    KEY_QUALITY: "medium",
-    KEY_PHOTO_TRANSITION: "fade",
-    KEY_PHOTO_FILL: "blurred",
-    KEY_PHOTO_FADE_DURATION: 0.5,
-    KEY_CONTAINER: "mkv",
-    KEY_CODEC: "h265",
-    KEY_ENCODER: "libx265",
-    KEY_OUTPUT_CQ: 28,
-    KEY_OUTPUT_PRESET: "medium",
-    KEY_PHOTO_TZ_OFFSET: 0.0,
-    KEY_TANGENT_LOOKAHEAD_S: 60.0,
-    KEY_TANGENT_WEIGHT: "linear",
-    KEY_FRUSTUM_MARGIN_KM: 50.0,
-    KEY_IMAGERY_PROVIDER: "esri_world",
-    KEY_IMAGERY_QUALITY: "standard",
-    KEY_IMAGERY_API_KEY: "",
-    KEY_IMAGERY_CUSTOM_URL: "",
-    KEY_IMAGERY_FETCH_MODE: "prefetch",
-    KEY_PIN_COLOR: "ForestGreen",
-    KEY_PIN_CUSTOM_COLOR: "#228B22",
-    KEY_MARKER_COLOR: "LightBlue",
-    KEY_MARKER_CUSTOM_COLOR: "#ADD8E6",
-    KEY_MARKER_SHIFTING_PIN: False,
-    KEY_RIBBON_COLOR_MODE: "slope",
-    KEY_RIBBON_SELF_LIT: False,
-    KEY_RENDER_SEGMENTS: 1,
-    KEY_PNG_COMPRESSION: 1,
-    KEY_GPX_REPAIR_MODE: "none",
-    KEY_GPX_MAX_SPEED_KMH: 300,
-    KEY_GPX_MAX_GAP_S: 30.0,
-    KEY_GPX_MAX_JUMP_KM: 50.0,
-    KEY_CACHE_USE_CUSTOM_DIR: False,
-    KEY_CACHE_BASE_DIR: "",
-    KEY_INTRO_OVERVIEW_ENABLED: False,
-    KEY_INTRO_OVERVIEW_DURATION_S: 3.0,
-    KEY_DYNAMIC_SPEED_ENABLED: False,
-    KEY_DYNAMIC_SPEED_FACTOR: 1.33,
-    KEY_DYNAMIC_SPEED_RAMP_S: 4.0,
-    KEY_AUTO_ZOOM_ENABLED: False,
-    KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M: 0.5,
-}
-
 
 def get_render_settings(settings: QSettings) -> dict[str, Any]:
     """Return all render settings as a plain dict, filled with defaults."""

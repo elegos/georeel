@@ -7,7 +7,7 @@ import numpy as np
 from scipy.ndimage import distance_transform_edt
 import srtm
 
-from .bounding_box import BoundingBox
+from .bounding_box import BoundingBox, _M_PER_DEG_LAT
 from .elevation_grid import ElevationGrid
 
 _log = logging.getLogger(__name__)
@@ -15,7 +15,6 @@ _log = logging.getLogger(__name__)
 # Target horizontal spacing between grid points (metres).
 # 90 m matches SRTM3 native resolution and keeps grids small.
 _TARGET_SPACING_M = 90.0
-_M_PER_DEG_LAT = 111_320.0
 
 # SRTM void sentinel values and plausible elevation range.
 _SRTM_VOID    = -32768.0

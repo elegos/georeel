@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 
 from georeel.core.bounding_box import BoundingBox
+from georeel.core.gpx_cleaner import _DEFAULT_MAX_GAP_S, _DEFAULT_MAX_JUMP_M, _DEFAULT_MAX_SPEED_MPS
 from georeel.core.camera_keyframe import CameraKeyframe
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.core.match_result import MatchResult
@@ -85,9 +86,9 @@ class ServerClient:
         self,
         trackpoints: list[Trackpoint],
         mode: str,
-        max_speed_mps: float = 83.3,
-        max_gap_s: float = 30.0,
-        max_jump_m: float = 50_000.0,
+        max_speed_mps: float = _DEFAULT_MAX_SPEED_MPS,
+        max_gap_s: float = _DEFAULT_MAX_GAP_S,
+        max_jump_m: float = _DEFAULT_MAX_JUMP_M,
         osrm_profile: str = "driving",
     ) -> tuple[list[Trackpoint], dict[str, Any]]:
         data = self._post(

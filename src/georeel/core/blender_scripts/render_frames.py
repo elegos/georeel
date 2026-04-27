@@ -594,7 +594,7 @@ def main() -> None:
     png_compression   = int(argv[9])   if len(argv) > 9 else 1       # zlib level 0–9
     compression_port  = int(argv[10])  if len(argv) > 10 else 0      # 0 = no server
     banners_path      = (argv[11] or None) if len(argv) > 11 else None  # "" → None
-    intro_track_lift  = float(argv[12])    if len(argv) > 12 else 5.0   # metres
+    intro_track_lift  = float(argv[12])    if len(argv) > 12 else 5.0   # metres; fallback = DEFAULTS[KEY_INTRO_TRACK_LIFT]
 
     with open(keyframes_path) as f:
         keyframes_data = json.load(f)
