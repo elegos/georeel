@@ -232,8 +232,8 @@ class TestInsertPauses:
 
         kfs = [self._kf(i) for i in range(6)]
         result = _insert_pauses(
-            kfs, p, bbox, lat_m, lon_m, grid,
-            "dem_fixed", 200.0, 30, 1.0, "hold",
+            kfs, p, bbox, lat_m, lon_m,
+            30, 1.0,
         )
         assert len(result) == len(kfs)
 
@@ -249,8 +249,8 @@ class TestInsertPauses:
 
         kfs = [self._kf(i) for i in range(10)]
         result = _insert_pauses(
-            kfs, p, bbox, lat_m, lon_m, grid,
-            "dem_fixed", 200.0, 30, 1.0, "hold",
+            kfs, p, bbox, lat_m, lon_m,
+            30, 1.0,
         )
         # Should have more keyframes than before (pause was inserted)
         assert len(result) > len(kfs)
@@ -266,8 +266,8 @@ class TestInsertPauses:
         p.match_results = [r]
         kfs = [self._kf(i) for i in range(6)]
         result = _insert_pauses(
-            kfs, p, bbox, lat_m, lon_m, grid,
-            "dem_fixed", 200.0, 30, 1.0, "hold",
+            kfs, p, bbox, lat_m, lon_m,
+            30, 1.0,
         )
         assert len(result) > len(kfs)
         # Pre pauses should come first
@@ -284,8 +284,8 @@ class TestInsertPauses:
         p.match_results = [r]
         kfs = [self._kf(i) for i in range(6)]
         result = _insert_pauses(
-            kfs, p, bbox, lat_m, lon_m, grid,
-            "dem_fixed", 200.0, 30, 1.0, "hold",
+            kfs, p, bbox, lat_m, lon_m,
+            30, 1.0,
         )
         assert len(result) > len(kfs)
         # Post pauses should come last
@@ -302,8 +302,8 @@ class TestInsertPauses:
         p.match_results = [r]
         kfs = [self._kf(i) for i in range(6)]
         result = _insert_pauses(
-            kfs, p, bbox, lat_m, lon_m, grid,
-            "dem_fixed", 200.0, 30, 1.0, "hold",
+            kfs, p, bbox, lat_m, lon_m,
+            30, 1.0,
         )
         for i, kf in enumerate(result):
             assert kf.frame == i + 1

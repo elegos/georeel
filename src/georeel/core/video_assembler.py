@@ -85,11 +85,8 @@ def assemble_video(
     title_dir: Path | None = None
     title_enabled = bool(settings.get("clip_effects/title_enabled", False))
     fi_enabled    = bool(settings.get("clip_effects/fade_in_enabled", False))
-    fo_enabled    = bool(settings.get("clip_effects/fade_out_enabled", False))
     fi_black = float(settings.get("clip_effects/fade_in_black_dur", 5.0)) if fi_enabled else 0.0
     fi_fade  = float(settings.get("clip_effects/fade_in_fade_dur",  1.0)) if fi_enabled else 0.0
-    fo_black = float(settings.get("clip_effects/fade_out_black_dur", 5.0)) if fo_enabled else 0.0
-
     # Determine how many black frames to prepend as real PNGs.
     n_black_frames = 0
     if title_enabled:
@@ -1034,7 +1031,7 @@ def _quality_args(enc: EncoderConfig, cq: int, preset: str) -> list[str]:
     return args
 
 
-def _pix_fmt_args(enc: EncoderConfig) -> list[str]:
+def _pix_fmt_args(_enc: EncoderConfig) -> list[str]:
     # yuv420p is required for broad player compatibility on H.264/H.265;
     # AV1 software encoders also default to it for 8-bit output.
     return ["-pix_fmt", "yuv420p"]

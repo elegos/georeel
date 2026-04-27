@@ -9,7 +9,6 @@ from georeel.core.camera_path import (
     _remove_duplicates,
     _tp_to_xy,
     _height_at,
-    _smooth_elevation,
     _compute_forward_dirs_tangent,
     _compute_forward_dirs_spline,
     _make_pause_block,
@@ -172,27 +171,6 @@ class TestHeightAt:
                        height_mode="dem_fixed", height_offset=0.0)
         assert h == pytest.approx(100.0)
 
-
-# ── _smooth_elevation ─────────────────────────────────────────────
-
-class TestSmoothElevation:
-    def test_uniform_grid_returns_fill(self):
-        grid = _make_grid(fill=500.0)
-        result = _smooth_elevation(grid, lat=0.5, lon=0.5)
-        assert result == pytest.approx(500.0)
-
-    def test_returns_float(self):
-        grid = _make_grid(fill=100.0)
-        result = _smooth_elevation(grid, lat=0.5, lon=0.5)
-        assert isinstance(result, float)
-
-    def test_averaging_effect(self):
-        # Grid with varying elevations: mean should be between min and max
-        data = np.arange(16, dtype=np.float32).reshape(4, 4)
-        grid = ElevationGrid(data=data, min_lat=0.0, max_lat=3.0, min_lon=0.0, max_lon=3.0)
-        result = _smooth_elevation(grid, lat=1.5, lon=1.5)
-        assert result > 0.0
-        assert result < 15.0
 
 
 # ── _compute_forward_dirs_tangent ────────────────────────────────
@@ -546,13 +524,15 @@ class TestBuildIntroOverview:
         return BoundingBox(min_lat=0.0, max_lat=1.0, min_lon=0.0, max_lon=1.0)
 
     def test_returns_correct_frame_count(self):
+        from georeel.core.camera_path import _INTRO_CLEARANCE_S
         kfs = _make_fly_keyframes(10)
         intro = _build_intro_overview(
             kfs, self._grid(), self._bbox(), 1000.0, 1000.0, "dem_fixed", fps=30, duration_s=2.0
         )
-        n_static  = max(1, round(2.0 * 30))
-        n_descent = max(2, round(_INTRO_DESCENT_S * 30))
-        assert len(intro) == n_static + n_descent
+        n_static    = max(1, round(2.0 * 30))
+        n_descent   = max(2, round(_INTRO_DESCENT_S * 30))
+        n_clearance = max(1, round(_INTRO_CLEARANCE_S * 30))
+        assert len(intro) == n_static + n_descent + n_clearance
 
     def test_empty_keyframes_returns_empty(self):
         intro = _build_intro_overview(

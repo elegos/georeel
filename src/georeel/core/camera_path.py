@@ -25,7 +25,7 @@ from .bounding_box import BoundingBox, _M_PER_DEG_LAT
 from .camera_keyframe import CameraKeyframe
 from .elevation_grid import ElevationGrid
 from .pipeline import Pipeline
-from .render_defaults import DEFAULTS, KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M, KEY_AUTO_ZOOM_ENABLED, KEY_CAMERA_SPEED, KEY_DYNAMIC_SPEED_ENABLED, KEY_DYNAMIC_SPEED_FACTOR, KEY_DYNAMIC_SPEED_RAMP_S, KEY_FPS, KEY_HEIGHT_MODE, KEY_HEIGHT_OFFSET, KEY_INTRO_OVERVIEW_DURATION_S, KEY_INTRO_OVERVIEW_ENABLED, KEY_ORIENTATION, KEY_PATH_SMOOTHING, KEY_PHOTO_PAUSE_DURATION, KEY_PHOTO_PAUSE_MODE, KEY_TANGENT_LOOKAHEAD_S, KEY_TANGENT_WEIGHT, KEY_TILT_DEG
+from .render_defaults import DEFAULTS, KEY_AUTO_ZOOM_CURVATURE_DEG_PER_M, KEY_AUTO_ZOOM_ENABLED, KEY_CAMERA_SPEED, KEY_DYNAMIC_SPEED_ENABLED, KEY_DYNAMIC_SPEED_FACTOR, KEY_DYNAMIC_SPEED_RAMP_S, KEY_FPS, KEY_HEIGHT_MODE, KEY_HEIGHT_OFFSET, KEY_INTRO_OVERVIEW_DURATION_S, KEY_INTRO_OVERVIEW_ENABLED, KEY_ORIENTATION, KEY_PATH_SMOOTHING, KEY_PHOTO_PAUSE_DURATION, KEY_TANGENT_LOOKAHEAD_S, KEY_TANGENT_WEIGHT, KEY_TILT_DEG
 from .trackpoint import Trackpoint
 
 _log = logging.getLogger(__name__)
@@ -101,7 +101,6 @@ def build_camera_path(
     tilt_deg = float(settings.get(KEY_TILT_DEG, DEFAULTS[KEY_TILT_DEG]))
     lookahead_s = float(settings.get(KEY_TANGENT_LOOKAHEAD_S, DEFAULTS[KEY_TANGENT_LOOKAHEAD_S]))
     tangent_weight = settings.get(KEY_TANGENT_WEIGHT, DEFAULTS[KEY_TANGENT_WEIGHT])
-    pause_mode = settings.get(KEY_PHOTO_PAUSE_MODE, DEFAULTS[KEY_PHOTO_PAUSE_MODE])
     pause_duration = float(settings.get(KEY_PHOTO_PAUSE_DURATION, DEFAULTS[KEY_PHOTO_PAUSE_DURATION]))
 
     # New feature settings
@@ -304,7 +303,7 @@ def build_camera_path(
         dx_fine = np.diff(xs_fine)
         dy_fine = np.diff(ys_fine)
         cumlen_bs = np.concatenate([[0.0], np.cumsum(np.sqrt(dx_fine**2 + dy_fine**2))])
-        total_length_bs = float(cumlen_bs[-1])
+        # total_length_bs = float(cumlen_bs[-1])
         del dx_fine, dy_fine, xs_fine, ys_fine
         sample_t = np.interp(sample_dists_pl, cumlen_bs, t_fine)
         del t_fine, cumlen_bs, sample_dists_pl
@@ -497,12 +496,8 @@ def build_camera_path(
             bbox,
             lat_m,
             lon_m,
-            grid,
-            height_mode,
-            height_offset,
             fps,
             pause_duration,
-            pause_mode,
         )
 
     _step(7, f"done  total_keyframes={len(keyframes)}")
@@ -832,20 +827,6 @@ def _height_at_batch(
     return grid.elevation_at_batch(lats, lons)
 
 
-def _smooth_elevation(
-    grid: ElevationGrid,
-    lat: float,
-    lon: float,
-) -> float:
-    dlat = (grid.max_lat - grid.min_lat) / (grid.rows - 1) * 1.5
-    dlon = (grid.max_lon - grid.min_lon) / (grid.cols - 1) * 1.5
-    samples = [
-        grid.elevation_at(lat + r * dlat, lon + c * dlon)
-        for r in (-1, 0, 1)
-        for c in (-1, 0, 1)
-    ]
-    return float(np.mean(samples))
-
 
 def _height_at(
     x: float,
@@ -1142,12 +1123,8 @@ def _insert_pauses(
     bbox: BoundingBox,
     lat_m: float,
     lon_m: float,
-    grid: ElevationGrid,
-    height_mode: str,
-    height_offset: float,
     fps: int,
     pause_duration: float,
-    pause_mode: str,
 ) -> list[CameraKeyframe]:
     pause_frames = max(1, round(pause_duration * fps))
 

@@ -65,23 +65,7 @@ from georeel.core.project import (
     load_project,
     save_project,
 )
-from georeel.core.satellite import SatelliteTexture
-from georeel.core.satellite.providers import QUALITY_ZOOM
-
-from .blender_settings_dialog import BlenderSettingsDialog
-from .clip_effects_widget import ClipEffectsWidget
-from .locality_names_widget import LocalityNamesWidget
-from .compositor_progress_dialog import CompositorProgressDialog
-from .gpx_drop_area import GpxDropArea
-from .gpx_stats_widget import GpxStatsWidget
-from .keyframe_calc_worker import KeyframeCalcWorker
-from .output_file_selector import OutputFileSelector
-from .photo_list_area import PhotoListArea
-from .preview_map_dialog import PreviewMapDialog
-from .preview_video_dialog import open_preview_video
-from .preview_pipeline_dialog import PreviewPipelineDialog
-from .render_progress_dialog import RenderProgressDialog
-from .render_settings_dialog import (
+from georeel.core.render_defaults import (
     DEFAULTS,
     KEY_CACHE_BASE_DIR,
     KEY_CACHE_USE_CUSTOM_DIR,
@@ -102,6 +86,24 @@ from .render_settings_dialog import (
     KEY_RIBBON_COLOR_MODE,
     KEY_RIBBON_SELF_LIT,
     KEY_TILT_DEG,
+)
+from georeel.core.satellite import SatelliteTexture
+from georeel.core.satellite.providers import QUALITY_ZOOM
+
+from .blender_settings_dialog import BlenderSettingsDialog
+from .clip_effects_widget import ClipEffectsWidget
+from .locality_names_widget import LocalityNamesWidget
+from .compositor_progress_dialog import CompositorProgressDialog
+from .gpx_drop_area import GpxDropArea
+from .gpx_stats_widget import GpxStatsWidget
+from .keyframe_calc_worker import KeyframeCalcWorker
+from .output_file_selector import OutputFileSelector
+from .photo_list_area import PhotoListArea
+from .preview_map_dialog import PreviewMapDialog
+from .preview_video_dialog import open_preview_video
+from .preview_pipeline_dialog import PreviewPipelineDialog
+from .render_progress_dialog import RenderProgressDialog
+from .render_settings_dialog import (
     RenderSettingsDialog,
     get_render_settings,
 )
@@ -1168,7 +1170,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._autosave_tilde(update_sat=True)
 
-    def _on_worker_scene_ready(self, blend_path: str, pipeline: Pipeline):
+    def _on_worker_scene_ready(self, _blend_path: str, pipeline: Pipeline):
         self._pipeline = pipeline
         if pipeline.trackpoints:
             self._photo_area.update_pipeline_info(trackpoints=pipeline.trackpoints)

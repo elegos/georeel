@@ -332,7 +332,7 @@ class PhotoListArea(DropArea):
         self._rebuild_table()
         self.photos_changed.emit()
 
-    def _on_cell_double_clicked(self, row: int, col: int):
+    def _on_cell_double_clicked(self, row: int, _col: int):
         path = (self._table.item(row, _COL_NAME) or QTableWidgetItem()).data(
             Qt.ItemDataRole.UserRole
         )
