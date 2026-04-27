@@ -716,9 +716,10 @@ def _write_keyframes(keyframes: list[CameraKeyframe], path: Path) -> None:
             "look_at_x":  kf.look_at_x,
             "look_at_y":  kf.look_at_y,
             "look_at_z":  kf.look_at_z,
-            "is_pause":   kf.is_pause,
-            "photo_path": kf.photo_path,
-            "is_intro":   kf.is_intro,
+            "is_pause":     kf.is_pause,
+            "photo_path":   kf.photo_path,
+            "is_intro":     kf.is_intro,
+            "is_clearance": kf.is_clearance,
         }
         for kf in keyframes
     ]

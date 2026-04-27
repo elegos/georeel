@@ -42,19 +42,63 @@ def _zero_roll_quat(pos, look_at, Vector, Matrix):
     return mat.to_quaternion()
 
 
-def _select_keyframe_indices(keyframes_data: list, stride: int, n_intro: int = 0) -> list[int]:
+def _detect_n_static(keyframes_data: list, n_intro: int) -> int:
+    """Count leading intro frames that share the same camera position (the static hold phase)."""
+    if not n_intro or not keyframes_data:
+        return 0
+    x0, y0, z0 = keyframes_data[0]["x"], keyframes_data[0]["y"], keyframes_data[0]["z"]
+    count = 0
+    for kf in keyframes_data[:n_intro]:
+        if abs(kf["x"] - x0) + abs(kf["y"] - y0) + abs(kf["z"] - z0) < 1e-3:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _detect_n_clearance(keyframes_data: list, n_intro: int) -> int:
+    """Count trailing intro frames whose position matches the last intro frame.
+
+    This includes the final descent snap frame plus any clearance frames — all
+    of which are at the flythrough start position.  The result is used as an
+    offset: ``n_intro - _detect_n_clearance()`` is the index of the descent
+    snap frame, which is the correct Blender control point for ending the SINE
+    EASE_IN_OUT segment.  Works even for JSON files that predate the
+    ``is_clearance`` field.
+    """
+    if not n_intro or not keyframes_data:
+        return 0
+    last = keyframes_data[n_intro - 1]
+    x0, y0, z0 = last["x"], last["y"], last["z"]
+    count = 0
+    for kf in reversed(keyframes_data[:n_intro]):
+        if abs(kf["x"] - x0) + abs(kf["y"] - y0) + abs(kf["z"] - z0) < 1e-3:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _select_keyframe_indices(keyframes_data: list, stride: int, n_intro: int = 0, n_static: int = 0, n_clearance: int = 0) -> list[int]:
     """Return sorted indices into keyframes_data to use as Blender keyframes.
 
-    Intro frames (0..n_intro-1) are all included so the smoothstep overview
-    curve is exact with no interpolation.  Flythrough frames use the given
-    stride; pause-segment boundaries are always included.
+    Intro: sparse control points — hold start, descent start, descent end,
+    clearance end (if clearance > 0).  The SINE EASE_IN_OUT on descent-start
+    ends at descent-end so the camera holds still during clearance.
+    Flythrough frames use the given stride; pause-segment boundaries are always
+    included.
     """
     n = len(keyframes_data)
     selected: set[int] = set()
     selected.add(0)
     selected.add(n - 1)
-    for i in range(min(n_intro, n)):
-        selected.add(i)
+    if n_intro > 0:
+        selected.add(0)                         # hold start
+        if 0 < n_static < n_intro:
+            selected.add(n_static - 1)          # last hold frame = descent start
+        if n_clearance > 0:
+            selected.add(n_intro - n_clearance)  # descent snap frame = clearance start
+        selected.add(n_intro - 1)               # last intro frame (clearance end or descent end)
     for i in range(max(n_intro, 0), n, stride):
         selected.add(i)
     in_pause = False
@@ -147,24 +191,16 @@ def _setup_intro_overview(scene, keyframes_data: list) -> int:
         ov_obj.data.materials.clear()
         ov_obj.data.materials.append(mat)
 
-        # Detect the static-hold phase length: consecutive intro frames that
-        # share the same position as the very first intro frame.  This matches
-        # the two-phase intro design (static hold → slerped descent) so the
-        # ribbon stays fully opaque during the hold and fades only during the
-        # descent.  Falls back to 55% of n_intro for older single-phase intros.
-        first_intro = next((kf for kf in keyframes_data if kf.get("is_intro", False)), None)
-        n_static = 0
-        if first_intro is not None:
-            x0, y0, z0 = first_intro["x"], first_intro["y"], first_intro["z"]
-            for kf in keyframes_data:
-                if not kf.get("is_intro", False):
-                    break
-                if abs(kf["x"] - x0) + abs(kf["y"] - y0) + abs(kf["z"] - z0) < 1e-3:
-                    n_static += 1
-                else:
-                    break
-        fade_start = n_static if n_static > 0 else max(1, round(n_intro * 0.55))
-        for frm, val in ((1, 1.0), (fade_start, 1.0), (n_intro, 0.0)):
+        n_static = _detect_n_static(keyframes_data, n_intro)
+        # Fade completes exactly at the snap frame (camera arrives at track start).
+        # During clearance the ribbon is already fully transparent.
+        n_clearance_kfs = sum(1 for kf in keyframes_data[:n_intro] if kf.get("is_clearance", False))
+        if n_clearance_kfs > 0:
+            fade_end = n_intro - n_clearance_kfs  # snap frame Blender number
+        else:
+            n_tail = _detect_n_clearance(keyframes_data, n_intro)
+            fade_end = (n_intro - n_tail + 1) if n_tail > 1 else n_intro
+        for frm, val in ((1, 1.0), (n_static, 1.0), (fade_end, 0.0)):
             fac_node.outputs[0].default_value = val
             fac_node.outputs[0].keyframe_insert("default_value", frame=frm)
 
@@ -278,17 +314,19 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # Intro overview: shift existing animation and create static ribbon    #
     # ------------------------------------------------------------------ #
-    n_intro = _setup_intro_overview(scene, keyframes_data)
+    n_intro     = _setup_intro_overview(scene, keyframes_data)
+    n_static    = _detect_n_static(keyframes_data, n_intro)
+    n_clearance = _detect_n_clearance(keyframes_data, n_intro)
 
     # ------------------------------------------------------------------ #
     # Insert subsampled keyframes; Blender interpolates between them.     #
     #                                                                     #
-    # Stride = fps → 1 keyframe per second.  This reduces keyframe count  #
-    # by ~fps× compared to inserting every frame, while LINEAR            #
-    # interpolation between the pre-smoothed camera positions is          #
-    # visually indistinguishable from per-frame injection.                #
-    # Pause segments (is_pause=True) use CONSTANT interpolation so the    #
-    # camera holds exactly at the photo waypoint position.                #
+    # Intro: sparse control points (hold start, descent start, descent    #
+    # end, clearance end).  SINE EASE_IN_OUT on descent-start produces a  #
+    # smooth arrival at descent-end; camera then holds during clearance.  #
+    #                                                                     #
+    # Flythrough: stride = fps → 1 keyframe per second, LINEAR.           #
+    # Pause segments: CONSTANT so the camera holds at the waypoint.       #
     # ------------------------------------------------------------------ #
     first_frame = keyframes_data[0]["frame"]
     last_frame  = keyframes_data[-1]["frame"]
@@ -297,11 +335,12 @@ def main() -> None:
     scene.frame_end   = last_frame
 
     stride  = max(1, fps)
-    indices = _select_keyframe_indices(keyframes_data, stride, n_intro)
+    indices = _select_keyframe_indices(keyframes_data, stride, n_intro, n_static, n_clearance)
 
     # Map from Blender frame number → interpolation type
     frame_interp: dict[int, str] = {}
 
+    prev_quat = None
     for idx in indices:
         kf      = keyframes_data[idx]
         frame   = kf["frame"]
@@ -309,6 +348,13 @@ def main() -> None:
         look_at = Vector((kf["look_at_x"], kf["look_at_y"], kf["look_at_z"]))
 
         rot_quat = _zero_roll_quat(pos, look_at, Vector, Matrix)
+
+        # Keep all quaternions in the same hemisphere so Blender's component-wise
+        # interpolation always takes the short arc.  Without this, a dot < 0
+        # between adjacent keyframe quaternions causes a visible mid-descent flip.
+        if prev_quat is not None and rot_quat.dot(prev_quat) < 0:
+            rot_quat = -rot_quat
+        prev_quat = rot_quat
 
         cam_obj.location            = pos
         cam_obj.rotation_quaternion = rot_quat
@@ -325,6 +371,24 @@ def main() -> None:
         for fc in cam_obj.animation_data.action.fcurves:
             for kp in fc.keyframe_points:
                 kp.interpolation = frame_interp.get(round(kp.co.x), 'LINEAR')
+
+    # Apply SINE EASE_IN_OUT to the descent-start keyframe.
+    #
+    # This uses Blender's built-in sinusoidal easing, which mathematically
+    # guarantees zero velocity at both ends of the segment:
+    #   f(t) = 0.5 * (1 - cos(π·t))  →  f'(0) = 0,  f'(1) = 0
+    #
+    # The easing applies to the single segment from descent-start → descent-end
+    # (both position and rotation f-curves share the same parameter), producing
+    # true ease-in-ease-out without any handle arithmetic.
+    if n_intro > 0 and 0 < n_static < n_intro and cam_obj.animation_data and cam_obj.animation_data.action:
+        descent_start_frame = keyframes_data[n_static - 1]["frame"]
+        for fc in cam_obj.animation_data.action.fcurves:
+            for kp in fc.keyframe_points:
+                if round(kp.co.x) == descent_start_frame:
+                    kp.interpolation = 'SINE'
+                    kp.easing        = 'EASE_IN_OUT'
+            fc.update()
 
     # ------------------------------------------------------------------ #
     # Apply render resolution so the camera aspect ratio is correct       #

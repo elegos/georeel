@@ -60,6 +60,11 @@ _ORIENTATION_SPIKE_MAD_FACTOR = 6.0
 # static hold duration.
 _INTRO_DESCENT_S = 3.0
 
+# Brief hold at the flythrough start after the descent completes.  Gives the
+# TrackOverview ribbon time to finish fading so the scene is clean before the
+# journey begins.
+_INTRO_CLEARANCE_S = 1.0
+
 
 class CameraPathError(Exception):
     pass
@@ -559,8 +564,9 @@ def _build_intro_overview(
     if not fly_kfs:
         return []
 
-    n_static  = max(1, round(duration_s      * fps))
-    n_descent = max(2, round(_INTRO_DESCENT_S * fps))
+    n_static    = max(1, round(duration_s        * fps))
+    n_descent   = max(2, round(_INTRO_DESCENT_S  * fps))
+    n_clearance = max(1, round(_INTRO_CLEARANCE_S * fps))
 
     lax = np.array([kf.look_at_x for kf in fly_kfs])
     lay = np.array([kf.look_at_y for kf in fly_kfs])
@@ -606,11 +612,13 @@ def _build_intro_overview(
     fwd_start = np.array(
         [start_lx - start_x, start_ly - start_y, start_lz - start_z], dtype=float
     )
-    fwd_start /= float(np.linalg.norm(fwd_start))
+    d_start = float(np.linalg.norm(fwd_start))
+    fwd_start /= d_start
     fwd_end_arr = np.array(
         [end.look_at_x - end.x, end.look_at_y - end.y, end.look_at_z - end.z], dtype=float
     )
-    fwd_end_arr /= float(np.linalg.norm(fwd_end_arr))
+    d_end = float(np.linalg.norm(fwd_end_arr))
+    fwd_end_arr /= d_end
 
     cos_theta = float(np.clip(np.dot(fwd_start, fwd_end_arr), -1.0, 1.0))
     _near_parallel = abs(cos_theta) > 0.9999
@@ -634,7 +642,7 @@ def _build_intro_overview(
             break
 
         t_lin = i / (n_descent - 1)
-        t = 1.0 - (1.0 - t_lin) * (1.0 - t_lin)
+        t = t_lin * t_lin  # ease-in: starts at rest from hold, accelerates into flythrough
 
         px = start_x + t * (end.x - start_x)
         py = start_y + t * (end.y - start_y)
@@ -651,13 +659,29 @@ def _build_intro_overview(
         if fn > 1e-9:
             fwd_t = fwd_t / fn
 
+        d = (1.0 - t) * d_start + t * d_end
         intro_kfs.append(CameraKeyframe(
             frame=0,
             x=px, y=py, z=pz,
-            look_at_x=px + float(fwd_t[0]) * _LOOK_AHEAD_M,
-            look_at_y=py + float(fwd_t[1]) * _LOOK_AHEAD_M,
-            look_at_z=pz + float(fwd_t[2]) * _LOOK_AHEAD_M,
+            look_at_x=px + float(fwd_t[0]) * d,
+            look_at_y=py + float(fwd_t[1]) * d,
+            look_at_z=pz + float(fwd_t[2]) * d,
             is_intro=True,
+        ))
+
+    # ── Phase 3: clearance hold ─────────────────────────────────────────── #
+    # Camera stays at the flythrough start while the TrackOverview ribbon
+    # finishes fading.  Gives a brief moment of "settlement" before the
+    # journey begins.
+    for _ in range(n_clearance):
+        intro_kfs.append(CameraKeyframe(
+            frame=0,
+            x=end.x, y=end.y, z=end.z,
+            look_at_x=end.look_at_x,
+            look_at_y=end.look_at_y,
+            look_at_z=end.look_at_z,
+            is_intro=True,
+            is_clearance=True,
         ))
 
     return intro_kfs

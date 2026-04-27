@@ -54,8 +54,9 @@ def inject_camera_and_open(
             "look_at_x": kf.look_at_x,
             "look_at_y": kf.look_at_y,
             "look_at_z": kf.look_at_z,
-            "is_pause": kf.is_pause,
-            "is_intro": kf.is_intro,
+            "is_pause":     kf.is_pause,
+            "is_intro":     kf.is_intro,
+            "is_clearance": kf.is_clearance,
         }
         for kf in keyframes
     ]

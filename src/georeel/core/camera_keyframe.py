@@ -24,3 +24,4 @@ class CameraKeyframe:
     is_pause: bool = False        # True for pause frames inserted at photo waypoints
     photo_path: str | None = None # path to the photo displayed during this pause
     is_intro: bool = False        # True for intro overview frames prepended before flythrough
+    is_clearance: bool = False    # True for the post-descent hold frames within the intro
