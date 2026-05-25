@@ -811,8 +811,10 @@ def _build_marker(bpy, track_data: list[dict],
     # pause schedule so marker timing matches the ribbon face rate exactly.
     ribbon_spacing_m  = (pause_schedule or {}).get("ribbon_spacing_m", 5.0)  # fallback = _RIBBON_SAMPLE_SPACING_M
     frames_per_point  = max(1.0, ribbon_spacing_m * fps / speed_mps)
+    n_intro           = (pause_schedule or {}).get("n_intro_frames", 0)
     pauses            = (pause_schedule or {}).get("pauses", [])
     pre_total         = (pause_schedule or {}).get("pre_total_frames", 0)
+    fly_total_sched   = (pause_schedule or {}).get("fly_total_frames", int((n - 1) * frames_per_point))
 
     scale        = height_offset / 200.0
     marker_radius = max(1.5, 4.0 * scale)
@@ -912,33 +914,40 @@ def _build_marker(bpy, track_data: list[dict],
     # CONSTANT keyframes bracket each photo pause so the marker holds.     #
     # ------------------------------------------------------------------ #
 
-    # Build a set of pause scene-start frames and a dict for fast lookup:
-    #   fly_frame (= scene_start - cumulative_before - pre_total - 1) → pause
-    pauses_by_fly: dict[int, dict] = {}
+    # Build lookup keyed by ribbon point index (nearest_idx stored in schedule).
+    # Falls back to fly_frame key for schedules built without ribbon_idx.
+    pauses_by_ribbon: dict[int, dict] = {}
     for p in pauses:
-        fly_f = p["scene_start"] - p["cumulative_before"] - pre_total - 1
-        pauses_by_fly[fly_f] = p
+        ri = p.get("ribbon_idx")
+        if ri is not None:
+            pauses_by_ribbon[ri] = p
+        else:
+            fly_f = p["scene_start"] - p["cumulative_before"] - pre_total - 1
+            pauses_by_ribbon[fly_f] = p
 
     pause_starts: set[int] = set()
     cumulative_pause_frames = 0
 
-    # Pre-track hold: marker sits at track start during pre-photo slideshow
-    if pre_total > 0:
-        pause_starts.add(1)
+    # Pre-track hold: marker sits at track start during intro + pre-photo slideshow
+    if n_intro > 0 or pre_total > 0:
+        pause_starts.add(n_intro + 1)
         marker_obj.location = (x0, y0, z0)
-        marker_obj.keyframe_insert("location", frame=1)
-        marker_obj.keyframe_insert("location", frame=pre_total + 1)
+        marker_obj.keyframe_insert("location", frame=n_intro + 1)
+        if pre_total > 0:
+            marker_obj.keyframe_insert("location", frame=n_intro + pre_total + 1)
 
     for i in range(n):
-        fly_frame_i = round(i * frames_per_point)
+        # Use fly_total from schedule so marker pacing matches the dynamic-speed
+        # camera profile rather than the constant base-speed ribbon face rate.
+        fly_frame_i = round(i * fly_total_sched / max(1, n - 1))
         xi = track_data[i]["x"]
         yi = track_data[i]["y"]
         zi = track_data[i]["z"] + z_offset
 
-        if fly_frame_i in pauses_by_fly:
+        if i in pauses_by_ribbon:
             # A photo pause begins when the ribbon head reaches this track point.
             # Insert CONSTANT (hold) at pause start, LINEAR (resume) at pause end.
-            p   = pauses_by_fly[fly_frame_i]
+            p   = pauses_by_ribbon[i]
             ps  = p["scene_start"]
             pd  = p["duration"]
             marker_obj.location = (xi, yi, zi)
@@ -947,7 +956,7 @@ def _build_marker(bpy, track_data: list[dict],
             marker_obj.keyframe_insert("location", frame=ps + pd)
             cumulative_pause_frames += pd
         else:
-            scene_frame_i = pre_total + fly_frame_i + cumulative_pause_frames + 1
+            scene_frame_i = n_intro + pre_total + fly_frame_i + cumulative_pause_frames + 1
             marker_obj.location = (xi, yi, zi)
             marker_obj.keyframe_insert("location", frame=scene_frame_i)
 
@@ -974,12 +983,12 @@ def _build_marker(bpy, track_data: list[dict],
             color_input = emit_node.inputs["Color"]
             cumulative_pause_frames = 0
             for i in range(n):
-                fly_frame_i = round(i * frames_per_point)
+                fly_frame_i = round(i * fly_total_sched / max(1, n - 1))
                 is_rec = bool(track_data[i].get("is_reconstructed", False))
                 color = (comp_r, comp_g, comp_b, 1.0) if is_rec else (m_r, m_g, m_b, 1.0)
 
-                if fly_frame_i in pauses_by_fly:
-                    p  = pauses_by_fly[fly_frame_i]
+                if i in pauses_by_ribbon:
+                    p  = pauses_by_ribbon[i]
                     ps = p["scene_start"]
                     pd = p["duration"]
                     color_input.default_value = color
@@ -987,7 +996,7 @@ def _build_marker(bpy, track_data: list[dict],
                     color_input.keyframe_insert("default_value", frame=ps + pd)
                     cumulative_pause_frames += pd
                 else:
-                    scene_frame_i = pre_total + fly_frame_i + cumulative_pause_frames + 1
+                    scene_frame_i = n_intro + pre_total + fly_frame_i + cumulative_pause_frames + 1
                     color_input.default_value = color
                     color_input.keyframe_insert("default_value", frame=scene_frame_i)
 
@@ -1095,11 +1104,12 @@ def _build_ribbon(bpy, track_data: list[dict],
     sched      = pause_schedule or {}
     ribbon_spacing_m = sched.get("ribbon_spacing_m", 5.0)  # fallback = _RIBBON_SAMPLE_SPACING_M
     frames_per_face = max(1.0, ribbon_spacing_m * fps / speed_mps)
+    n_intro    = sched.get("n_intro_frames", 0)
     pre_total  = sched.get("pre_total_frames", 0)
     fly_total  = sched.get("fly_total_frames", int((n - 1) * frames_per_face))
 
     build_mod = obj.modifiers.new(name="Unfold", type='BUILD')
-    build_mod.frame_start    = pre_total + 1
+    build_mod.frame_start    = n_intro + pre_total + 1
     build_mod.frame_duration = max(1, fly_total)
     build_mod.use_random_order = False
 
@@ -1108,18 +1118,18 @@ def _build_ribbon(bpy, track_data: list[dict],
         dp = 'modifiers["Unfold"].frame_start'
         if obj.animation_data is None:
             obj.animation_data_create()
-        # Initial KF at frame 1: frame_start = pre_total+1 → 0 faces during pre-photos
-        build_mod.frame_start = pre_total + 1
+        # Initial KF at frame 1: frame_start = n_intro+pre_total+1 → 0 faces during intro/pre-photos
+        build_mod.frame_start = n_intro + pre_total + 1
         obj.keyframe_insert(data_path=dp, frame=1)
         for pause in pauses:
-            ps = pause["scene_start"]   # already offset by pre_total
+            ps = pause["scene_start"]   # includes n_intro offset from scene_builder
             pd = pause["duration"]
             cb = pause["cumulative_before"]
             # At pause start: freeze ribbon (frame_start advances with time)
-            build_mod.frame_start = pre_total + cb + 1
+            build_mod.frame_start = n_intro + pre_total + cb + 1
             obj.keyframe_insert(data_path=dp, frame=ps)
             # At pause end: resume (CONSTANT until next pause)
-            build_mod.frame_start = pre_total + cb + pd + 1
+            build_mod.frame_start = n_intro + pre_total + cb + pd + 1
             obj.keyframe_insert(data_path=dp, frame=ps + pd)
         # LINEAR interpolation on pause-start KFs so frame_start tracks current_frame;
         # CONSTANT everywhere else so the ribbon holds its position.

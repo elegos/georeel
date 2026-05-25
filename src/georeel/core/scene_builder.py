@@ -16,7 +16,17 @@ from .blender_runtime import find_blender
 from .elevation_grid import ElevationGrid
 from .pil_lock import PIL_LOCK
 from .pipeline import Pipeline
-from .render_defaults import DEFAULTS, KEY_CAMERA_SPEED, KEY_FPS, KEY_PHOTO_PAUSE_DURATION
+from .render_defaults import (
+    DEFAULTS,
+    KEY_CAMERA_SPEED,
+    KEY_DYNAMIC_SPEED_ENABLED,
+    KEY_DYNAMIC_SPEED_FACTOR,
+    KEY_DYNAMIC_SPEED_RAMP_S,
+    KEY_FPS,
+    KEY_INTRO_OVERVIEW_DURATION_S,
+    KEY_INTRO_OVERVIEW_ENABLED,
+    KEY_PHOTO_PAUSE_DURATION,
+)
 from .satellite import SatelliteTexture
 from .sun_position import sun_angles, sun_direction_vector
 
@@ -463,6 +473,20 @@ def _compute_pause_schedule(
     fps = float(settings.get(KEY_FPS, DEFAULTS[KEY_FPS]))
     speed_mps = float(settings.get(KEY_CAMERA_SPEED, DEFAULTS[KEY_CAMERA_SPEED]))
     pause_dur = float(settings.get(KEY_PHOTO_PAUSE_DURATION, DEFAULTS[KEY_PHOTO_PAUSE_DURATION]))
+    # Compute intro frame count so scene_start values are correct Blender scene frames.
+    # Mirrors camera_path._build_intro_overview: n_static + n_descent + n_clearance.
+    _intro_enabled = (
+        bool(settings.get(KEY_INTRO_OVERVIEW_ENABLED, DEFAULTS[KEY_INTRO_OVERVIEW_ENABLED]))
+        and str(settings.get(KEY_INTRO_OVERVIEW_ENABLED, DEFAULTS[KEY_INTRO_OVERVIEW_ENABLED])) != "false"
+    )
+    n_intro_frames = 0
+    if _intro_enabled:
+        _intro_dur_s = float(settings.get(KEY_INTRO_OVERVIEW_DURATION_S, DEFAULTS[KEY_INTRO_OVERVIEW_DURATION_S]))
+        n_intro_frames = (
+            max(1, round(_intro_dur_s * fps))   # n_static
+            + max(2, round(3.0 * fps))           # n_descent (_INTRO_DESCENT_S)
+            + max(1, round(1.0 * fps))           # n_clearance (_INTRO_CLEARANCE_S)
+        )
     pause_frames = max(1, round(pause_dur * fps))
     # Dynamic ribbon spacing (mirrors the value chosen in build_scene()):
     # widened so the Build modifier always reveals exactly 1 face per camera frame,
@@ -471,7 +495,53 @@ def _compute_pause_schedule(
     frames_per_ribbon_point = max(1.0, effective_ribbon_spacing * fps / speed_mps)
 
     n_ribbon = len(ribbon_points)
-    fly_total = max(2, round((n_ribbon - 1) * frames_per_ribbon_point))
+    fly_total_base = max(2, round((n_ribbon - 1) * frames_per_ribbon_point))
+
+    # When dynamic speed is enabled, compute the camera's actual frame count and
+    # per-photo pause positions using the same speed-profile integration as
+    # camera_path.build_camera_path().  This ensures the ribbon/marker freeze at
+    # exactly the same frame as the camera pauses, eliminating the visual
+    # "ribbon ahead of camera" artifact.
+    dynamic_speed_enabled = bool(
+        settings.get(KEY_DYNAMIC_SPEED_ENABLED, DEFAULTS[KEY_DYNAMIC_SPEED_ENABLED])
+    ) and str(settings.get(KEY_DYNAMIC_SPEED_ENABLED, DEFAULTS[KEY_DYNAMIC_SPEED_ENABLED])) != "false"
+
+    # sample_dists_dyn[k] = arc distance (m) the camera is at flythrough frame k.
+    # None when dynamic speed is off.
+    sample_dists_dyn: np.ndarray | None = None
+    fly_total = fly_total_base
+
+    if dynamic_speed_enabled and n_ribbon >= 2:
+        ds_factor = float(settings.get(KEY_DYNAMIC_SPEED_FACTOR, DEFAULTS[KEY_DYNAMIC_SPEED_FACTOR]))
+        ds_ramp_s = float(settings.get(KEY_DYNAMIC_SPEED_RAMP_S, DEFAULTS[KEY_DYNAMIC_SPEED_RAMP_S]))
+        ramp_m = ds_ramp_s * speed_mps
+        # Approximate PL total length from ribbon sampling (accurate to < ribbon_spacing/2).
+        pl_total = (n_ribbon - 1) * effective_ribbon_spacing
+
+        # Speed-profile: mirrors _build_speed_profile in camera_path.py.
+        # Photo arc positions for in-track waypoints (computed below after ribbon_xy).
+        # Build a preliminary list without photos first; photos are added below.
+        n_fine = max(2, int(pl_total / 10))  # ~10 m resolution
+        s_fine = np.linspace(0.0, pl_total, n_fine)
+        multiplier = np.full(n_fine, ds_factor, dtype=float)
+        ramp_m_safe = max(ramp_m, 1.0)
+        for anc_s in (0.0, pl_total):
+            dist = np.abs(s_fine - anc_s)
+            t = np.clip(dist / ramp_m_safe, 0.0, 1.0)
+            smooth_t = t * t * (3.0 - 2.0 * t)
+            m = 1.0 + (ds_factor - 1.0) * smooth_t
+            multiplier = np.minimum(multiplier, m)
+        # Photo arc anchors are added in the second pass below once nearest_idx is known.
+        # For now integrate without photos to get the base n_frames_dyn.
+        ds_step = float(s_fine[1] - s_fine[0]) if n_fine > 1 else pl_total
+        mid_mult = (multiplier[:-1] + multiplier[1:]) / 2.0
+        dt_segs = ds_step / (speed_mps * np.maximum(mid_mult, 1e-9))
+        cumtime = np.concatenate([[0.0], np.cumsum(dt_segs)])
+        total_time = float(cumtime[-1])
+        n_frames_dyn = max(2, round(total_time * fps))
+        fly_total = n_frames_dyn
+        frame_times = np.linspace(0.0, total_time, n_frames_dyn)
+        sample_dists_dyn = np.interp(frame_times, cumtime, s_fine)
 
     pre_total = 0
     post_total = 0
@@ -495,8 +565,47 @@ def _compute_pause_schedule(
         pre_total = pre_count * pause_frames
         post_total = post_count * pause_frames
 
-        # Collect in-track (fly_frame, photo_path) — matches _insert_pauses order
-        waypoints: list[tuple[int, str]] = []
+        # When dynamic speed is on, rebuild the speed profile including photo
+        # arc positions as additional anchor points (mirrors camera_path.py).
+        if dynamic_speed_enabled and sample_dists_dyn is not None:
+            photo_arc_lengths: list[float] = []
+            for r in pipeline.match_results:
+                if not r.ok or r.trackpoint_index is None or r.position != "track":
+                    continue
+                tp = pipeline.trackpoints[r.trackpoint_index]
+                x = (tp.longitude - grid.min_lon) / (grid.max_lon - grid.min_lon) * lon_m
+                y = (tp.latitude - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
+                dists_r = np.sqrt((ribbon_xy[:, 0] - x) ** 2 + (ribbon_xy[:, 1] - y) ** 2)
+                ni = int(np.argmin(dists_r))
+                photo_arc_lengths.append(ni * effective_ribbon_spacing)
+
+            if photo_arc_lengths:
+                # Re-integrate with photo anchors so multiplier dips to 1.0 near them.
+                _ds_factor2 = float(settings.get(KEY_DYNAMIC_SPEED_FACTOR, DEFAULTS[KEY_DYNAMIC_SPEED_FACTOR]))
+                _ramp_m2 = float(settings.get(KEY_DYNAMIC_SPEED_RAMP_S, DEFAULTS[KEY_DYNAMIC_SPEED_RAMP_S])) * speed_mps
+                pl_total = (n_ribbon - 1) * effective_ribbon_spacing
+                n_fine2 = max(2, int(pl_total / 10))
+                s_fine2 = np.linspace(0.0, pl_total, n_fine2)
+                mult2 = np.full(n_fine2, _ds_factor2, dtype=float)
+                ramp_m_safe2 = max(_ramp_m2, 1.0)
+                for anc_s in ([0.0, pl_total] + photo_arc_lengths):
+                    dist2 = np.abs(s_fine2 - anc_s)
+                    t2 = np.clip(dist2 / ramp_m_safe2, 0.0, 1.0)
+                    sm2 = t2 * t2 * (3.0 - 2.0 * t2)
+                    m2 = 1.0 + (_ds_factor2 - 1.0) * sm2
+                    mult2 = np.minimum(mult2, m2)
+                ds_step2 = float(s_fine2[1] - s_fine2[0]) if n_fine2 > 1 else pl_total
+                mid2 = (mult2[:-1] + mult2[1:]) / 2.0
+                dt2 = ds_step2 / (speed_mps * np.maximum(mid2, 1e-9))
+                cumtime2 = np.concatenate([[0.0], np.cumsum(dt2)])
+                total_time2 = float(cumtime2[-1])
+                n_frames_dyn2 = max(2, round(total_time2 * fps))
+                fly_total = n_frames_dyn2
+                ft2 = np.linspace(0.0, total_time2, n_frames_dyn2)
+                sample_dists_dyn = np.interp(ft2, cumtime2, s_fine2)
+
+        # Collect in-track (fly_frame, nearest_idx, photo_path)
+        waypoints: list[tuple[int, int, str]] = []
         for r in pipeline.match_results:
             if not r.ok or r.trackpoint_index is None or r.position != "track":
                 continue
@@ -505,10 +614,15 @@ def _compute_pause_schedule(
             y = (tp.latitude - grid.min_lat) / (grid.max_lat - grid.min_lat) * lat_m
             dists = np.sqrt((ribbon_xy[:, 0] - x) ** 2 + (ribbon_xy[:, 1] - y) ** 2)
             nearest_idx = int(np.argmin(dists))
-            fly_frame = max(
-                0, round(nearest_idx * frames_per_ribbon_point)
-            )  # consistent with _build_marker's round(i * frames_per_point)
-            waypoints.append((fly_frame, r.photo_path or ""))
+            if sample_dists_dyn is not None:
+                # Dynamic speed: find the camera frame nearest to the photo's arc position.
+                s_photo = nearest_idx * effective_ribbon_spacing
+                fly_frame = int(np.argmin(np.abs(sample_dists_dyn - s_photo)))
+            else:
+                fly_frame = max(
+                    0, round(nearest_idx * frames_per_ribbon_point)
+                )
+            waypoints.append((fly_frame, nearest_idx, r.photo_path or ""))
 
         waypoints.sort(key=lambda w: w[0])
 
@@ -520,16 +634,18 @@ def _compute_pause_schedule(
         i = 0
         while i < len(waypoints):
             fly_frame = waypoints[i][0]
+            ribbon_idx = waypoints[i][1]
             j = i + 1
             while j < len(waypoints) and waypoints[j][0] == fly_frame:
                 j += 1
             total_duration = pause_frames * (j - i)
-            scene_start = pre_total + fly_frame + cumulative_pause + 1
+            scene_start = n_intro_frames + pre_total + fly_frame + cumulative_pause + 1
             pauses.append(
                 {
                     "scene_start": scene_start,
                     "duration": total_duration,
                     "cumulative_before": cumulative_pause,
+                    "ribbon_idx": ribbon_idx,
                 }
             )
             cumulative_pause += total_duration
@@ -539,6 +655,7 @@ def _compute_pause_schedule(
         pre_total + fly_total + sum(p["duration"] for p in pauses) + post_total
     )
     return {
+        "n_intro_frames": n_intro_frames,
         "pre_total_frames": pre_total,
         "fly_total_frames": fly_total,
         "post_total_frames": post_total,

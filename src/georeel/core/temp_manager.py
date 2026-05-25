@@ -22,6 +22,7 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import tempfile
@@ -32,6 +33,8 @@ _log = logging.getLogger(__name__)
 
 # Every georeel temp dir starts with this prefix.
 _DIR_PREFIX = "georeel_"
+# Persistent (non-stale) cache dirs use this prefix and are never swept.
+_CACHE_PREFIX = "georeel_cache_"
 
 # Stale loose *files* that can be left behind (mkstemp / mktemp callers).
 # All live in the same directory as the temp dirs.
@@ -70,6 +73,21 @@ def get_base_dir() -> Path | None:
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+def make_cache_dir(key: str) -> Path:
+    """Return (creating if needed) a persistent directory keyed on *key*.
+
+    The directory survives process restarts and is never removed by
+    ``cleanup_stale()``.  Use it for data that is expensive to regenerate
+    (e.g. downloaded satellite tiles) and safe to reuse across sessions.
+    """
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    base = _base_dir if _base_dir is not None else Path(tempfile.gettempdir())
+    base.mkdir(parents=True, exist_ok=True)
+    d = base / f"{_CACHE_PREFIX}{digest}"
+    d.mkdir(exist_ok=True)
+    return d
+
 
 def make_temp_dir(prefix: str) -> Path:
     """Create and return a new temp directory.
@@ -123,10 +141,15 @@ def cleanup_stale(extra_dirs: Sequence[Path] | None = None) -> int:
 
 
 def _sweep_dirs(scan_dir: Path) -> int:
-    """Remove all ``georeel_*`` subdirectories inside *scan_dir*."""
+    """Remove all ``georeel_*`` subdirectories inside *scan_dir*.
+
+    Persistent cache directories (``georeel_cache_*``) are skipped.
+    """
     removed = 0
     for entry in scan_dir.glob(f"{_DIR_PREFIX}*"):
         if not entry.is_dir():
+            continue
+        if entry.name.startswith(_CACHE_PREFIX):
             continue
         try:
             shutil.rmtree(entry, ignore_errors=False)

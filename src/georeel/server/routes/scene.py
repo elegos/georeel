@@ -7,10 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from PIL import Image
-
 from georeel.core.pipeline import Pipeline
-from georeel.core.satellite import SatelliteTexture
 from georeel.core.scene_builder import SceneBuildError, build_scene
 from georeel.core.elevation_grid import ElevationGrid
 from georeel.server.jobs import get_registry, make_cancel_check, make_progress_cb
@@ -93,22 +90,11 @@ async def _run(job_id: str, body: SceneBuildRequest) -> None:
     cancel_check = make_cancel_check(job)
 
     def _blocking() -> str:
-        # Rebuild SatelliteTexture from the saved PNG.
-        img = Image.open(sat_result.png_path).convert("RGB")
-        texture = SatelliteTexture(
-            image=img,
-            min_lat=sat_result.min_lat,
-            max_lat=sat_result.max_lat,
-            min_lon=sat_result.min_lon,
-            max_lon=sat_result.max_lon,
-            provider_id=sat_result.provider_id,
-            quality=sat_result.quality,
-        )
         pipeline = Pipeline()
         pipeline.trackpoints = [tp.to_core() for tp in body.trackpoints]
         pipeline.match_results = [mr.to_core() for mr in body.match_results]
         pipeline.elevation_grid = grid
-        pipeline.satellite_texture = texture
+        pipeline.satellite_texture = sat_result.texture
 
         return build_scene(
             pipeline,

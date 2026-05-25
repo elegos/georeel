@@ -39,17 +39,22 @@ def _make_done_dem_job() -> str:
 
 
 def _make_done_satellite_job(tmp_path: Path) -> str:
-    png = tmp_path / "texture.png"
-    Image.new("RGB", (4, 4), (100, 150, 200)).save(str(png))
-    job = get_registry().create()
-    job.status = "done"
-    job.progress = 100
-    job.result = SatelliteJobResult(
-        png_path=str(png),
+    from georeel.core.satellite import SatelliteTexture
+    tif = tmp_path / "texture.tif"
+    Image.new("RGB", (4, 4), (100, 150, 200)).save(str(tif), format="TIFF")
+    texture = SatelliteTexture(
+        image=Image.new("RGB", (4, 4)),
         min_lat=46.0, max_lat=46.1,
         min_lon=11.0, max_lon=11.1,
         provider_id="esri_world",
         quality="standard",
+    )
+    job = get_registry().create()
+    job.status = "done"
+    job.progress = 100
+    job.result = SatelliteJobResult(
+        texture=texture,
+        texture_path=str(tif),
         width=4, height=4,
     )
     return job.job_id
@@ -192,7 +197,7 @@ class TestSatelliteFetch:
         with TestClient(app) as client:
             response = client.get(f"/api/v1/satellite/{job_id}/texture.png")
         assert response.status_code == 200
-        assert response.headers["content-type"].startswith("image/png")
+        assert response.headers["content-type"].startswith("image/tiff")
 
     def test_result_409_when_not_done(self) -> None:
         job = get_registry().create()

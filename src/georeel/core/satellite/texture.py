@@ -6,7 +6,7 @@ import struct
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, IO
+from typing import TYPE_CHECKING, Any, Callable, IO
 
 if TYPE_CHECKING:
     from .tile_cache import TileCache
@@ -114,7 +114,11 @@ class SatelliteTexture:
     # Serialisation
     # ------------------------------------------------------------------
 
-    def write_png(self, dest: IO[bytes]) -> None:
+    def write_png(
+        self,
+        dest: IO[bytes],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> None:
         """Stream the PNG directly into *dest* without an intermediate bytes copy.
 
         Priority order:
@@ -122,6 +126,9 @@ class SatelliteTexture:
         2. Lazy ZIP source (source_zip) — copy raw bytes, zero decode.
         3. Tile cache (tile_cache) — composite full bbox on demand.
         4. Blender tile manifest (_tiles_manifest) — reassemble from tile PNGs.
+
+        *progress_callback(done, total)* is forwarded to the tile cache
+        compositor (path 3) so callers can report compositing progress.
         """
         if self.image is not None:
             with PIL_LOCK:
@@ -147,8 +154,8 @@ class SatelliteTexture:
             from ..bounding_box import BoundingBox
             bbox = BoundingBox(self.min_lat, self.max_lat, self.min_lon, self.max_lon)
             _log.info("[memory] Compositing full satellite texture from tile cache for save")
+            img = self.tile_cache.composite(bbox, progress_callback=progress_callback)
             with PIL_LOCK:
-                img = self.tile_cache.composite(bbox)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 img.save(dest, format="PNG", optimize=False)

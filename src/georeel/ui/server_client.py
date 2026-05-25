@@ -514,6 +514,7 @@ def _keyframe_from_dict(d: dict[str, Any]) -> CameraKeyframe:
         look_at_y=float(d["look_at_y"]),
         look_at_z=float(d["look_at_z"]),
         is_pause=bool(d.get("is_pause", False)),
+        is_intro=bool(d.get("is_intro", False)),
         photo_path=d.get("photo_path"),  # type: ignore[arg-type]
     )
 

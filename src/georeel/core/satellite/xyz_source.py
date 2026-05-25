@@ -92,12 +92,15 @@ class XyzSource(SatelliteSource):
                 total_tiles,
             )
 
+        from georeel.core import temp_manager
+        cache_dir = temp_manager.make_cache_dir(f"{self._url_template}\x00{zoom}")
         cache = TileCache(
             url_template=self._url_template,
             zoom=zoom,
             max_workers=_MAX_WORKERS,
             timeout=_TIMEOUT,
             on_demand=on_demand,
+            cache_dir=cache_dir,
         )
         if not on_demand:
             cache.prefetch(x_min, x_max, y_min, y_max, progress_callback=progress_callback)

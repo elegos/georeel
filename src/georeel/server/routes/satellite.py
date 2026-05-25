@@ -1,8 +1,12 @@
 """Satellite imagery fetch endpoint."""
 
 import asyncio
+import logging
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -18,13 +22,8 @@ router = APIRouter(prefix="/satellite", tags=["satellite"])
 
 @dataclass
 class SatelliteJobResult:
-    png_path: str
-    min_lat: float
-    max_lat: float
-    min_lon: float
-    max_lon: float
-    provider_id: str
-    quality: str
+    texture: SatelliteTexture   # kept alive so tile_cache stays on disk
+    texture_path: str           # on-disk TIFF composite (written during fetch)
     width: int
     height: int
 
@@ -43,7 +42,6 @@ class JobStarted(BaseModel):
 
 
 class SatelliteResultResponse(BaseModel):
-    png_path: str
     min_lat: float
     max_lat: float
     min_lon: float
@@ -72,7 +70,7 @@ async def _run(job_id: str, body: SatelliteFetchRequest, ws_dir: Path) -> None:
         return
     job.status = "running"
     job.message = "Downloading satellite tiles…"
-    progress_cb = make_progress_cb(job, "Satellite tile")
+    progress_cb = make_progress_cb(job, "Satellite tile", min_pct=1, max_pct=95)
     cancel_check = make_cancel_check(job)
 
     def _blocking() -> SatelliteTexture:
@@ -91,27 +89,58 @@ async def _run(job_id: str, body: SatelliteFetchRequest, ws_dir: Path) -> None:
             job.error = "Cancelled"
             return
 
-        png_path = str(ws_dir / "satellite_texture.png")
-        with open(png_path, "wb") as fh:
-            texture.write_png(fh)
+        texture_path = str(ws_dir / "satellite_texture.tif")
+        job.message = "Compositing satellite texture…"
+
+        def _composite_progress(done: int, total: int) -> None:
+            job.progress = 95 + int((done / total) * 4)  # 95–99 %
+            job.message = f"Compositing {done}/{total} tiles"
+
+        def _save_tiff() -> tuple[int, int]:
+            import numpy as np
+            import tifffile
+            from georeel.core.bounding_box import BoundingBox
+            from georeel.core.pil_lock import PIL_LOCK
+            assert texture.tile_cache is not None
+            bbox = BoundingBox(
+                texture.min_lat, texture.max_lat,
+                texture.min_lon, texture.max_lon,
+            )
+            img = texture.tile_cache.composite(bbox, progress_callback=_composite_progress)
+            with PIL_LOCK:
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                w, h = img.size
+                # np.asarray shares PIL's internal buffer (zero-copy for RGB images).
+                # tifffile writes pure-Python TIFF (no libtiff) with per-tile DEFLATE,
+                # avoiding the libtiff 32-bit strip-size overflow on very large images.
+                arr = np.asarray(img)
+                tifffile.imwrite(
+                    texture_path,
+                    arr,
+                    bigtiff=True,
+                    compression="deflate",
+                    tile=(256, 256),
+                    photometric="rgb",
+                )
+                return w, h
+
+        saved_w, saved_h = await asyncio.to_thread(_save_tiff)
 
         job.result = SatelliteJobResult(
-            png_path=png_path,
-            min_lat=texture.min_lat,
-            max_lat=texture.max_lat,
-            min_lon=texture.min_lon,
-            max_lon=texture.max_lon,
-            provider_id=texture.provider_id,
-            quality=texture.quality,
-            width=texture.width,
-            height=texture.height,
+            texture=texture,
+            texture_path=texture_path,
+            width=saved_w,
+            height=saved_h,
         )
         job.status = "done"
         job.progress = 100
-        job.message = f"Done — {texture.width}×{texture.height} px"
+        job.message = f"Done — {saved_w}×{saved_h} px"
     except Exception as exc:
+        tb = traceback.format_exc()
+        _log.error("[satellite] job %s failed:\n%s", job_id, tb)
         job.status = "error"
-        job.error = str(exc)
+        job.error = f"{exc}\n\n{tb}"
 
 
 def _get_result(job_id: str) -> SatelliteJobResult:
@@ -132,14 +161,14 @@ def _get_result(job_id: str) -> SatelliteJobResult:
 async def get_result(job_id: str) -> SatelliteResultResponse:
     """Return satellite texture metadata once the fetch job is done."""
     r = _get_result(job_id)
+    t = r.texture
     return SatelliteResultResponse(
-        png_path=r.png_path,
-        min_lat=r.min_lat,
-        max_lat=r.max_lat,
-        min_lon=r.min_lon,
-        max_lon=r.max_lon,
-        provider_id=r.provider_id,
-        quality=r.quality,
+        min_lat=t.min_lat,
+        max_lat=t.max_lat,
+        min_lon=t.min_lon,
+        max_lon=t.max_lon,
+        provider_id=t.provider_id,
+        quality=t.quality,
         width=r.width,
         height=r.height,
     )
@@ -147,9 +176,9 @@ async def get_result(job_id: str) -> SatelliteResultResponse:
 
 @router.get("/{job_id}/texture.png")
 async def get_texture_png(job_id: str) -> FileResponse:
-    """Download the stitched satellite texture as a PNG."""
+    """Download the stitched satellite texture as a TIFF."""
     r = _get_result(job_id)
-    png = Path(r.png_path)
-    if not png.exists():
-        raise HTTPException(status_code=404, detail="Texture PNG not found on disk")
-    return FileResponse(str(png), media_type="image/png", filename="texture.png")
+    path = Path(r.texture_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Texture file not found on disk")
+    return FileResponse(str(path), media_type="image/tiff", filename="texture.tif")

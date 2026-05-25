@@ -398,12 +398,16 @@ def _resolve_overlay(
     timeline: list[dict[str, Any]],
     duration_frames: int,
     fade_frames: int,
+    min_frame: int = 0,
 ) -> list[tuple[str, float]]:
     """Return (name, alpha) pairs for a single frame — cross-fade, no overlap.
 
-    *orig_idx* is the frame index in the original rendered frame space (0-based,
-    without any prepended black frames).  *timeline* must be sorted ascending by
+    *orig_idx* is the 0-based flythrough frame index (intro frames already
+    subtracted by the caller).  *timeline* must be sorted ascending by
     ``frame_start``.
+
+    *min_frame* clamps every entry's effective frame_start so that locality
+    names cannot appear while the title overlay is still visible.
 
     At most two consecutive entries are returned (during the cross-fade window).
     When the next entry's ``frame_start`` is reached the current entry begins an
@@ -413,7 +417,7 @@ def _resolve_overlay(
     """
     result: list[tuple[str, float]] = []
     for i, entry in enumerate(timeline):
-        fs = int(entry["frame_start"])
+        fs = max(int(entry["frame_start"]), min_frame)
         if orig_idx < fs:
             break  # timeline is sorted; nothing further can match
         offset = orig_idx - fs
@@ -443,12 +447,18 @@ def composite_locality_frames(
     fps: int,
     progress_cb: Callable[[int, int], None] | None = None,
     skip_frames: set[int] | None = None,
+    n_intro: int = 0,
 ) -> None:
     """Composite locality name overlays onto frames.
 
     Frames whose number appears in *skip_frames* are hard-linked unchanged
     (used by run_composite_stage to skip photo/transition frames so photos
     always fully occlude locality names).
+
+    *n_intro* is the number of intro-overview frames prepended by
+    build_camera_path().  Rendered frame 1-based idx maps to 0-based flythrough
+    frame ``idx - 1 - n_intro``; negative values (intro frames) get no overlay.
+    The locality timeline uses the same 0-based flythrough frame space.
 
     Hard-links frames that need no overlay.
     """
@@ -476,6 +486,15 @@ def composite_locality_frames(
             except OSError:
                 shutil.copy2(src, dst)
         return
+
+    # Compute title delay: locality must not appear during the title window.
+    # Title runs from rendered frame 1 for title_duration_s.  The first n_intro
+    # rendered frames are the intro overview (no locality anyway), so locality
+    # must be suppressed for max(0, title_dur*fps - n_intro) flythrough frames.
+    title_delay_frames = 0
+    if bool(settings.get("clip_effects/title_enabled", False)):
+        _title_dur = float(settings.get("clip_effects/title_duration", 10.0))
+        title_delay_frames = max(0, round(_title_dur * fps) - n_intro)
 
     # Settings
     position         = str(settings.get("locality_names/position",         "bottom-right"))
@@ -551,19 +570,32 @@ def composite_locality_frames(
 
     def _process(fp: Path) -> None:
         try:
-            idx = int(fp.stem)
+            raw_idx = int(fp.stem)
         except ValueError:
-            idx = 0
+            raw_idx = 1
         dst = dst_dir / fp.name
 
-        if skip_frames and idx in skip_frames:
+        if skip_frames and raw_idx in skip_frames:
             try:
                 os.link(fp, dst)
             except OSError:
                 shutil.copy2(fp, dst)
             return
 
-        active = _resolve_overlay(idx, timeline, duration_frames, fade_frames)
+        # Convert 1-based Blender frame number to 0-based flythrough index.
+        # Intro frames (flythrough_idx < 0) never get a locality overlay.
+        flythrough_idx = raw_idx - 1 - n_intro
+        if flythrough_idx < 0:
+            try:
+                os.link(fp, dst)
+            except OSError:
+                shutil.copy2(fp, dst)
+            return
+
+        active = _resolve_overlay(
+            flythrough_idx, timeline, duration_frames, fade_frames,
+            min_frame=title_delay_frames,
+        )
         if not active:
             try:
                 os.link(fp, dst)
@@ -642,9 +674,13 @@ def run_composite_stage(
             and bool(settings.get("locality_names/show_plain_text", True))):
         locality_dir = temp_manager.make_temp_dir("georeel_locality_")
         pipeline.temp_dirs.append(locality_dir)
+        n_intro = sum(
+            1 for kf in (pipeline.camera_keyframes or []) if kf.is_intro
+        )
         composite_locality_frames(
             comp_dir, locality_dir, settings, fps,
             skip_frames=pause_frames,
+            n_intro=n_intro,
         )
         return str(locality_dir)
 

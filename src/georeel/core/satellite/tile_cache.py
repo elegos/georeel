@@ -128,6 +128,7 @@ class TileCache:
         timeout: int = _TIMEOUT,
         user_agent: str = _USER_AGENT,
         on_demand: bool = False,
+        cache_dir: Path | None = None,
     ) -> None:
         self._url_template = url_template
         self._zoom         = zoom
@@ -135,10 +136,15 @@ class TileCache:
         self._timeout      = timeout
         self._user_agent   = user_agent
         self._on_demand    = on_demand
-        self._dir          = temp_manager.make_temp_dir("georeel_xyz_")
+        if cache_dir is not None:
+            self._dir       = cache_dir
+            self._persistent = True
+        else:
+            self._dir        = temp_manager.make_temp_dir("georeel_xyz_")
+            self._persistent = False
+            atexit.register(self.cleanup)
         # Track tiles that permanently failed so we never retry them.
         self._failed: set[tuple[int, int]] = set()
-        atexit.register(self.cleanup)
 
     # ----------------------------------------------------------------
     # Properties
@@ -234,7 +240,11 @@ class TileCache:
     # Compositor
     # ----------------------------------------------------------------
 
-    def composite(self, bbox: BoundingBox) -> Image.Image:
+    def composite(
+        self,
+        bbox: BoundingBox,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Image.Image:
         """Return a PIL RGB image covering *bbox* from cached tiles.
 
         Only the tiles that overlap *bbox* are read.  Missing tiles
@@ -246,6 +256,9 @@ class TileCache:
         have not been downloaded yet are fetched in parallel here before
         the compositor runs — so only the tiles needed for this bbox are
         ever retrieved from the server.
+
+        *progress_callback(done, total)* is called after each tile is
+        pasted so callers can report compositing progress.
         """
         x_min, x_max, y_min, y_max, crop_left, crop_top, canvas_w, canvas_h = (
             _crop_bounds(bbox, self._zoom)
@@ -272,22 +285,25 @@ class TileCache:
                     for f in as_completed(futures):
                         f.result()
 
+        total_tiles = (x_max - x_min + 1) * (y_max - y_min + 1)
+        pasted = 0
         with PIL_LOCK:
             canvas = Image.new("RGB", (canvas_w, canvas_h))
             for ty in range(y_min, y_max + 1):
                 for tx in range(x_min, x_max + 1):
+                    pasted += 1
                     path = self._tile_path(tx, ty)
-                    if not path.exists():
-                        continue
-                    try:
-                        tile = Image.open(path).convert("RGB")
-                    except Exception as exc:
-                        _log.debug("[tile_cache] bad tile file (%d,%d): %s", tx, ty, exc)
-                        continue
-                    px = (tx - x_min) * _TILE_SIZE - crop_left
-                    py = (ty - y_min) * _TILE_SIZE - crop_top
-                    canvas.paste(tile, (px, py))
-                    del tile
+                    if path.exists():
+                        try:
+                            tile = Image.open(path).convert("RGB")
+                            px = (tx - x_min) * _TILE_SIZE - crop_left
+                            py = (ty - y_min) * _TILE_SIZE - crop_top
+                            canvas.paste(tile, (px, py))
+                            del tile
+                        except Exception as exc:
+                            _log.debug("[tile_cache] bad tile file (%d,%d): %s", tx, ty, exc)
+                    if progress_callback is not None:
+                        progress_callback(pasted, total_tiles)
 
         return canvas
 
@@ -296,5 +312,9 @@ class TileCache:
     # ----------------------------------------------------------------
 
     def cleanup(self) -> None:
-        """Remove the temporary tile directory from disk."""
-        shutil.rmtree(self._dir, ignore_errors=True)
+        """Remove the temporary tile directory from disk.
+
+        Persistent caches (created with an explicit *cache_dir*) are kept.
+        """
+        if not self._persistent:
+            shutil.rmtree(self._dir, ignore_errors=True)

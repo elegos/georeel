@@ -19,6 +19,7 @@ dependencies = [
     "python-multipart>=0.0.26",
     "scipy>=1.17.1",
     "srtm-py>=0.3.7",
+    "tifffile>=2026.5.15",
     "uvicorn[standard]>=0.44.0",
 ]
 
