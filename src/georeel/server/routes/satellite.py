@@ -23,7 +23,7 @@ router = APIRouter(prefix="/satellite", tags=["satellite"])
 @dataclass
 class SatelliteJobResult:
     texture: SatelliteTexture   # kept alive so tile_cache stays on disk
-    texture_path: str           # on-disk TIFF composite (written during fetch)
+    texture_path: str           # on-disk JPEG preview (written during fetch)
     width: int
     height: int
 
@@ -50,6 +50,20 @@ class SatelliteResultResponse(BaseModel):
     quality: str
     width: int
     height: int
+    tile_dir: str | None = None
+    zoom: int | None = None
+
+
+class RegisterTilesRequest(BaseModel):
+    workspace_id: str
+    tile_dir: str
+    zoom: int
+    min_lat: float
+    max_lat: float
+    min_lon: float
+    max_lon: float
+    provider_id: str = ""
+    quality: str = "standard"
 
 
 @router.post("/fetch", response_model=JobStarted, status_code=202)
@@ -89,16 +103,14 @@ async def _run(job_id: str, body: SatelliteFetchRequest, ws_dir: Path) -> None:
             job.error = "Cancelled"
             return
 
-        texture_path = str(ws_dir / "satellite_texture.tif")
-        job.message = "Compositing satellite texture…"
+        texture_path = str(ws_dir / "satellite_preview.jpg")
+        job.message = "Compositing satellite preview…"
 
         def _composite_progress(done: int, total: int) -> None:
             job.progress = 95 + int((done / total) * 4)  # 95–99 %
             job.message = f"Compositing {done}/{total} tiles"
 
-        def _save_tiff() -> tuple[int, int]:
-            import numpy as np
-            import tifffile
+        def _save_preview() -> tuple[int, int]:
             from georeel.core.bounding_box import BoundingBox
             from georeel.core.pil_lock import PIL_LOCK
             assert texture.tile_cache is not None
@@ -106,26 +118,20 @@ async def _run(job_id: str, body: SatelliteFetchRequest, ws_dir: Path) -> None:
                 texture.min_lat, texture.max_lat,
                 texture.min_lon, texture.max_lon,
             )
-            img = texture.tile_cache.composite(bbox, progress_callback=_composite_progress)
+            # composite_scaled() processes one tile at a time at reduced resolution
+            # (max 2048 px on the longest side), keeping peak RAM under ~50 MB
+            # regardless of how many tiles the region spans.  Blender scene quality
+            # is unaffected because the scene builder reads from tile_cache directly.
+            preview, w, h = texture.tile_cache.composite_scaled(
+                bbox, max_px=2048, progress_callback=_composite_progress
+            )
             with PIL_LOCK:
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                w, h = img.size
-                # np.asarray shares PIL's internal buffer (zero-copy for RGB images).
-                # tifffile writes pure-Python TIFF (no libtiff) with per-tile DEFLATE,
-                # avoiding the libtiff 32-bit strip-size overflow on very large images.
-                arr = np.asarray(img)
-                tifffile.imwrite(
-                    texture_path,
-                    arr,
-                    bigtiff=True,
-                    compression="deflate",
-                    tile=(256, 256),
-                    photometric="rgb",
-                )
-                return w, h
+                if preview.mode != "RGB":
+                    preview = preview.convert("RGB")
+                preview.save(texture_path, format="JPEG", quality=85, optimize=True)
+            return w, h
 
-        saved_w, saved_h = await asyncio.to_thread(_save_tiff)
+        saved_w, saved_h = await asyncio.to_thread(_save_preview)
 
         job.result = SatelliteJobResult(
             texture=texture,
@@ -162,6 +168,7 @@ async def get_result(job_id: str) -> SatelliteResultResponse:
     """Return satellite texture metadata once the fetch job is done."""
     r = _get_result(job_id)
     t = r.texture
+    tc = t.tile_cache
     return SatelliteResultResponse(
         min_lat=t.min_lat,
         max_lat=t.max_lat,
@@ -171,14 +178,66 @@ async def get_result(job_id: str) -> SatelliteResultResponse:
         quality=t.quality,
         width=r.width,
         height=r.height,
+        tile_dir=str(tc.dir) if tc is not None else None,
+        zoom=tc.zoom if tc is not None else None,
     )
+
+
+@router.post("/register_tiles", response_model=JobStarted, status_code=201)
+async def register_tiles(body: RegisterTilesRequest) -> JobStarted:
+    """Register pre-extracted tile files as a completed satellite job.
+
+    Used when loading a project that already contains tile data: the client
+    extracts the tiles to a local temp dir, then calls this endpoint so the
+    server can use those tiles for scene building without re-downloading.
+    """
+    ws = get_manager().get(body.workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    tile_dir = Path(body.tile_dir)
+    if not tile_dir.is_dir():
+        raise HTTPException(status_code=422, detail=f"tile_dir not found: {tile_dir}")
+
+    from georeel.core.satellite.tile_cache import TileCache
+    from georeel.core.bounding_box import BoundingBox
+
+    tile_cache = TileCache(url_template="", zoom=body.zoom, cache_dir=tile_dir)
+    bbox = BoundingBox(body.min_lat, body.max_lat, body.min_lon, body.max_lon)
+    w, h = tile_cache.canvas_size(bbox)
+
+    texture = SatelliteTexture(
+        image=None,
+        min_lat=body.min_lat,
+        max_lat=body.max_lat,
+        min_lon=body.min_lon,
+        max_lon=body.max_lon,
+        provider_id=body.provider_id,
+        quality=body.quality,
+        tile_cache=tile_cache,
+        dim_width=w,
+        dim_height=h,
+    )
+
+    job = get_registry().create()
+    get_manager().register_job(body.workspace_id, job.job_id)
+    job.result = SatelliteJobResult(
+        texture=texture,
+        texture_path=str(ws.directory / "satellite_preview.jpg"),
+        width=w,
+        height=h,
+    )
+    job.status = "done"
+    job.progress = 100
+    job.message = f"Registered — {w}×{h} px"
+    _log.info("[satellite] registered tile job %s from %s (%d×%d px)", job.job_id, tile_dir, w, h)
+    return JobStarted(job_id=job.job_id)
 
 
 @router.get("/{job_id}/texture.png")
 async def get_texture_png(job_id: str) -> FileResponse:
-    """Download the stitched satellite texture as a TIFF."""
+    """Download the satellite texture preview as JPEG."""
     r = _get_result(job_id)
     path = Path(r.texture_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Texture file not found on disk")
-    return FileResponse(str(path), media_type="image/tiff", filename="texture.tif")
+    return FileResponse(str(path), media_type="image/jpeg", filename="satellite_preview.jpg")

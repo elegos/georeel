@@ -221,13 +221,13 @@ class TestWritePngFromTileCache:
         )
         fake_img = Image.new("RGB", (128, 96), (50, 100, 150))
         mock_cache = MagicMock()
-        mock_cache.composite.return_value = fake_img
+        mock_cache.composite_scaled.return_value = (fake_img, 128, 96)
         t.tile_cache = mock_cache
 
         buf = io.BytesIO()
         t.write_png(buf)
 
-        mock_cache.composite.assert_called_once()
+        mock_cache.composite_scaled.assert_called_once()
         buf.seek(0)
         out = Image.open(buf)
         assert out.size == (128, 96)
@@ -242,7 +242,7 @@ class TestWritePngFromTileCache:
         )
         fake_img = Image.new("RGBA", (10, 10), (255, 0, 0, 200))
         mock_cache = MagicMock()
-        mock_cache.composite.return_value = fake_img
+        mock_cache.composite_scaled.return_value = (fake_img, 10, 10)
         t.tile_cache = mock_cache
 
         buf = io.BytesIO()

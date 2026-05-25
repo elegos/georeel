@@ -212,8 +212,41 @@ class ServerClient:
         return self._raw("GET", f"/api/v1/satellite/{job_id}/result")  # type: ignore[return-value]
 
     def download_satellite_texture(self, job_id: str) -> SatelliteTexture:
-        """Download the PNG and reconstruct a SatelliteTexture object."""
+        """Return a SatelliteTexture backed by the server's tile cache.
+
+        When the server exposes ``tile_dir`` and ``zoom`` (same filesystem),
+        the texture is constructed with a TileCache pointing directly to those
+        files — no image data is transferred over HTTP and no decoding happens.
+        Falls back to downloading the JPEG preview for old servers.
+        """
+        from georeel.core.bounding_box import BoundingBox
+        from georeel.core.satellite.tile_cache import TileCache
+
         meta = self.get_satellite_metadata(job_id)
+        tile_dir_str = meta.get("tile_dir")
+        zoom_val = meta.get("zoom")
+        if tile_dir_str and zoom_val is not None:
+            tile_cache = TileCache(
+                url_template="", zoom=int(zoom_val), cache_dir=Path(tile_dir_str)
+            )
+            bbox = BoundingBox(
+                float(meta["min_lat"]), float(meta["max_lat"]),
+                float(meta["min_lon"]), float(meta["max_lon"]),
+            )
+            w, h = tile_cache.canvas_size(bbox)
+            return SatelliteTexture(
+                image=None,
+                min_lat=float(meta["min_lat"]),
+                max_lat=float(meta["max_lat"]),
+                min_lon=float(meta["min_lon"]),
+                max_lon=float(meta["max_lon"]),
+                provider_id=str(meta["provider_id"]),
+                quality=str(meta["quality"]),
+                tile_cache=tile_cache,
+                dim_width=w,
+                dim_height=h,
+            )
+        # Fallback: download the JPEG preview (old server without tile_dir).
         png_r = self._client.get(f"/api/v1/satellite/{job_id}/texture.png")
         _raise(png_r)
         img = Image.open(io.BytesIO(png_r.content)).convert("RGB")
@@ -225,6 +258,33 @@ class ServerClient:
             max_lon=float(meta["max_lon"]),
             provider_id=str(meta["provider_id"]),
             quality=str(meta["quality"]),
+        )
+
+    def register_satellite_tiles(
+        self,
+        workspace_id: str,
+        tile_dir: str,
+        zoom: int,
+        bbox: dict[str, Any],
+        provider_id: str = "",
+        quality: str = "standard",
+    ) -> str:
+        """Register pre-extracted tile files with the server; returns a job_id."""
+        return str(
+            self._post(
+                "/api/v1/satellite/register_tiles",
+                json={
+                    "workspace_id": workspace_id,
+                    "tile_dir": tile_dir,
+                    "zoom": zoom,
+                    "min_lat": bbox["min_lat"],
+                    "max_lat": bbox["max_lat"],
+                    "min_lon": bbox["min_lon"],
+                    "max_lon": bbox["max_lon"],
+                    "provider_id": provider_id,
+                    "quality": quality,
+                },
+            )["job_id"]
         )
 
     # ── Scene ──────────────────────────────────────────────────────────

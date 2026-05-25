@@ -385,3 +385,176 @@ class TestCompositeOnDemand:
             mock_dl.assert_not_called()
 
         cache.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# composite_scaled
+# ---------------------------------------------------------------------------
+
+def _make_jpeg_bytes(color=(0, 128, 255), size=(256, 256)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+class TestCompositeScaled:
+    """Cover the composite_scaled method (lines 262–322)."""
+
+    def _write_tiles(self, cache: TileCache, bbox: BoundingBox) -> None:
+        from georeel.core.satellite.tile_cache import _crop_bounds
+        bounds = _crop_bounds(bbox, cache.zoom)
+        x_min, x_max, y_min, y_max = bounds[0], bounds[1], bounds[2], bounds[3]
+        for ty in range(y_min, y_max + 1):
+            for tx in range(x_min, x_max + 1):
+                cache._tile_path(tx, ty).write_bytes(_make_jpeg_bytes())
+
+    # ------------------------------------------------------------------
+    # scale >= 1 fallback path (lines 284-286)
+    # ------------------------------------------------------------------
+
+    def test_fallback_to_composite_when_scale_gte_1(self):
+        """When max_px is large enough, composite_scaled delegates to composite()."""
+        cache = _make_cache()
+        self._write_tiles(cache, _SMALL_BBOX)
+        img, w, h = cache.composite_scaled(_SMALL_BBOX, max_px=999_999)
+        assert isinstance(img, Image.Image)
+        assert w >= 1 and h >= 1
+        cache.cleanup()
+
+    def test_fallback_passes_progress_callback(self):
+        """The progress callback is forwarded to composite() in the fallback path."""
+        cache = _make_cache()
+        self._write_tiles(cache, _SMALL_BBOX)
+        calls: list[tuple[int, int]] = []
+        cache.composite_scaled(_SMALL_BBOX, max_px=999_999,
+                               progress_callback=lambda c, t: calls.append((c, t)))
+        assert len(calls) > 0
+        cache.cleanup()
+
+    # ------------------------------------------------------------------
+    # downscaling loop (lines 288-322)
+    # ------------------------------------------------------------------
+
+    def test_returns_smaller_image_when_downscaled(self):
+        """When max_px forces a scale < 1, the returned image is smaller."""
+        cache = _make_cache()
+        self._write_tiles(cache, _SMALL_BBOX)
+        native_w, native_h = cache.canvas_size(_SMALL_BBOX)
+        # Force scale < 1 by capping at a tiny dimension
+        img, w, h = cache.composite_scaled(_SMALL_BBOX, max_px=10)
+        assert img.width <= native_w
+        assert img.height <= native_h
+        assert w == native_w
+        assert h == native_h
+        cache.cleanup()
+
+    def test_returns_pil_image_when_downscaled(self):
+        """Return type is PIL Image for the downscaled path."""
+        cache = _make_cache()
+        self._write_tiles(cache, _SMALL_BBOX)
+        img, w, h = cache.composite_scaled(_SMALL_BBOX, max_px=10)
+        assert isinstance(img, Image.Image)
+        assert img.mode == "RGB"
+        cache.cleanup()
+
+    def test_progress_callback_called_for_each_tile(self):
+        """progress_callback is invoked once per tile in the downscale loop."""
+        cache = _make_cache()
+        self._write_tiles(cache, _SMALL_BBOX)
+        calls: list[tuple[int, int]] = []
+        from georeel.core.satellite.tile_cache import _crop_bounds
+        bounds = _crop_bounds(_SMALL_BBOX, cache.zoom)
+        total_tiles = (bounds[1] - bounds[0] + 1) * (bounds[3] - bounds[2] + 1)
+        cache.composite_scaled(_SMALL_BBOX, max_px=10,
+                               progress_callback=lambda c, t: calls.append((c, t)))
+        assert len(calls) == total_tiles
+        # Last callback should report completion
+        assert calls[-1][0] == total_tiles
+        cache.cleanup()
+
+    def test_corrupt_tile_file_skipped_in_downscale(self):
+        """A corrupt tile file is caught and skipped; no exception propagates."""
+        cache = _make_cache()
+        from georeel.core.satellite.tile_cache import _crop_bounds
+        bounds = _crop_bounds(_SMALL_BBOX, cache.zoom)
+        x_min, y_min = bounds[0], bounds[2]
+        # Write real tiles everywhere
+        self._write_tiles(cache, _SMALL_BBOX)
+        # Overwrite one tile with garbage
+        cache._tile_path(x_min, y_min).write_bytes(b"\x00\x01\x02corrupt")
+        # Should not raise
+        img, w, h = cache.composite_scaled(_SMALL_BBOX, max_px=10)
+        assert isinstance(img, Image.Image)
+        cache.cleanup()
+
+    def test_missing_tiles_produce_black_canvas_when_downscaled(self):
+        """Tiles that don't exist on disk are simply skipped (black region)."""
+        cache = _make_cache()
+        # No tiles written at all
+        img, w, h = cache.composite_scaled(_SMALL_BBOX, max_px=10)
+        assert isinstance(img, Image.Image)
+        extrema = img.getextrema()
+        assert all(lo == 0 and hi == 0 for lo, hi in extrema)
+        cache.cleanup()
+
+    # ------------------------------------------------------------------
+    # on_demand fetch path inside composite_scaled (lines 266-281)
+    # ------------------------------------------------------------------
+
+    def test_on_demand_fetches_needed_tiles_in_composite_scaled(self):
+        """composite_scaled downloads missing tiles when on_demand=True."""
+        cache = _make_cache(on_demand=True)
+        downloaded: list[tuple[int, int]] = []
+
+        def fake_download(tx, ty):
+            cache._tile_path(tx, ty).write_bytes(_make_jpeg_bytes())
+            downloaded.append((tx, ty))
+
+        with patch.object(cache, "_download_tile", side_effect=fake_download):
+            img, w, h = cache.composite_scaled(_SMALL_BBOX, max_px=10)
+
+        assert len(downloaded) > 0
+        assert isinstance(img, Image.Image)
+        cache.cleanup()
+
+    def test_on_demand_skips_already_present_tiles_in_composite_scaled(self):
+        """composite_scaled skips download when tiles are already on disk."""
+        cache = _make_cache(on_demand=True)
+        self._write_tiles(cache, _SMALL_BBOX)
+
+        with patch.object(cache, "_download_tile") as mock_dl:
+            cache.composite_scaled(_SMALL_BBOX, max_px=10)
+            mock_dl.assert_not_called()
+
+        cache.cleanup()
+
+    def test_on_demand_skips_failed_tiles_in_composite_scaled(self):
+        """composite_scaled does not attempt to re-download tiles in _failed."""
+        cache = _make_cache(on_demand=True)
+        from georeel.core.satellite.tile_cache import _crop_bounds
+        bounds = _crop_bounds(_SMALL_BBOX, cache.zoom)
+        x_min, x_max, y_min, y_max = bounds[0], bounds[1], bounds[2], bounds[3]
+        for ty in range(y_min, y_max + 1):
+            for tx in range(x_min, x_max + 1):
+                cache._failed.add((tx, ty))
+
+        with patch.object(cache, "_download_tile") as mock_dl:
+            cache.composite_scaled(_SMALL_BBOX, max_px=10)
+            mock_dl.assert_not_called()
+
+        cache.cleanup()
+
+    # ------------------------------------------------------------------
+    # Persistent cache cleanup (line 400->exit: cleanup is a no-op)
+    # ------------------------------------------------------------------
+
+    def test_persistent_cache_cleanup_is_noop(self, tmp_path):
+        """TileCache created with cache_dir keeps the directory on cleanup()."""
+        tiles_dir = tmp_path / "my_tiles"
+        tiles_dir.mkdir()
+        cache = TileCache(url_template="", zoom=10, cache_dir=tiles_dir)
+        assert cache._persistent is True
+        assert cache.dir.exists()
+        cache.cleanup()
+        # Directory must still exist because it's persistent
+        assert tiles_dir.exists()

@@ -74,8 +74,8 @@ def _make_done_dem_job() -> str:
 
 def _make_done_satellite_job(tmp_path: Path) -> tuple[str, Path]:
     from georeel.core.satellite import SatelliteTexture
-    tif = tmp_path / "texture.tif"
-    Image.new("RGB", (4, 4), (100, 150, 200)).save(str(tif), format="TIFF")
+    jpg = tmp_path / "satellite_preview.jpg"
+    Image.new("RGB", (4, 4), (100, 150, 200)).save(str(jpg), format="JPEG")
     texture = SatelliteTexture(
         image=Image.new("RGB", (4, 4)),
         min_lat=46.0, max_lat=46.1,
@@ -88,10 +88,10 @@ def _make_done_satellite_job(tmp_path: Path) -> tuple[str, Path]:
     job.progress = 100
     job.result = SatelliteJobResult(
         texture=texture,
-        texture_path=str(tif),
+        texture_path=str(jpg),
         width=4, height=4,
     )
-    return job.job_id, tif
+    return job.job_id, jpg
 
 
 # ── Serialization helpers ─────────────────────────────────────────────────────
@@ -254,6 +254,17 @@ class TestDemClient:
 
 # ── Satellite ─────────────────────────────────────────────────────────────────
 
+def _make_tile_dir(tmp_path: Path) -> tuple[Path, int]:
+    """Write two 256×256 JPEG tile files; return (tile_dir, zoom)."""
+    tiles_dir = tmp_path / "sat_tiles"
+    tiles_dir.mkdir()
+    for tx, ty in [(8591, 5734), (8592, 5734)]:
+        Image.new("RGB", (256, 256), (100, 150, 200)).save(
+            str(tiles_dir / f"{tx}_{ty}.img"), format="JPEG"
+        )
+    return tiles_dir, 14
+
+
 class TestSatelliteClient:
     def test_get_satellite_metadata(
         self, client: ServerClient, tmp_path: Path
@@ -263,11 +274,86 @@ class TestSatelliteClient:
         assert meta["width"] == 4
         assert meta["provider_id"] == "esri_world"
 
-    def test_download_satellite_texture(
+    def test_download_satellite_texture_uses_tile_cache(
         self, client: ServerClient, tmp_path: Path
     ) -> None:
+        """When server exposes tile_dir, download_satellite_texture wraps a TileCache."""
+        from georeel.core.satellite.tile_cache import TileCache
+        tiles_dir, zoom = _make_tile_dir(tmp_path)
+        # Build a job result that has a real TileCache
+        from georeel.core.satellite.tile_cache import TileCache as _TC
+        tc = _TC(url_template="", zoom=zoom, cache_dir=tiles_dir)
+        from georeel.core.satellite import SatelliteTexture as _ST
+        texture = _ST(
+            image=None,
+            min_lat=47.0, max_lat=47.01,
+            min_lon=8.0, max_lon=8.01,
+            provider_id="esri_world", quality="standard",
+            tile_cache=tc, dim_width=512, dim_height=256,
+        )
+        job = get_registry().create()
+        job.status = "done"
+        job.progress = 100
+        from georeel.server.routes.satellite import SatelliteJobResult as _SJR
+        job.result = _SJR(texture=texture, texture_path="", width=512, height=256)
+        downloaded = client.download_satellite_texture(job.job_id)
+        assert isinstance(downloaded.tile_cache, TileCache)
+        assert downloaded.provider_id == "esri_world"
+
+    def test_download_satellite_texture_fallback(
+        self, client: ServerClient, tmp_path: Path
+    ) -> None:
+        """Falls back to JPEG download when no tile_dir in metadata."""
         job_id, _ = _make_done_satellite_job(tmp_path)
         texture = client.download_satellite_texture(job_id)
         assert texture.width == 4
         assert texture.height == 4
         assert texture.provider_id == "esri_world"
+
+    def test_register_satellite_tiles(
+        self, client: ServerClient, workspace_id: str, tmp_path: Path
+    ) -> None:
+        tiles_dir, zoom = _make_tile_dir(tmp_path)
+        bbox = {"min_lat": 47.0, "max_lat": 47.01, "min_lon": 8.0, "max_lon": 8.01}
+        job_id = client.register_satellite_tiles(
+            workspace_id=workspace_id,
+            tile_dir=str(tiles_dir),
+            zoom=zoom,
+            bbox=bbox,
+            provider_id="esri_world",
+            quality="standard",
+        )
+        assert isinstance(job_id, str)
+        # Should be queryable as a done job
+        job_data = client.get_job(job_id)
+        assert job_data["status"] == "done"
+
+    def test_register_tiles_metadata_accessible(
+        self, client: ServerClient, workspace_id: str, tmp_path: Path
+    ) -> None:
+        tiles_dir, zoom = _make_tile_dir(tmp_path)
+        bbox = {"min_lat": 47.0, "max_lat": 47.01, "min_lon": 8.0, "max_lon": 8.01}
+        job_id = client.register_satellite_tiles(
+            workspace_id=workspace_id,
+            tile_dir=str(tiles_dir),
+            zoom=zoom,
+            bbox=bbox,
+            provider_id="esri_world",
+        )
+        meta = client.get_satellite_metadata(job_id)
+        assert meta["provider_id"] == "esri_world"
+        assert meta["tile_dir"] == str(tiles_dir)
+        assert meta["zoom"] == zoom
+
+    def test_register_tiles_bad_dir_raises(
+        self, client: ServerClient, workspace_id: str
+    ) -> None:
+        from georeel.ui.server_client import ServerError
+        bbox = {"min_lat": 47.0, "max_lat": 47.01, "min_lon": 8.0, "max_lon": 8.01}
+        with pytest.raises(ServerError, match="422"):
+            client.register_satellite_tiles(
+                workspace_id=workspace_id,
+                tile_dir="/nonexistent/tiles",
+                zoom=14,
+                bbox=bbox,
+            )

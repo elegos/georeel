@@ -1777,6 +1777,36 @@ class MainWindow(QMainWindow):
             self._status_show(
                 f"Satellite: using cached imagery ({texture.width}×{texture.height} px)."
             )
+        elif (
+            cached_tex is not None
+            and self._cached_sat_job_id is None
+            and cached_tex.tile_cache is not None
+            and _bbox_covers(fetch_bbox, cached_tex)
+            and cached_tex.provider_id == provider_id
+            and cached_tex.quality == img_quality
+        ):
+            # Project loaded with embedded tiles — register them with the server
+            # so the scene builder can find them without re-downloading.
+            self._status_show("Registering satellite tiles with server…")
+            try:
+                sat_job_id = client.register_satellite_tiles(
+                    workspace_id=self._server_workspace_id,
+                    tile_dir=str(cached_tex.tile_cache.dir),
+                    zoom=cached_tex.tile_cache.zoom,
+                    bbox=bbox_to_dict(fetch_bbox),
+                    provider_id=provider_id,
+                    quality=img_quality,
+                )
+            except ServerError as exc:
+                QMessageBox.critical(self, "Satellite imagery error", str(exc))
+                self._status_show("Pipeline stopped: satellite tile registration failed.")
+                return
+            texture = cached_tex
+            self._cached_sat_job_id = sat_job_id
+            self._pipeline.satellite_texture = texture
+            self._status_show(
+                f"Satellite: using tiles from project ({texture.width}×{texture.height} px)."
+            )
         else:
             self._status_show("Fetching satellite imagery via server…")
             self._fetch_progress_bar.setRange(0, 100)
@@ -2449,6 +2479,7 @@ class MainWindow(QMainWindow):
             elif answer == _SB.Discard:
                 self._save_window_geometry()
                 self._cleanup_temp_dir()
+                self._stop_server()
                 event.accept()
             else:
                 event.ignore()
@@ -2477,6 +2508,7 @@ class MainWindow(QMainWindow):
             elif answer == _SB.Discard:
                 self._save_window_geometry()
                 self._cleanup_temp_dir()
+                self._stop_server()
                 event.accept()
             else:
                 event.ignore()

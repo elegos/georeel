@@ -7,6 +7,7 @@ free port and waits up to 30 s for it to become healthy.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import socket
 import subprocess
@@ -85,6 +86,10 @@ class ServerManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        # Belt-and-suspenders: terminate the child if Python exits without
+        # stop() being called (e.g. SIGKILL on the GUI process).
+        _proc_ref = self._process
+        atexit.register(lambda: _proc_ref.terminate() if _proc_ref.poll() is None else None)
         self._log_thread = threading.Thread(
             target=_forward_stderr,
             args=(self._process,),

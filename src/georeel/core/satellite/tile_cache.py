@@ -240,6 +240,87 @@ class TileCache:
     # Compositor
     # ----------------------------------------------------------------
 
+    def composite_scaled(
+        self,
+        bbox: BoundingBox,
+        max_px: int = 2048,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> tuple[Image.Image, int, int]:
+        """Return a downscaled preview and the native ``(width, height)``.
+
+        Each tile is opened, scaled to fit *max_px* on the longest side, and
+        pasted into the preview canvas one at a time.  Peak RAM is
+        ``O(preview_size + 2 × tile_size)`` — roughly 12 MB for the default
+        2048-px cap — rather than O(full canvas), which can be tens of GB for
+        high-zoom regions.
+
+        Falls back to :meth:`composite` when the native size already fits
+        within *max_px* (i.e. the scale factor would be ≥ 1).
+
+        Returns ``(preview_img, native_width, native_height)``.
+        """
+        x_min, x_max, y_min, y_max, crop_left, crop_top, canvas_w, canvas_h = (
+            _crop_bounds(bbox, self._zoom)
+        )
+
+        if self._on_demand:
+            needed = [
+                (tx, ty)
+                for ty in range(y_min, y_max + 1)
+                for tx in range(x_min, x_max + 1)
+                if (tx, ty) not in self._failed
+                and not self._tile_path(tx, ty).exists()
+            ]
+            if needed:
+                with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+                    futures = {
+                        pool.submit(self._download_tile, tx, ty)
+                        for tx, ty in needed
+                    }
+                    for f in as_completed(futures):
+                        f.result()
+
+        scale = min(1.0, max_px / max(canvas_w, canvas_h, 1))
+        if scale >= 1.0:
+            img = self.composite(bbox, progress_callback=progress_callback)
+            return img, canvas_w, canvas_h
+
+        preview_w = max(1, round(canvas_w * scale))
+        preview_h = max(1, round(canvas_h * scale))
+        tile_px   = max(1, round(_TILE_SIZE * scale))
+
+        total_tiles = (x_max - x_min + 1) * (y_max - y_min + 1)
+        pasted = 0
+        with PIL_LOCK:
+            canvas = Image.new("RGB", (preview_w, preview_h))
+            for ty in range(y_min, y_max + 1):
+                for tx in range(x_min, x_max + 1):
+                    pasted += 1
+                    path = self._tile_path(tx, ty)
+                    if path.exists():
+                        try:
+                            tile = Image.open(path).convert("RGB")
+                            if tile.size != (tile_px, tile_px):
+                                tile = tile.resize(
+                                    (tile_px, tile_px), Image.Resampling.LANCZOS
+                                )
+                            px = round(
+                                (tx - x_min) * _TILE_SIZE * scale - crop_left * scale
+                            )
+                            py = round(
+                                (ty - y_min) * _TILE_SIZE * scale - crop_top * scale
+                            )
+                            canvas.paste(tile, (px, py))
+                            del tile
+                        except Exception as exc:
+                            _log.debug(
+                                "[tile_cache] bad tile file (%d,%d): %s", tx, ty, exc
+                            )
+                    if progress_callback is not None:
+                        progress_callback(pasted, total_tiles)
+
+        return canvas, canvas_w, canvas_h
+
     def composite(
         self,
         bbox: BoundingBox,

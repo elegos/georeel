@@ -148,13 +148,17 @@ class SatelliteTexture:
                         dest.write(chunk)
             return
 
-        # Tile cache — composite the full bbox on demand (used when saving a
-        # project before the scene has been built, so no Blender tiles exist yet).
+        # Tile cache — composite at up to 4096 px for the project save.
+        # Using composite_scaled avoids loading the full multi-GB canvas; the
+        # saved PNG is a high-quality preview (not the raw tile resolution) which
+        # is only used for GUI display when the project is re-opened.
         if self.tile_cache is not None:
             from ..bounding_box import BoundingBox
             bbox = BoundingBox(self.min_lat, self.max_lat, self.min_lon, self.max_lon)
-            _log.info("[memory] Compositing full satellite texture from tile cache for save")
-            img = self.tile_cache.composite(bbox, progress_callback=progress_callback)
+            _log.info("[memory] Compositing satellite preview from tile cache for save")
+            img, _, _ = self.tile_cache.composite_scaled(
+                bbox, max_px=4096, progress_callback=progress_callback
+            )
             with PIL_LOCK:
                 if img.mode != "RGB":
                     img = img.convert("RGB")

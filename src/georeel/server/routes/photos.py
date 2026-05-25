@@ -49,6 +49,7 @@ async def upload_photos(
 
     results: list[PhotoMetadataSchema] = []
     photos_dir = ws.directory / "photos"
+    photos_dir.mkdir(exist_ok=True)
 
     try:
         for upload in files:

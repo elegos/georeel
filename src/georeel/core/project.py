@@ -18,7 +18,9 @@ from . import temp_manager
 _MANIFEST          = "manifest.json"
 _PROJECT           = "project.json"
 _DEM_BIN           = "dem/data.bin"              # raw float32; metadata in project.json
-_SAT_TEXTURE       = "satellite/texture.png"     # RGB PNG; metadata in project.json
+_SAT_TEXTURE       = "satellite/texture.png"     # legacy: RGB PNG; metadata in project.json
+_SAT_TILES_META    = "satellite/tiles.json"      # tile format: zoom + filename list
+_SAT_TILES_DIR     = "satellite/tiles/"          # tile format: individual JPEG tile files
 _LOCALITY_TIMELINE = "locality/timeline.json"    # pre-computed Nominatim entries
 _GPX_ENTRY         = "gpx/track.gpx"             # embedded GPX track
 _PHOTOS_DIR        = "photos/"                   # embedded photos: photos/0000.jpg, etc.
@@ -141,13 +143,17 @@ def autosave_tilde(
             skip.add(_DEM_BIN)
         if update_sat:
             skip.add(_SAT_TEXTURE)
+            skip.add(_SAT_TILES_META)
 
         try:
             with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as dst_zf:
                 # Copy every unchanged entry from the base ZIP.
                 for info in src_zf.infolist():
-                    if info.filename not in skip:
-                        _copy_zip_entry(src_zf, dst_zf, info)
+                    if info.filename in skip:
+                        continue
+                    if update_sat and info.filename.startswith(_SAT_TILES_DIR):
+                        continue
+                    _copy_zip_entry(src_zf, dst_zf, info)
 
                 # Write the updated entries.
                 dst_zf.writestr(_MANIFEST, json.dumps(manifest, indent=2))
@@ -156,7 +162,7 @@ def autosave_tilde(
                 if update_dem and state.elevation_grid is not None:
                     dst_zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
                 if update_sat and state.satellite_texture is not None:
-                    _write_sat_png(dst_zf, state.satellite_texture)
+                    _write_satellite(dst_zf, state.satellite_texture)
         except Exception:
             Path(tmp).unlink(missing_ok=True)
             raise
@@ -302,7 +308,7 @@ def save_project(state: ProjectState, path: str) -> None:
             if state.elevation_grid is not None:
                 zf.writestr(_DEM_BIN, state.elevation_grid.to_bytes())
             if state.satellite_texture is not None:
-                _write_sat_png(zf, state.satellite_texture)
+                _write_satellite(zf, state.satellite_texture)
             if state.locality_timeline is not None:
                 zf.writestr(_LOCALITY_TIMELINE, json.dumps(state.locality_timeline))
 
@@ -338,6 +344,28 @@ def _copy_zip_entry(
     out_info.compress_type = info.compress_type
     with src_zf.open(info) as src_f, dst_zf.open(out_info, "w", force_zip64=True) as dst_f:
         shutil.copyfileobj(src_f, dst_f, 1 << 20)  # 1 MiB chunks
+
+
+def _write_satellite(zf: zipfile.ZipFile, texture: SatelliteTexture) -> None:
+    """Write satellite data: tile files when available, legacy PNG otherwise."""
+    if texture.tile_cache is not None:
+        _write_sat_tiles(zf, texture)
+    else:
+        _write_sat_png(zf, texture)
+
+
+def _write_sat_tiles(zf: zipfile.ZipFile, texture: SatelliteTexture) -> None:
+    """Write individual JPEG tile files into the ZIP (far smaller than a composite PNG)."""
+    assert texture.tile_cache is not None
+    tiles_meta: dict[str, Any] = {
+        "zoom": texture.tile_cache.zoom,
+        "tiles": [],
+    }
+    for tile_path in sorted(texture.tile_cache.dir.glob("*.img")):
+        entry = f"{_SAT_TILES_DIR}{tile_path.name}"
+        zf.write(str(tile_path), entry)
+        tiles_meta["tiles"].append(tile_path.name)
+    zf.writestr(_SAT_TILES_META, json.dumps(tiles_meta))
 
 
 def _write_sat_png(zf: zipfile.ZipFile, texture: SatelliteTexture) -> None:
@@ -437,9 +465,39 @@ def _load_v2(zf: zipfile.ZipFile, zip_path: Path) -> ProjectState:
 
     satellite_texture = None
     sat_meta = payload.get("satellite")
-    if sat_meta and _SAT_TEXTURE in namelist:
-        # Lazy reference — do NOT decode the PNG at load time.  The pixels are
-        # only needed if the user re-saves without fetching a new texture.
+    if sat_meta and _SAT_TILES_META in namelist:
+        # New format: individual JPEG tile files.
+        from .satellite.tile_cache import TileCache
+        from .bounding_box import BoundingBox
+        tiles_info: dict[str, Any] = json.loads(zf.read(_SAT_TILES_META))
+        zoom = int(tiles_info["zoom"])
+        tile_names = [str(n) for n in tiles_info.get("tiles", [])]
+        tiles_dir = _tmpdir() / "satellite" / "tiles"
+        tiles_dir.mkdir(parents=True, exist_ok=True)
+        for name in tile_names:
+            entry = f"{_SAT_TILES_DIR}{name}"
+            if entry in namelist:
+                (tiles_dir / name).write_bytes(zf.read(entry))
+        tile_cache = TileCache(url_template="", zoom=zoom, cache_dir=tiles_dir)
+        bbox = BoundingBox(
+            sat_meta["min_lat"], sat_meta["max_lat"],
+            sat_meta["min_lon"], sat_meta["max_lon"],
+        )
+        dim_w, dim_h = tile_cache.canvas_size(bbox)
+        satellite_texture = SatelliteTexture(
+            image=None,
+            min_lat=sat_meta["min_lat"],
+            max_lat=sat_meta["max_lat"],
+            min_lon=sat_meta["min_lon"],
+            max_lon=sat_meta["max_lon"],
+            provider_id=sat_meta.get("provider_id", ""),
+            quality=sat_meta.get("quality", "standard"),
+            tile_cache=tile_cache,
+            dim_width=dim_w,
+            dim_height=dim_h,
+        )
+    elif sat_meta and _SAT_TEXTURE in namelist:
+        # Legacy format: single composite PNG, lazy-loaded.
         satellite_texture = SatelliteTexture.from_zip_lazy(
             zip_path=zip_path,
             entry=_SAT_TEXTURE,

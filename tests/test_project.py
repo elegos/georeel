@@ -661,3 +661,128 @@ class TestLocalityTimeline:
             assert "locality/timeline.json" in zf.namelist()
             tl = json.loads(zf.read("locality/timeline.json"))
         assert len(tl) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tile-based satellite format
+# ---------------------------------------------------------------------------
+
+def _make_tile_texture(tmp_path: Path) -> "SatelliteTexture":
+    """Return a SatelliteTexture with a TileCache backed by real tile files."""
+    from PIL import Image as _Image
+    from georeel.core.satellite.tile_cache import TileCache
+
+    tiles_dir = tmp_path / "tiles"
+    tiles_dir.mkdir()
+    # Write two fake tile files (zoom 14, tx=8591/8592, ty=5734)
+    for tx, ty in [(8591, 5734), (8592, 5734)]:
+        _Image.new("RGB", (256, 256), (100, 150, 200)).save(
+            str(tiles_dir / f"{tx}_{ty}.img"), format="JPEG"
+        )
+
+    cache = TileCache(url_template="", zoom=14, cache_dir=tiles_dir)
+    from georeel.core.satellite.texture import SatelliteTexture
+    return SatelliteTexture(
+        image=None,
+        min_lat=47.0,
+        max_lat=47.01,
+        min_lon=8.0,
+        max_lon=8.01,
+        provider_id="esri_world",
+        quality="high",
+        tile_cache=cache,
+        dim_width=512,
+        dim_height=256,
+    )
+
+
+class TestSaveLoadSatelliteTiles:
+    def test_saves_tile_meta_and_files(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t), path)
+        with zipfile.ZipFile(path) as zf:
+            assert "satellite/tiles.json" in zf.namelist()
+            tile_files = [n for n in zf.namelist() if n.startswith("satellite/tiles/")]
+            assert len(tile_files) == 2
+
+    def test_no_legacy_png_when_tiles_used(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t), path)
+        with zipfile.ZipFile(path) as zf:
+            assert "satellite/texture.png" not in zf.namelist()
+
+    def test_tiles_meta_has_zoom(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t), path)
+        with zipfile.ZipFile(path) as zf:
+            meta = json.loads(zf.read("satellite/tiles.json"))
+        assert meta["zoom"] == 14
+
+    def test_round_trip_has_tile_cache(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t), path)
+        loaded = load_project(path)
+        try:
+            assert loaded.satellite_texture is not None
+            assert loaded.satellite_texture.tile_cache is not None
+        finally:
+            if loaded.temp_dir:
+                shutil.rmtree(loaded.temp_dir, ignore_errors=True)
+
+    def test_round_trip_metadata_preserved(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t), path)
+        loaded = load_project(path)
+        try:
+            st = loaded.satellite_texture
+            assert st is not None
+            assert st.provider_id == "esri_world"
+            assert st.quality == "high"
+            assert st.min_lat == pytest.approx(47.0)
+        finally:
+            if loaded.temp_dir:
+                shutil.rmtree(loaded.temp_dir, ignore_errors=True)
+
+    def test_round_trip_tiles_readable(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t), path)
+        loaded = load_project(path)
+        try:
+            tc = loaded.satellite_texture.tile_cache  # type: ignore[union-attr]
+            assert tc is not None
+            tile_files = list(tc.dir.glob("*.img"))
+            assert len(tile_files) == 2
+        finally:
+            if loaded.temp_dir:
+                shutil.rmtree(loaded.temp_dir, ignore_errors=True)
+
+    def test_autosave_tilde_updates_tiles(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        # First save with PNG texture
+        t_png = _make_texture()
+        save_project(_state(tmp_path, satellite_texture=t_png), path)
+        # Autosave with tile texture
+        t_tile = _make_tile_texture(tmp_path)
+        state2 = _state(tmp_path, satellite_texture=t_tile)
+        autosave_tilde(state2, path, update_sat=True)
+        with zipfile.ZipFile(path + "~") as zf:
+            assert "satellite/tiles.json" in zf.namelist()
+            assert "satellite/texture.png" not in zf.namelist()
+
+    def test_autosave_tilde_removes_old_tiles_when_updating(self, tmp_path):
+        path = str(tmp_path / "project.georeel")
+        t_tile = _make_tile_texture(tmp_path)
+        save_project(_state(tmp_path, satellite_texture=t_tile), path)
+        # Now autosave with a PNG texture — old tile entries must be gone
+        t_png = _make_texture()
+        state2 = _state(tmp_path, satellite_texture=t_png)
+        autosave_tilde(state2, path, update_sat=True)
+        with zipfile.ZipFile(path + "~") as zf:
+            tile_entries = [n for n in zf.namelist() if n.startswith("satellite/tiles")]
+            assert tile_entries == []
